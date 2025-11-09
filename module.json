@@ -1,0 +1,283 @@
+{
+"id": "vurs-pf2e",
+"title": "Vionheart Universe Roleplaying System for Pf2E",
+"version": "9.0",
+"compatibility": {
+"minimum": "13",
+"verified": "13"
+},
+"authors": [
+{
+"name": "Xyril P.",
+"discord": "xyrilp.",
+"flags": {}
+}
+],
+"flags": {
+"canUpload": true
+},
+"packs": [
+{
+	"name": "vurs-iconics",
+	"label": "VURS Iconics",
+	"path": "packs/vurs-iconics",
+	"type": "Actor",
+	"ownership": {
+	"PLAYER": "OBSERVER",
+	"ASSISTANT": "OWNER"
+	},
+	"system": "pf2e",
+	"flags": {}
+},
+{
+	"name": "vurs-npcs",
+	"label": "VURS NPCs",
+	"path": "packs/vurs-npcs",
+	"type": "Actor",
+	"ownership": {
+	"PLAYER": "OBSERVER",
+	"ASSISTANT": "OWNER"
+	},
+	"system": "pf2e",
+	"flags": {}
+},
+{
+	"name": "vurs-foes",
+	"label": "VURS Foes",
+	"path": "packs/vurs-foes",
+	"type": "Actor",
+	"ownership": {
+	"PLAYER": "OBSERVER",
+	"ASSISTANT": "OWNER"
+	},
+	"system": "pf2e",
+	"flags": {}
+},
+{
+	"name": "vurs-actions",
+	"label": "VURS Actions",
+	"path": "packs/vurs-actions",
+	"type": "Item",
+	"ownership": {
+	"PLAYER": "OBSERVER",
+	"ASSISTANT": "OWNER"
+	},
+	"system": "pf2e",
+	"flags": {}
+},
+{
+	"name": "vurs-features",
+	"label": "VURS Features",
+	"path": "packs/vurs-features",
+	"type": "Item",
+	"ownership": {
+	"PLAYER": "OBSERVER",
+	"ASSISTANT": "OWNER"
+	},
+	"system": "pf2e",
+	"flags": {}
+},
+{
+	"name": "vurs-feats",
+	"label": "VURS Feats",
+	"path": "packs/vurs-feats",
+	"type": "Item",
+	"ownership": {
+	"PLAYER": "OBSERVER",
+	"ASSISTANT": "OWNER"
+	},
+	"system": "pf2e",
+	"flags": {}
+},
+{
+	"name": "vurs-items",
+	"label": "VURS Items",
+	"path": "packs/vurs-items",
+	"type": "Item",
+	"ownership": {
+	"PLAYER": "OBSERVER",
+	"ASSISTANT": "OWNER"
+	},
+	"system": "pf2e",
+	"flags": {}
+},
+{
+	"name": "vurs-spells",
+	"label": "VURS Spells",
+	"path": "packs/vurs-spells",
+	"type": "Item",
+	"ownership": {
+	"PLAYER": "OBSERVER",
+	"ASSISTANT": "OWNER"
+	},
+	"system": "pf2e",
+	"flags": {}
+},
+{
+	"name": "vurs-effects",
+	"label": "VURS Effects",
+	"path": "packs/vurs-effects",
+	"type": "Item",
+	"ownership": {
+	"PLAYER": "OBSERVER",
+	"ASSISTANT": "OWNER"
+	},
+	"system": "pf2e",
+	"flags": {}
+},
+{
+	"name": "vurs-journals",
+	"label": "VURS Journals",
+	"path": "packs/vurs-journals",
+	"type": "JournalEntry",
+	"ownership": {
+	"PLAYER": "OBSERVER",
+	"ASSISTANT": "OWNER"
+	},
+	"system": "pf2e",
+	"flags": {}
+}
+],
+"packFolders": [
+{
+"name": "Vionheart Content",
+"color": "#c864c8",
+"sorting": "a",
+"folders": [
+{
+"name": "VURS for Pf2E",
+"sorting": "a",
+"color": "#c864c8",
+"packs": [
+"vurs-iconics",
+"vurs-npcs",
+"vurs-foes",
+"vurs-actions",
+"vurs-features",
+"vurs-feats",
+"vurs-items",
+"vurs-spells",
+"vurs-effects",
+"vurs-journals"
+]
+}
+]
+}
+],
+"relationships": {
+"systems": [
+{
+"id": "pf2e",
+"type": "system",
+"compatibility": {}
+}
+]
+},
+"flags": {
+	"vurs-pf2e": {
+		"pf2e-homebrew": {
+			"skills": {
+				"additional": {
+					"fortitude-skill": {
+						"label": "Fortitude",
+						"attribute": "str"
+					},
+					"power": {
+						"label": "Power",
+						"attribute": "str"
+					},
+					"dexterity-skill": {
+						"label": "Dexterity",
+						"attribute": "dex"
+					},
+					"mobility": {
+						"label": "Mobility",
+						"attribute": "dex"
+					},
+					"reflex-skill": {
+						"label": "Reflex",
+						"attribute": "dex"
+					},
+					"acquisition": {
+						"label": "Acquisition",
+						"attribute": "con"
+					},
+					"strategy": {
+						"label": "Strategy",
+						"attribute": "int"
+					},
+					"will-skill": {
+						"label": "Will",
+						"attribute": "int"
+					},
+					"coolness": {
+						"label": "Coolness",
+						"attribute": "cha"
+					},
+					"perception-skill": {
+						"label": "Perception",
+						"attribute": "cha"
+					},
+					"romance": {
+						"label": "Romance",
+						"attribute": "cha"
+					},
+					"soul": {
+						"label": "Soul",
+						"attribute": "wis"
+					}
+				}
+			},
+			"weaponGroups": {
+				"magic": "Magic"
+			},
+			"baseWeapons": {
+				"magic-rod": "Magic Rod",
+				"magic-war-rod": "Magic War Rod",
+				"magic-scepter": "Magic Scepter",
+				"magic-war-scepter": "Magic War Scepter",
+				"sonic-bell": "Sonic Bell",
+				"sonic-warbell": "Sonic Warbell",
+				"poison-ink-brush": "Poison Ink Brush",
+				"poison-ink-warbrush": "Poison Ink Warbrush",
+				"tuba": "Tuba",
+				"longhorn": "Longhorn",
+				"twinhorn": "Twinhorn"
+			},
+			"equipmentTraits": {
+				"sp-recovery": {
+					"label": "SP Recovery",
+					"description": "This item restores spent SP."
+				},
+				"mp-recovery": {
+					"label": "MP Recovery",
+					"description": "This item restores spent MP."
+				},
+				"acquired": {
+					"label": "Acquired",
+					"description": "This item has been obtained using BP."
+				}
+			},
+			"featTraits": {
+				"defend": {
+					"label": "Defend",
+					"description": "An ability with this trait involves defending against attacks."
+				},
+				"reaction": {
+					"label": "Reaction",
+					"description": "An ability with this trait can be used outside of your turn.\nTypically has a trigger."
+				}
+			}
+		}
+	}
+},
+"languages":
+[
+{
+	"lang": "vurs",
+	"name": "VURS",
+	"path": "translation/vurs.json"
+}
+],
+"description": ""
+}
