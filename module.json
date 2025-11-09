@@ -1,6 +1,8 @@
 {
 "id": "vurs-pf2e",
 "title": "Vionheart Universe Roleplaying System for Pf2E",
+"manifest": "https://raw.githubusercontent.com/XyrilP/vionheart-deadlock-content/main/module.json",
+"download": "https://github.com/XyrilP/vionheart-deadlock-content/archive/refs/heads/main.zip",
 "version": "9.0",
 "compatibility": {
 "minimum": "13",
