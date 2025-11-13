@@ -3,7 +3,7 @@
 "title": "Vionheart Universe Roleplaying System for Pf2E",
 "manifest": "https://raw.githubusercontent.com/XyrilP/vurs-pf2e/refs/heads/main/module.json",
 "download": "https://github.com/XyrilP/vurs-pf2e/archive/refs/heads/main.zip",
-"version": "9.1",
+"version": "9.0",
 "compatibility": {
 "minimum": "13",
 "verified": "13"
@@ -180,6 +180,10 @@
 		"pf2e-homebrew": {
 			"skills": {
 				"additional": {
+					"fortitude-skill": {
+						"label": "Fortitude",
+						"attribute": "str"
+					},
 					"power": {
 						"label": "Power",
 						"attribute": "str"
@@ -192,6 +196,10 @@
 						"label": "Mobility",
 						"attribute": "dex"
 					},
+					"reflex-skill": {
+						"label": "Reflex",
+						"attribute": "dex"
+					},
 					"acquisition": {
 						"label": "Acquisition",
 						"attribute": "con"
@@ -200,8 +208,16 @@
 						"label": "Strategy",
 						"attribute": "int"
 					},
+					"will-skill": {
+						"label": "Will",
+						"attribute": "int"
+					},
 					"coolness": {
 						"label": "Coolness",
+						"attribute": "cha"
+					},
+					"perception-skill": {
+						"label": "Perception",
 						"attribute": "cha"
 					},
 					"romance": {
