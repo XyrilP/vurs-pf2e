@@ -1,0 +1,16 @@
+{
+  "type": "refinement",
+  "key": "skill:acquisition",
+  "label": "Acquisition",
+  "itemPredicate": [],
+  "monsterPredicate": [],
+  "header": {
+    "labels": [
+      {
+        "levelMin": 1,
+        "levelMax": 20,
+        "text": "Header Label Text"
+      }
+    ]
+  }
+}

@@ -1,3 +1,5 @@
-2025/11/13-08:56:57.142 28a4 Recovering log #149
-2025/11/13-08:56:57.196 28a4 Delete type=0 #149
-2025/11/13-08:56:57.196 28a4 Delete type=3 #148
+2025/12/27-07:53:25.607 1fdc Recovering log #329
+2025/12/27-07:53:25.607 1fdc Level-0 table #331: started
+2025/12/27-07:53:25.622 1fdc Level-0 table #331: 6241 bytes OK
+2025/12/27-07:53:25.689 1fdc Delete type=0 #329
+2025/12/27-07:53:25.689 1fdc Delete type=3 #328
