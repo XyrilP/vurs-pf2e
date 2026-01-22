@@ -1,5 +1,7 @@
-2025/12/27-07:53:25.607 1fdc Recovering log #329
-2025/12/27-07:53:25.607 1fdc Level-0 table #331: started
-2025/12/27-07:53:25.622 1fdc Level-0 table #331: 6241 bytes OK
-2025/12/27-07:53:25.689 1fdc Delete type=0 #329
-2025/12/27-07:53:25.689 1fdc Delete type=3 #328
+2026/01/22-08:36:14.616 1cdc Recovering log #420
+2026/01/22-08:36:14.626 1cdc Delete type=0 #420
+2026/01/22-08:36:14.626 1cdc Delete type=3 #417
+2026/01/22-08:36:41.219 2850 Level-0 table #426: started
+2026/01/22-08:36:41.219 2850 Level-0 table #426: 0 bytes OK
+2026/01/22-08:36:41.220 2850 Delete type=0 #424
+2026/01/22-08:36:41.223 2850 Manual compaction at level-0 from '!folders!4CoWBtKoeIdVtuHR' @ 72057594037927935 : 1 .. '!items!xN0Kv2WwQcC8AxiM' @ 0 : 0; will stop at (end)

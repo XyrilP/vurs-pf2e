@@ -1,3 +1,7 @@
-2025/12/27-07:53:25.251 1fdc Recovering log #268
-2025/12/27-07:53:25.334 1fdc Delete type=0 #268
-2025/12/27-07:53:25.334 1fdc Delete type=3 #267
+2026/01/22-08:36:14.562 2afc Recovering log #356
+2026/01/22-08:36:14.566 2afc Delete type=0 #356
+2026/01/22-08:36:14.566 2afc Delete type=3 #353
+2026/01/22-08:36:41.201 2850 Level-0 table #362: started
+2026/01/22-08:36:41.201 2850 Level-0 table #362: 0 bytes OK
+2026/01/22-08:36:41.202 2850 Delete type=0 #360
+2026/01/22-08:36:41.202 2850 Manual compaction at level-0 from '!actors!5pYDjMym6Laz7BUD' @ 72057594037927935 : 1 .. '!folders!0A7ekFVecXbzY4UL' @ 0 : 0; will stop at (end)
