@@ -1,12 +1,12 @@
 {
   "id": "vurs-pf2e",
-  "title": "Vionheart Universe Roleplaying System for Pf2E",
+  "title": "Vionheart Universe Roleplaying System for Pf2E/Sf2E",
   "manifest": "https://raw.githubusercontent.com/XyrilP/vurs-pf2e/refs/heads/main/module.json",
   "download": "https://github.com/XyrilP/vurs-pf2e/archive/refs/heads/main.zip",
-  "version": "11.0",
+  "version": "12.1",
   "compatibility": {
-    "minimum": "13",
-    "verified": "13",
+    "minimum": "14",
+    "verified": "14",
     "maximum": "14"
   },
   "authors": [
@@ -70,7 +70,8 @@
           "tuba": "Tuba",
           "longhorn": "Longhorn",
           "twinhorn": "Twinhorn",
-          "ax-bass": "Ax Bass"
+          "ax-bass": "Ax Bass",
+		  "submachine-gun": "Submachine Gun"
         },
         "weaponTraits": {
           "acquired": {
@@ -83,15 +84,15 @@
             "label": "SP Recovery",
             "description": "This item restores spent SP."
           },
-		  "ap-recovery": {
+          "ap-recovery": {
             "label": "AP Recovery",
             "description": "This item restores spent AP."
           },
-		  "acquired": {
+          "acquired": {
             "label": "Acquired",
             "description": "This item has been obtained using BP."
           },
-		  "bp-recovery": {
+          "bp-recovery": {
             "label": "BP Recovery",
             "description": "This item restores spent BP."
           },
@@ -99,18 +100,26 @@
             "label": "MP Recovery",
             "description": "This item restores spent MP."
           },
-		  "tp-recovery": {
+          "tp-recovery": {
             "label": "TP Recovery",
             "description": "This item restores spent TP."
           },
-		  "sr-recovery": {
+          "sr-recovery": {
             "label": "SR Recovery",
             "description": "This item restores spent SR."
           },
-		  "kp-recovery": {
+          "kp-recovery": {
             "label": "KP Recovery",
             "description": "This item restores spent KP."
-          }
+          },
+		  "breaker": {
+			"label": "Breaker",
+			"description": "This item can prevent harmful effects after it has occured.\nBreakers typically can be used even if you can't act."
+		  },
+		  "countermeasure": {
+			"label": "Countermeasure",
+			"description": "This item can prevent harmful effects from occuring before its effects are applied."
+		  }
         },
         "featTraits": {
           "defend": {
@@ -125,83 +134,144 @@
             "label": "Agnostic VURS",
             "description": "This content is exclusive to Vionheart Universe Roleplaying System's Pathfinder Second Edition agnostic ruleset."
           },
-		  "only-vurs": {
+          "only-vurs": {
             "label": "Only VURS",
             "description": "This content is exclusive to Vionheart Universe Roleplaying System's ruleset."
           },
-		  "charge-up-1": {
-			  "label": "Charge Up 1",
-			  "description": "This action can't be used in a number of rounds equal to the value appended at the start of an encounter."
+          "charge-up-1": {
+            "label": "Charge Up 1",
+            "description": "This ability can't be used in a number of rounds equal to the value appended at the start of an encounter."
+          },
+          "charge-up-2": {
+            "label": "Charge Up 2",
+            "description": "This ability can't be used in a number of rounds equal to the value appended at the start of an encounter."
+          },
+          "charge-up-3": {
+            "label": "Charge Up 3",
+            "description": "This ability can't be used in a number of rounds equal to the value appended at the start of an encounter."
+          },
+          "charge-up-4": {
+            "label": "Charge Up 4",
+            "description": "This ability can't be used in a number of rounds equal to the value appended at the start of an encounter."
+          },
+          "cooldown-1": {
+            "label": "Cooldown 1",
+            "description": "This ability can't be used in a number of rounds equal to the value appended after using it."
+          },
+          "cooldown-2": {
+            "label": "Cooldown 2",
+            "description": "This ability can't be used in a number of rounds equal to the value appended after using it."
+          },
+          "cooldown-3": {
+            "label": "Cooldown 3",
+            "description": "This ability can't be used in a number of rounds equal to the value appended after using it."
+          },
+          "cooldown-4": {
+            "label": "Cooldown 4",
+            "description": "This ability can't be used in a number of rounds equal to the value appended after using it."
+          },
+          "charged-ability": {
+            "label": "Charged Ability",
+            "description": "This ability has charges that is consumed when used, and recovers it over time."
+          },
+		  "sp-recovery": {
+            "label": "SP Recovery",
+            "description": "This ability restores spent SP."
+          },
+          "ap-recovery": {
+            "label": "AP Recovery",
+            "description": "This ability restores spent AP."
+          },
+          "acquired": {
+            "label": "Acquired",
+            "description": "This ability has been obtained using BP."
+          },
+          "bp-recovery": {
+            "label": "BP Recovery",
+            "description": "This ability restores spent BP."
+          },
+          "mp-recovery": {
+            "label": "MP Recovery",
+            "description": "This ability restores spent MP."
+          },
+          "tp-recovery": {
+            "label": "TP Recovery",
+            "description": "This ability restores spent TP."
+          },
+          "sr-recovery": {
+            "label": "SR Recovery",
+            "description": "This ability restores spent SR."
+          },
+          "kp-recovery": {
+            "label": "KP Recovery",
+            "description": "This ability restores spent KP."
+          },
+		  "anti-air": {
+            "label": "Anti-Air",
+            "description": "An ability with this trait can take a character out of the skies, making them fall immediately."
+          },
+		  "breaker": {
+			"label": "Breaker",
+			"description": "An ability with this trait can prevent harmful effects after it has occured.\nBreakers typically can be used even if you can't act."
 		  },
-		  "charge-up-2": {
-			  "label": "Charge Up 2",
-			  "description": "This action can't be used in a number of rounds equal to the value appended at the start of an encounter."
+		  "countermeasure": {
+			"label": "Countermeasure",
+			"description": "An ability with this trait can prevent harmful effects from occuring before its effects are applied."
 		  },
-		  "charge-up-3": {
-			  "label": "Charge Up 3",
-			  "description": "This action can't be used in a number of rounds equal to the value appended at the start of an encounter."
-		  },
-		  "charge-up-4": {
-			  "label": "Charge Up 4",
-			  "description": "This action can't be used in a number of rounds equal to the value appended at the start of an encounter."
-		  },
-		  "cooldown-1": {
-			  "label": "Cooldown 1",
-			  "description": "This action can't be used in a number of rounds equal to the value appended after using it."
-		  },
-		  "cooldown-2": {
-			  "label": "Cooldown 2",
-			  "description": "This action can't be used in a number of rounds equal to the value appended after using it."
-		  },
-		  "cooldown-3": {
-			  "label": "Cooldown 3",
-			  "description": "This action can't be used in a number of rounds equal to the value appended after using it."
-		  },
-		  "cooldown-4": {
-			  "label": "Cooldown 4",
-			  "description": "This action can't be used in a number of rounds equal to the value appended after using it."
-		  },
-		  "charged-ability": {
-			  "label": "Charged Ability",
-			  "description": "This action has charges that is consumed when used, and recovers it over time."
-		  },
-		  "brawler": "Brawler",
-		  "berserker": "Berserker",
-		  "provocateur": "Provocateur",
-		  "warrior": "Warrior",
-		  "assassin": "Assassin",
-		  "spy": "Spy",
-		  "shooter": "Shooter",
-		  "tempest": "Tempest",
-		  "pilot": "Pilot",
-		  "rider": "Rider",
-		  "runner": "Runner",
-		  "temporal": "Temporal",
-		  "gadgeteer": "Gadgeteer",
-		  "artisan": "Artisan",
-		  "trainmaster": "Trainmaster",
-		  "diplomat": "Diplomat",
-		  "knight": "Knight",
-		  "royalty": "Royalty",
-		  "arcanist": "Arcanist",
-		  "mystic": "Mystic",
-		  "punkrocker": "Punkrocker",
-		  "academic": "Academic",
-		  "battlemaster": "Battlemaster",
-		  "abjuror": "Abjuror",
-		  "daredevil-vurs": "Daredevil (VURS)",
-		  "occultist": "Occultist",
-		  "executioner": "Executioner",
-		  "recorder": "Recorder",
-		  "courtesan": "Courtesan",
-		  "diviner": "Diviner",
-		  "venator": "Venator",
-		  "primalist": "Primalist",
-		  "warden": "Warden",
-		  "preacher": "Preacher",
-		  "healer": "Healer",
-		  "hunter": "Hunter"
-        }
+          "brawler": "Brawler",
+          "berserker": "Berserker",
+          "provocateur": "Provocateur",
+          "warrior": "Warrior",
+          "assassin": "Assassin",
+          "spy": "Spy",
+          "shooter": "Shooter",
+          "tempest": "Tempest",
+          "pilot": "Pilot",
+          "rider": "Rider",
+          "runner": "Runner",
+          "temporal": "Temporal",
+          "gadgeteer": "Gadgeteer",
+          "artisan": "Artisan",
+          "trainmaster": "Trainmaster",
+          "diplomat": "Diplomat",
+          "knight": "Knight",
+          "royalty": "Royalty",
+          "arcanist": "Arcanist",
+          "mystic": "Mystic",
+          "punkrocker": "Punkrocker",
+          "academic": "Academic",
+          "battlemaster": "Battlemaster",
+          "abjuror": "Abjuror",
+          "daredevil-vurs": "Daredevil (VURS)",
+          "occultist": "Occultist",
+          "executioner": "Executioner",
+          "recorder": "Recorder",
+          "courtesan": "Courtesan",
+          "diviner": "Diviner",
+          "venator": "Venator",
+          "primalist": "Primalist",
+          "warden": "Warden",
+          "preacher": "Preacher",
+          "healer": "Healer",
+          "hunter": "Hunter"
+        },
+		"damageTypes": {
+			"pure": {
+				"label": "Pure",
+				"category": "energy",
+				"icon": "fa-diamond"
+			},
+			"dragon": {
+				"label": "Dragon",
+				"category": "energy",
+				"icon": "fa-dragon"
+			},
+			"vurs-magic": {
+				"label": "Magic",
+				"category": "energy",
+				"icon": "fa-star"
+			}
+		}
       }
     },
     "pf2e-monster-parts": {
@@ -364,6 +434,11 @@
     "systems": [
       {
         "id": "pf2e",
+        "type": "system",
+        "compatibility": {}
+      },
+      {
+        "id": "sf2e",
         "type": "system",
         "compatibility": {}
       }
