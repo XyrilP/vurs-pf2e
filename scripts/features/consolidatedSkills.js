@@ -574,23 +574,36 @@ export function applyVursConsolidatedSkillAttributes(actor) {
   for (const [childSlug, parentSlug] of Object.entries(CONSOLIDATED_SKILLS)) {
     const child = actor.skills?.[childSlug];
     const parent = actor.skills?.[parentSlug];
-    if (!child || !parent?.attribute || child.attribute === parent.attribute) continue;
+    if (!child || !parent) continue;
 
+    const effectiveRank = Math.max(Number(child.rank) || 0, Number(parent.rank) || 0);
     const previousAttribute = child.attribute;
     const data = foundry.utils.deepClone(child.data);
-    data.attribute = parent.attribute;
-    data.domains = (data.domains ?? []).filter(domain => domain !== `${previousAttribute}-based`);
-    data.modifiers = (data.modifiers ?? []).filter(modifier =>
-      modifier.type !== "ability" || modifier.ability === parent.attribute
-    );
+    data.rank = effectiveRank;
+    // Statistic.data includes the already-generated proficiency modifier. If
+    // retained, PF2e will reuse its old value instead of recalculating it for
+    // this effective rank.
+    data.modifiers = (data.modifiers ?? []).filter(modifier => modifier.type !== "proficiency");
+    if (parent.attribute && child.attribute !== parent.attribute) {
+      data.attribute = parent.attribute;
+      data.domains = (data.domains ?? []).filter(domain => domain !== `${previousAttribute}-based`);
+      data.modifiers = (data.modifiers ?? []).filter(modifier =>
+        modifier.type !== "ability" || modifier.ability === parent.attribute
+      );
+    }
 
     const consolidated = new child.constructor(actor, data, child.config);
     actor.skills[childSlug] = consolidated;
     Object.assign(actor.system.skills[childSlug], consolidated.getTraceData(), {
-      attribute: parent.attribute,
-      rank: child.rank,
+      attribute: parent.attribute ?? child.attribute,
+      rank: effectiveRank,
       mod: consolidated.check.mod
     });
+
+    if (actor.rollOptions?.all) {
+      for (let rank = 0; rank <= 4; rank++) delete actor.rollOptions.all[`skill:${childSlug}:rank:${rank}`];
+      actor.rollOptions.all[`skill:${childSlug}:rank:${effectiveRank}`] = true;
+    }
   }
 }
 
