@@ -462,6 +462,15 @@
 		]
 	},
 	"description": "",
-	"esmodules": ["scripts/cooldown.js", "scripts/systemSelection.js", "scripts/changeSystem.js"]
+	"esmodules": [
+		"scripts/cooldown.js",
+		"scripts/moduleSettings.js",
+		"scripts/features/vursFlagScope.js",
+		"scripts/features/modes/fullVurs.js",
+		"scripts/features/modes/agnosticVurs.js",
+		"scripts/features/systemModes.js",
+		"scripts/features/diceless.js",
+		"scripts/generalChanges.js"
+	]
 	
 }
