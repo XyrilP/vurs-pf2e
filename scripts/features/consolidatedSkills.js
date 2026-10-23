@@ -212,9 +212,131 @@ export function addVursExtendedSaveRows(root, actor) {
     roll.removeAttribute("data-save");
 
     const modifier = row.querySelector(".save-roll .modifier");
+    // The row is cloned from a native save and may carry its tooltip marker,
+    // but cloned DOM nodes do not inherit Tooltipster's event handlers.
+    modifier.classList.remove("tooltipstered");
     const value = Number(statistic.totalModifier ?? statistic.mod ?? statistic.check?.mod ?? 0);
     modifier.textContent = `${value >= 0 ? "+" : ""}${Math.trunc(value)}`;
-    modifier.setAttribute("data-tooltip-content", `#${root.id}-${slug}-modifiers`);
+    // Keep this distinct from the skill's own Proficiencies-tab tooltip ID.
+    const tooltipId = `${root.id}-vurs-sidebar-${slug}-modifiers`;
+    modifier.setAttribute("data-tooltip-content", `#${tooltipId}`);
+    let tooltip = row.querySelector(`#${CSS.escape(tooltipId)}`);
+    if (!tooltip) {
+      tooltip = document.createElement("div");
+      tooltip.className = "hover-content modifiers-tooltip";
+      tooltip.id = tooltipId;
+      tooltip.dataset.stat = slug;
+      tooltip.style.maxHeight = "50vh";
+      tooltip.style.overflowY = "auto";
+      tooltip.style.overscrollBehavior = "contain";
+      const title = document.createElement("div");
+      title.className = "sidebar_title";
+      const heading = document.createElement("h2");
+      heading.textContent = localizedLabel;
+      title.append(heading);
+      const modifiers = document.createElement("ul");
+      modifiers.className = "modifier-list";
+      for (const entry of statistic.modifiers ?? statistic._modifiers ?? []) {
+        if (entry.enabled === false && entry.hideIfDisabled) continue;
+        const item = document.createElement("li");
+        item.className = `item${entry.enabled === false ? " no-effect" : ""}`;
+        const type = document.createElement("span");
+        type.className = "tag-legacy";
+        type.textContent = game.i18n.localize(`PF2E.ModifierType.${entry.type ?? "untyped"}`);
+        const name = document.createElement("span");
+        name.className = "label";
+        name.textContent = entry.label ?? entry.slug ?? "Modifier";
+        const amount = document.createElement("span");
+        amount.className = "data";
+        const modifierValue = Number(entry.modifier ?? entry.value ?? 0);
+        amount.textContent = `${modifierValue >= 0 ? "+" : ""}${Math.trunc(modifierValue)}`;
+        item.append(type, name, amount);
+        if (entry.custom && entry.slug) {
+          const remove = document.createElement("i");
+          remove.className = "fa-regular fa-circle-xmark remove-modifier";
+          remove.dataset.action = "remove-modifier";
+          remove.dataset.slug = entry.slug;
+          remove.title = game.i18n.localize("PF2E.RemoveModifierTitle");
+          remove.addEventListener("click", () => actor.removeCustomModifier(slug, entry.slug));
+          item.append(remove);
+        }
+        modifiers.append(item);
+      }
+      if (actor.isOwner) {
+        const add = document.createElement("li");
+        add.className = "item add-modifier";
+        const valueControls = document.createElement("div");
+        valueControls.className = "add-modifier-value";
+        const decrement = document.createElement("button");
+        decrement.type = "button";
+        decrement.dataset.action = "decrement";
+        decrement.setAttribute("aria-label", game.i18n.localize("PF2E.ModifierDecrease"));
+        decrement.innerHTML = '<i class="fa-solid fa-minus"></i>';
+        const valueInput = document.createElement("input");
+        valueInput.type = "number";
+        valueInput.value = "1";
+        valueInput.placeholder = "+1";
+        valueInput.setAttribute("aria-label", game.i18n.localize("PF2E.Roll.Dialog.ModifierValue"));
+        const increment = document.createElement("button");
+        increment.type = "button";
+        increment.dataset.action = "increment";
+        increment.setAttribute("aria-label", game.i18n.localize("PF2E.ModifierIncrease"));
+        increment.innerHTML = '<i class="fa-solid fa-plus"></i>';
+        decrement.addEventListener("click", () => valueInput.stepDown());
+        increment.addEventListener("click", () => valueInput.stepUp());
+        valueControls.append(decrement, valueInput, increment);
+
+        const nameInput = document.createElement("input");
+        nameInput.type = "text";
+        nameInput.className = "add-modifier-name";
+        nameInput.placeholder = game.i18n.localize("PF2E.ModifierNamePlaceholder");
+        nameInput.setAttribute("aria-label", game.i18n.localize("PF2E.Roll.Dialog.ModifierName"));
+        const typeSelect = document.createElement("select");
+        typeSelect.className = "tag-legacy add-modifier-type";
+        typeSelect.setAttribute("aria-label", game.i18n.localize("PF2E.Roll.Dialog.ModifierType"));
+        const modifierTypes = ["", "ability", "proficiency", "item", "status", "circumstance", "untyped"];
+        for (const typeValue of modifierTypes) {
+          const option = document.createElement("option");
+          option.value = typeValue;
+          option.textContent = game.i18n.localize(typeValue
+            ? `PF2E.ModifierType.${typeValue}`
+            : "PF2E.ModifierTypeTitle");
+          typeSelect.append(option);
+        }
+        const submit = document.createElement("button");
+        submit.type = "button";
+        submit.className = "add-modifier-submit";
+        submit.textContent = game.i18n.localize("PF2E.AddModifierTitle");
+        submit.addEventListener("click", () => {
+          const amount = Number.isFinite(valueInput.valueAsNumber) ? valueInput.valueAsNumber : 1;
+          const label = nameInput.value.trim();
+          const modifierType = typeSelect.value;
+          if (!modifierType) {
+            ui.notifications.error("Type is required.");
+            return;
+          }
+          actor.addCustomModifier(slug, label || game.i18n.localize(`PF2E.ModifierType.${modifierType}`), amount, modifierType);
+        });
+        add.append(valueControls, nameInput, typeSelect, submit);
+        modifiers.append(add);
+      }
+      tooltip.append(title, modifiers);
+      row.append(tooltip);
+    }
+    const jq = globalThis.jQuery ?? globalThis.$;
+    if (jq && !modifier.classList.contains("tooltipstered") && typeof jq(modifier).tooltipster === "function") {
+      jq(modifier).tooltipster({
+        trigger: "click",
+        arrow: false,
+        contentAsHTML: true,
+        debug: false,
+        interactive: true,
+        side: ["right", "bottom"],
+        theme: "crb-hover",
+        minWidth: 120,
+        content: tooltip
+      });
+    }
   }
 
   const order = ["fortitude", "reflex", "acquisition", "will", "perception", "soul"];
