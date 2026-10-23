@@ -3,7 +3,7 @@
 	"title": "Vionheart Universe Roleplaying System for Pf2E/Sf2E",
 	"manifest": "https://raw.githubusercontent.com/XyrilP/vurs-pf2e/refs/heads/main/module.json",
 	"download": "https://github.com/XyrilP/vurs-pf2e/archive/refs/heads/main.zip",
-	"version": "13",
+	"version": "12.3",
 	"compatibility": {
 		"minimum": "14",
 		"verified": "14",
@@ -114,7 +114,7 @@
 					},
 					"breaker": {
 						"label": "Breaker",
-						"description": "This item can prevent harmful effects after it has occured.\nBreakers typically can be used even if you can't act."
+						"description": "This item can prevent harmful effects after it has occured. Breakers typically can be used even if you can't act."
 					},
 					"countermeasure": {
 						"label": "Countermeasure",
@@ -132,7 +132,7 @@
 					},
 					"reaction": {
 						"label": "Reaction",
-						"description": "An ability with this trait can be used outside of your turn.\nTypically has a trigger."
+						"description": "An ability with this trait can be used outside of your turn. Typically has a trigger."
 					},
 					"agnostic-vurs": {
 						"label": "Agnostic VURS",
@@ -216,7 +216,7 @@
 					},
 					"breaker": {
 						"label": "Breaker",
-						"description": "An ability with this trait can prevent harmful effects after it has occured.\nBreakers typically can be used even if you can't act."
+						"description": "An ability with this trait can prevent harmful effects after it has occured. Breakers typically can be used even if you can't act."
 					},
 					"countermeasure": {
 						"label": "Countermeasure",
@@ -439,6 +439,15 @@
 		}
 	],
 	"relationships": {
+		"requires": [
+			{
+				"id": "lib-wrapper",
+				"type": "module",
+				"compatibility": {
+					"minimum": "1.12.0.0"
+				}
+			}
+		],
 		"systems": [
 			{
 				"id": "pf2e",
@@ -453,10 +462,6 @@
 		]
 	},
 	"description": "",
-	"esmodules": [
-		"scripts/cooldown.js",
-		"scripts/systemSelection.js",
-		"scripts/changeSystem.js"
-	]
+	"esmodules": ["scripts/cooldown.js", "scripts/systemSelection.js", "scripts/changeSystem.js"]
 	
 }
