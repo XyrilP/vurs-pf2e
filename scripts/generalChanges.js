@@ -1,5 +1,16 @@
 import { installActorDamageActionContext, installDicelessPatches } from "./features/diceless.js";
-import { applyVursHitPoints } from "./features/modes/fullVurs.js";
+import { applyFullVursSkillAttributes, applyVursHitPoints } from "./features/modes/fullVurs.js";
+import { applyAgnosticVursSkillAttributes } from "./features/modes/agnosticVurs.js";
+import {
+  applyVursConsolidatedSkillAttributes,
+  applyVursStatisticSkillMirrors,
+  addVursExtendedSaveRows,
+  hideVursPerceptionSidebarSection,
+  relabelVursDexteritySkill,
+  linkVursStatisticSkillControls,
+  groupVursSkillsByAttribute,
+  nestVursConsolidatedSkills
+} from "./features/consolidatedSkills.js";
 import {
   actorHasAgnosticSystemFlag,
   actorHasDicelessFlag,
@@ -119,6 +130,12 @@ Hooks.on("renderApplicationV2", (app, element, context, options) => {
     reorderCharacterSheetAttributes(root, actor);
     applyActorAbilityLabels(root, actor);
     applyMainAttributeStar(root, actor);
+    addVursExtendedSaveRows(root, actor);
+    hideVursPerceptionSidebarSection(root, actor);
+    relabelVursDexteritySkill(root, actor);
+    linkVursStatisticSkillControls(root, actor);
+    nestVursConsolidatedSkills(root, actor);
+    groupVursSkillsByAttribute(root, actor);
   });
 });
 Hooks.on("renderActorSheet", (app, html) => {
@@ -169,6 +186,12 @@ function applyActorSheetPresentation(app, element) {
   reorderCharacterSheetAttributes(root, actor);
   applyActorAbilityLabels(root, actor);
   applyMainAttributeStar(root, actor);
+  addVursExtendedSaveRows(root, actor);
+  hideVursPerceptionSidebarSection(root, actor);
+  relabelVursDexteritySkill(root, actor);
+  linkVursStatisticSkillControls(root, actor);
+  nestVursConsolidatedSkills(root, actor);
+  groupVursSkillsByAttribute(root, actor);
 }
 
 function allowNegativeHpEntry(root, actor) {
@@ -514,18 +537,21 @@ function applySystemMode(mode = getSystemMode()) {
 function applyActorAbilityLabels(element, actor) {
   const root = element instanceof HTMLElement ? element : element?.[0];
   if (!root || !actor?.isOfType?.("character") ||
-    (!actorHasVursSystemFlag(actor) && !actorHasAgnosticSystemFlag(actor)) || isFullVursMode()) return;
+    (!actorHasVursSystemFlag(actor) && !actorHasAgnosticSystemFlag(actor))) return;
 
   const replacements = new Map();
   const shortLabels = { str: "Str", dex: "Agi", con: "Wea", int: "Int", wis: "Spi", cha: "Voi" };
+  const standardLabels = { str: "Strength", dex: "Dexterity", con: "Constitution", int: "Intelligence", wis: "Wisdom", cha: "Charisma" };
   for (const [ability, vursLabel] of Object.entries(VURS_ABILITY_LABELS)) {
     const original = game.i18n.localize(`PF2E.Ability${ability[0].toUpperCase()}${ability.slice(1)}`);
     const current = original && original !== `PF2E.Ability${ability[0].toUpperCase()}${ability.slice(1)}`
       ? original
-      : ({ str: "Strength", dex: "Dexterity", con: "Constitution", int: "Intelligence", wis: "Wisdom", cha: "Charisma" })[ability];
+      : standardLabels[ability];
     replacements.set(current, vursLabel);
+    replacements.set(standardLabels[ability], vursLabel);
     const shortOriginal = game.i18n.localize(`PF2E.AbilityId.${ability}`);
     replacements.set(shortOriginal && shortOriginal !== `PF2E.AbilityId.${ability}` ? shortOriginal : shortLabels[ability], shortLabels[ability]);
+    replacements.set(({ str: "Str", dex: "Dex", con: "Con", int: "Int", wis: "Wis", cha: "Cha" })[ability], shortLabels[ability]);
   }
 
   const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
@@ -534,14 +560,32 @@ function applyActorAbilityLabels(element, actor) {
   for (const node of textNodes) {
     const parentTag = node.parentElement?.tagName;
     if (["SCRIPT", "STYLE", "TEXTAREA", "INPUT"].includes(parentTag)) continue;
-    let text = node.nodeValue;
-    for (const [source, replacement] of replacements) {
-      if (!source) continue;
-      const escaped = source.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-      text = text.replace(new RegExp(`\\b${escaped}\\b`, "gi"), replacement);
-    }
+    const text = replaceAbilityLabelText(node.nodeValue, replacements);
     if (text !== node.nodeValue) node.nodeValue = text;
   }
+
+  // Skill modifier breakdowns are stored in tooltip attributes rather than
+  // text nodes, so translate those too (for example, a Deception breakdown
+  // that names Charisma as its key ability).
+  const tooltipAttributes = ["title", "aria-label", "data-tooltip"];
+  for (const element of [root, ...root.querySelectorAll("*")]) {
+    for (const attribute of tooltipAttributes) {
+      const value = element.getAttribute(attribute);
+      if (!value) continue;
+      const translated = replaceAbilityLabelText(value, replacements);
+      if (translated !== value) element.setAttribute(attribute, translated);
+    }
+  }
+}
+
+function replaceAbilityLabelText(text, replacements) {
+  let translated = text;
+  for (const [source, replacement] of replacements) {
+    if (!source) continue;
+    const escaped = source.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    translated = translated.replace(new RegExp(`\\b${escaped}\\b`, "gi"), replacement);
+  }
+  return translated;
 }
 
 function getCanvasActors() {
@@ -695,7 +739,7 @@ function registerVursCharacterPreparationWrappers(actorClass = CONFIG.PF2E?.Acto
       return result;
     },
     prepareSaves: function (wrapped, ...args) {
-      if (actorUsesVursSystem(this) && !actorUsesAgnosticVurs(this) && this.system?.saves) {
+      if (actorUsesVursSystem(this) && this.system?.saves) {
         if (this.system.saves.fortitude) this.system.saves.fortitude.attribute = "str";
         if (this.system.saves.will) this.system.saves.will.attribute = "int";
       }
@@ -705,7 +749,7 @@ function registerVursCharacterPreparationWrappers(actorClass = CONFIG.PF2E?.Acto
       if (actorUsesVursSystem(this)) addSavingThrowRuleSupport(this, ["perception"]);
       const perceptionRank = this.system?.perception?.rank;
       const result = wrapped(...args);
-      if (actorUsesVursSystem(this) && !actorUsesAgnosticVurs(this) && this.perception) {
+      if (actorUsesVursSystem(this) && this.perception) {
         const current = this.perception;
         const data = foundry.utils.deepClone(current.data);
         data.attribute = "cha";
@@ -728,6 +772,13 @@ function registerVursCharacterPreparationWrappers(actorClass = CONFIG.PF2E?.Acto
       return result;
     },
     prepareSkills: function (wrapped, ...args) {
+      if (this.isOfType?.("character")) {
+        const usesVurs = actorUsesVursSystem(this);
+        if (usesVurs) applyFullVursSkillAttributes(this);
+        if (actorUsesAgnosticVurs(this)) applyAgnosticVursSkillAttributes(this);
+        const dexteritySkill = this.system?.skills?.["dexterity-skill"];
+        if (dexteritySkill) dexteritySkill.label = usesVurs ? "Dexterity" : "Agility";
+      }
       if (actorUsesVursSystem(this)) addSavingThrowRuleSupport(this, ["acquisition", "soul"]);
       const result = wrapped(...args);
       if (actorUsesVursSystem(this)) {
@@ -780,11 +831,13 @@ function registerVursCharacterPreparationWrappers(actorClass = CONFIG.PF2E?.Acto
           this,
           getVursMaxHpReduction(this),
           VURS_ABILITY_LABELS.str,
-          !actorUsesAgnosticVurs(this)
+          true
         );
         if (!isFullVursMode() &&
           (actorHasVursSystemFlag(this) || actorHasAgnosticSystemFlag(this))) applyActorAbilityDataLabels(this);
       }
+      applyVursConsolidatedSkillAttributes(this);
+      applyVursStatisticSkillMirrors(this);
       return result;
     },
     _preUpdate: function (wrapped, changed, options, user, ...args) {

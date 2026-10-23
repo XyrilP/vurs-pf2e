@@ -1,0 +1,43 @@
+.actor.sheet.character .tab.proficiencies ul.proficiencies-list > li.vurs-consolidated-parent {
+  align-items: stretch !important;
+  display: flex !important;
+  flex-direction: column !important;
+  grid-column: auto !important;
+  padding: var(--space-4);
+}
+
+.actor.sheet.character .tab.proficiencies .vurs-skill-parent-row {
+  align-items: center;
+  display: flex;
+  min-height: 2.25rem;
+  width: 100%;
+}
+
+.actor.sheet.character .tab.proficiencies ul.vurs-consolidated-subskills {
+  border-left: 1px solid var(--color-border-light-tertiary);
+  display: flex !important;
+  flex-direction: column;
+  gap: 0;
+  list-style: none;
+  margin: 0 0 var(--space-4) var(--space-16);
+  padding: 0 0 0 var(--space-8);
+}
+
+.actor.sheet.character .tab.proficiencies ul.vurs-consolidated-subskills > li {
+  align-items: center;
+  background: transparent;
+  border: 0 !important;
+  border-image: none !important;
+  box-shadow: none;
+  display: flex;
+  flex: 0 0 auto;
+  min-height: 1.75rem !important;
+  min-width: 0;
+  padding: 0 !important;
+  width: 100%;
+}
+
+.actor.sheet.character .tab.proficiencies .vurs-consolidated-subskills .name {
+  flex: 1;
+  font-size: var(--font-size-14);
+}

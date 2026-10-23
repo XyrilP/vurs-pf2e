@@ -5,6 +5,24 @@ export const FULL_VURS_MODE = Object.freeze({
   systemWideNegativeHp: true
 });
 
+const FULL_VURS_SKILL_ATTRIBUTES = Object.freeze({
+  crafting: "con",
+  deception: "dex",
+  diplomacy: "con",
+  intimidation: "str",
+  occultism: "cha",
+  performance: "int",
+  society: "con"
+});
+
+export function applyFullVursSkillAttributes(actor) {
+  const skills = actor?.system?.skills;
+  if (!skills) return;
+  for (const [slug, attribute] of Object.entries(FULL_VURS_SKILL_ATTRIBUTES)) {
+    if (skills[slug]) skills[slug].attribute = attribute;
+  }
+}
+
 /**
  * Replace PF2e's Constitution-based HP modifier with Strength for actors using
  * VURS. Always retarget the modifier, even when the current values are equal,

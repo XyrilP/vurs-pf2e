@@ -120,11 +120,10 @@ function installVursCheckRoll() {
   const checkApi = game.pf2e?.Check;
   if (!checkApi || typeof checkApi.roll !== "function" || checkApi.__vursCheckRollInstalled) return;
 
-  const originalRoll = checkApi.roll;
-  checkApi.roll = async function (check, options = {}, event = null, callback) {
+  const wrapper = async function (wrapped, check, options = {}, event = null, callback) {
     const actor = getCheckActor(check, options);
     const actorDiceless = actorHasDicelessFlag(actor);
-    if (!actorUsesDicelessRolls(actor)) return originalRoll.call(this, check, options, event, callback);
+    if (!actorUsesDicelessRolls(actor)) return wrapped(check, options, event, callback);
 
     const context = { ...options, vursBuildupEnabled: true };
     const state = { buildup: 0, context, actor, actorDiceless };
@@ -142,13 +141,22 @@ function installVursCheckRoll() {
     // stays at 0 and the check still uses a fixed VURS base of 8.
     activeVursCheckRolls.push(state);
     try {
-      return await originalRoll.call(this, check, context, event, callback);
+      return await wrapped(check, context, event, callback);
     } finally {
       const index = activeVursCheckRolls.lastIndexOf(state);
       if (index >= 0) activeVursCheckRolls.splice(index, 1);
     }
   };
-  Object.defineProperty(checkApi, "__vursCheckRollInstalled", { value: true });
+  if (typeof globalThis.libWrapper?.register !== "function") {
+    console.warn(`${MODULE_ID} | libWrapper is unavailable; skipping the VURS Check.roll wrapper`);
+    return;
+  }
+  try {
+    globalThis.libWrapper.register(MODULE_ID, "game.pf2e.Check.roll", wrapper, "WRAPPER");
+    Object.defineProperty(checkApi, "__vursCheckRollInstalled", { value: true });
+  } catch (error) {
+    console.error(`${MODULE_ID} | Failed to register libWrapper for game.pf2e.Check.roll`, error);
+  }
 }
 
 Hooks.on("renderCheckModifiersDialog", (app, html) => {

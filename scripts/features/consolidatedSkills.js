@@ -1,0 +1,697 @@
+import { actorUsesAgnosticVurs, actorUsesVursSystem, getSystemMode } from "./systemModes.js";
+
+const CONSOLIDATED_SKILLS = Object.freeze({
+  acrobatics: "mobility",
+  computers: "crafting",
+  stealth: "deception",
+  medicine: "survival",
+  piloting: "mobility",
+  thievery: "crafting"
+});
+const MIRRORED_STATISTIC_SKILLS = Object.freeze({
+  "fortitude-skill": { statistic: "fortitude", type: "save" },
+  "reflex-skill": { statistic: "reflex", type: "save" },
+  "will-skill": { statistic: "will", type: "save" },
+  "perception-skill": { statistic: "perception", type: "perception" }
+});
+const SKILL_ATTRIBUTE_GROUPS = Object.freeze([
+  { attribute: "str", label: "Strength", color: "#e74c3c" },
+  { attribute: "dex", label: "Agility", color: "#2ecc71" },
+  { attribute: "con", label: "Wealth", color: "#f1c40f" },
+  { attribute: "int", label: "Intelligence", color: "#3498db" },
+  { attribute: "cha", label: "Void", color: "#9b59b6" },
+  { attribute: "wis", label: "Spirit", color: "#00bcd4" }
+]);
+const DEFAULT_SKILL_ATTRIBUTE_GROUPS = Object.freeze([
+  { attribute: "str", label: "Strength", color: "#e74c3c" },
+  { attribute: "dex", label: "Dexterity", color: "#2ecc71" },
+  { attribute: "con", label: "Constitution", color: "#f39c12" },
+  { attribute: "int", label: "Intelligence", color: "#3498db" },
+  { attribute: "wis", label: "Wisdom", color: "#00bcd4" },
+  { attribute: "cha", label: "Charisma", color: "#9b59b6" }
+]);
+const DEFAULT_SKILL_GROUPING_SETTING = "groupSkillsByAttributeInDefault";
+const DEFAULT_VURS_SKILLS_SETTING = "includeVursSkillsInDefault";
+const DEFAULT_SAVE_SKILLS_SETTING = "addSaveSkillsInDefault";
+const VURS_HOMEBREW_SKILL_SLUGS = Object.freeze([
+  "power",
+  "dexterity-skill",
+  "mobility",
+  "acquisition",
+  "strategy",
+  "coolness",
+  "romance",
+  "soul",
+  "fortitude-skill",
+  "reflex-skill",
+  "will-skill",
+  "perception-skill"
+]);
+const SAVE_SKILL_SLUGS = new Set(Object.keys(MIRRORED_STATISTIC_SKILLS));
+const SKILL_ATTRIBUTE_ALIASES = Object.freeze({
+  strength: "str",
+  agility: "dex",
+  dexterity: "dex",
+  wealth: "con",
+  constitution: "con",
+  intelligence: "int",
+  void: "cha",
+  charisma: "cha",
+  spirit: "wis",
+  wisdom: "wis"
+});
+const CONSOLIDATED_SKILLS_STYLE_ID = "vurs-pf2e-consolidated-skills-style";
+const SKILL_ICONS = Object.freeze({
+  athletics: "play",
+  "fortitude-skill": "shield",
+  fortitude: "shield",
+  intimidation: "user-group",
+  power: "hand-fist",
+  deception: "user-group",
+  stealth: "play",
+  "dexterity-skill": "hand-fist",
+  agility: "hand-fist",
+  mobility: "play",
+  acrobatics: "play",
+  piloting: "play",
+  "reflex-skill": "shield",
+  reflex: "shield",
+  acquisition: "shield",
+  crafting: "brain",
+  computer: "brain",
+  computers: "brain",
+  thievery: "play",
+  diplomacy: "user-group",
+  society: "user-group",
+  arcana: "wand-magic-sparkles",
+  performance: "user-group",
+  strategy: "play",
+  "will-skill": "shield",
+  will: "shield",
+  coolness: "play",
+  occultism: "wand-magic-sparkles",
+  "perception-skill": "shield",
+  perception: "shield",
+  romance: "user-group",
+  nature: "wand-magic-sparkles",
+  religion: "wand-magic-sparkles",
+  soul: "shield",
+  survival: "brain",
+  medicine: "brain"
+});
+const SKILL_ATTRIBUTE_FALLBACK_ICONS = Object.freeze({
+  str: { icon: "hand-back-fist" },
+  dex: { icon: "socks" },
+  con: { icon: "coins" },
+  int: { icon: "certificate" },
+  cha: { icon: "snowflake" },
+  wis: { icon: "ghost" }
+});
+const DEFAULT_SKILL_ATTRIBUTE_ICONS = Object.freeze({
+  ...SKILL_ATTRIBUTE_FALLBACK_ICONS,
+  con: { icon: "heart" },
+  wis: { icon: "eye" },
+  cha: { icon: "music" }
+});
+const PF2E_ELEGANT_SKILL_FRAME = `<svg xmlns="http://www.w3.org/2000/svg" width="33" height="33" overflow="scroll"><style>.st1{stroke:#231f20;stroke-miterlimit:10}.st1,.st2{fill:none}</style><g opacity=".25"><path class="st1" d="M.5 20v-7"/><path class="st2" d="M13 20v-7"/><path class="st1" d="M13 .5h7"/><path class="st2" d="M13 13h7"/><path class="st1" d="M32.5 13v7"/><path class="st2" d="M20 13v7"/><path class="st1" d="M20 32.5h-7"/><path class="st2" d="M20 20h-7"/><g><path class="st1" d="M.5.5h3.1v3.1H.5zM3.6 3.6h3.1v3.1H3.6zM6.8 3.6h3.1v3.1H6.8zM3.6 6.8h3.1v3.1H3.6zM3.6 6.8H.5V13M13 .5H6.8v3.1"/></g><g><path class="st1" d="M29.4.5h3.1v3.1h-3.1zM26.3 3.6h3.1v3.1h-3.1zM26.3 6.8h3.1v3.1h-3.1zM23.1 3.6h3.1v3.1h-3.1zM26.3 3.6V.5H20"/><path class="st1" d="M32.5 13V6.8h-3.1"/></g><g><path class="st1" d="M29.4 29.4h3.1v3.1h-3.1z"/><path class="st1" d="M26.3 26.3h3.1v3.1h-3.1zM23.1 26.3h3.1v3.1h-3.1zM26.3 23.1h3.1v3.1h-3.1zM29.4 26.3h3.1V20M20 32.5h6.3v-3.1"/></g><g><path class="st1" d="M.5 29.4h3.1v3.1H.5zM3.6 26.3h3.1v3.1H3.6zM3.6 23.1h3.1v3.1H3.6zM6.8 26.3h3.1v3.1H6.8z"/><path class="st1" d="M6.8 29.4v3.1H13M.5 20v6.3h3.1"/></g></g></svg>`;
+
+function skillFrameDataUrl(color) {
+  const tintedFrame = PF2E_ELEGANT_SKILL_FRAME
+    .replaceAll("#231f20", color)
+    .replace('opacity=".25"', 'opacity=".7"');
+  return `url("data:image/svg+xml,${encodeURIComponent(tintedFrame)}")`;
+}
+
+export function applyVursStatisticSkillMirrors(actor) {
+  if (!actor?.isOfType?.("character") || !shouldMirrorSaveSkills(actor)) return;
+
+  for (const [skillSlug, { statistic: statisticSlug, type }] of Object.entries(MIRRORED_STATISTIC_SKILLS)) {
+    const statistic = type === "save" ? actor.saves?.[statisticSlug] : actor.perception;
+    const skillData = actor.system?.skills?.[skillSlug];
+    if (!statistic || !skillData || !actor.skills) continue;
+
+    Object.assign(skillData, statistic.getTraceData(), {
+      slug: skillSlug,
+      label: CONFIG.PF2E.skills?.[skillSlug]?.label ?? skillData.label,
+      attribute: statistic.attribute,
+      rank: statistic.rank,
+      lore: false
+    });
+    actor.skills[skillSlug] = statistic;
+
+    if (actor.rollOptions?.all) {
+      for (let rank = 0; rank <= 4; rank++) delete actor.rollOptions.all[`skill:${skillSlug}:rank:${rank}`];
+      actor.rollOptions.all[`skill:${skillSlug}:rank:${statistic.rank}`] = true;
+    }
+  }
+}
+
+export function linkVursStatisticSkillControls(root, actor) {
+  if (!(root instanceof HTMLElement) || !actor?.isOfType?.("character") || !shouldMirrorSaveSkills(actor)) return;
+
+  for (const [skillSlug, { statistic: statisticSlug, type }] of Object.entries(MIRRORED_STATISTIC_SKILLS)) {
+    const skillRow = root.querySelector(`.tab.proficiencies li[data-statistic="${skillSlug}"]`);
+    const selector = skillRow?.querySelector("select.skill-proficiency");
+    if (!selector) continue;
+
+    const property = type === "save"
+      ? `system.saves.${statisticSlug}.rank`
+      : "system.perception.rank";
+    selector.setAttribute("data-property", property);
+    selector.setAttribute("data-rank", String(type === "save"
+      ? actor.system.saves?.[statisticSlug]?.rank ?? 0
+      : actor.system.perception?.rank ?? 0));
+    selector.setAttribute("aria-label", `${CONFIG.PF2E.skills?.[skillSlug]?.label ?? skillSlug} proficiency (mirrors ${statisticSlug})`);
+  }
+}
+
+function shouldMirrorSaveSkills(actor) {
+  return actorUsesVursSystem(actor) || (
+    getSystemMode() === "default" &&
+    game.settings.get("vurs-pf2e", DEFAULT_SAVE_SKILLS_SETTING) === true
+  );
+}
+
+export function addVursExtendedSaveRows(root, actor) {
+  if (!(root instanceof HTMLElement) || !actor?.isOfType?.("character") || !actorUsesVursSystem(actor)) return;
+
+  const list = root.querySelector("ul.saves");
+  const template = list?.querySelector(":scope > li.roll-data[data-save]");
+  if (!list || !template) return;
+  list.style.display = "grid";
+  list.style.gridTemplateColumns = "repeat(3, minmax(0, 1fr))";
+
+  const rows = [
+    { slug: "perception", statistic: actor.perception },
+    { slug: "acquisition", statistic: actor.skills?.acquisition },
+    { slug: "soul", statistic: actor.skills?.soul }
+  ];
+  for (const { slug, statistic } of rows) {
+    if (!statistic) continue;
+
+    let row = list.querySelector(`:scope > li[data-vurs-extended-save="${slug}"]`);
+    if (!row) {
+      row = template.cloneNode(true);
+      row.dataset.vursExtendedSave = slug;
+      row.querySelectorAll(".modifiers-tooltip").forEach(tooltip => tooltip.remove());
+      list.append(row);
+    }
+
+    const label = CONFIG.PF2E.skills?.[slug]?.label ?? statistic.label ?? slug;
+    const localizedLabel = game.i18n.localize(label);
+    row.dataset.save = slug;
+    row.querySelector(".sidebar_label").textContent = localizedLabel;
+
+    const rank = Number(statistic.rank) || 0;
+    const rankElement = row.querySelector(".pf-rank");
+    rankElement.dataset.rank = String(rank);
+    rankElement.textContent = game.i18n.localize(`PF2E.ProficiencyLevel${rank}`);
+
+    const roll = row.querySelector('[data-action="roll-check"]');
+    roll.dataset.statistic = slug;
+    roll.removeAttribute("data-save");
+
+    const modifier = row.querySelector(".save-roll .modifier");
+    const value = Number(statistic.totalModifier ?? statistic.mod ?? statistic.check?.mod ?? 0);
+    modifier.textContent = `${value >= 0 ? "+" : ""}${Math.trunc(value)}`;
+    modifier.setAttribute("data-tooltip-content", `#${root.id}-${slug}-modifiers`);
+  }
+
+  const order = ["fortitude", "reflex", "acquisition", "will", "perception", "soul"];
+  for (const slug of order) {
+    const row = list.querySelector(`:scope > li[data-save="${slug}"]`);
+    if (row) list.append(row);
+  }
+  [...list.children].forEach((row, index) => {
+    row.style.minWidth = "0";
+    if (index % 3 === 0) row.style.borderLeft = "none";
+  });
+}
+
+export function hideVursPerceptionSidebarSection(root, actor) {
+  if (!(root instanceof HTMLElement) || !actor?.isOfType?.("character")) return;
+
+  const section = root.querySelector(".sidebar section.perception");
+  const header = section?.previousElementSibling;
+  if (!section || header?.tagName !== "HEADER") return;
+
+  const shouldHide = actorUsesVursSystem(actor);
+  for (const element of [header, section]) {
+    if (shouldHide) {
+      element.hidden = true;
+      element.dataset.vursHiddenPerception = "true";
+    } else if (element.dataset.vursHiddenPerception === "true") {
+      element.hidden = false;
+      delete element.dataset.vursHiddenPerception;
+    }
+  }
+}
+
+export function relabelVursDexteritySkill(root, actor) {
+  if (!(root instanceof HTMLElement) || !actor?.isOfType?.("character")) return;
+
+  const labelText = actorUsesVursSystem(actor) ? "Dexterity" : "Agility";
+  for (const label of root.querySelectorAll('.tab.proficiencies li[data-statistic="dexterity-skill"] .name')) {
+    if (label.textContent.trim() !== labelText) label.textContent = labelText;
+  }
+}
+
+export function groupVursSkillsByAttribute(root, actor) {
+  if (!(root instanceof HTMLElement) || !actor?.isOfType?.("character")) return;
+
+  const list = root.querySelector('.tab.proficiencies ul.proficiencies-list:not(.lores-list)');
+  if (!list) return;
+  ensureConsolidatedSkillStyles();
+
+  // Unwrap prior groups first so sheet rerenders and mode changes remain idempotent.
+  for (const group of list.querySelectorAll(":scope > li.vurs-skill-attribute-group")) {
+    const innerList = group.querySelector(":scope > ul.vurs-skill-attribute-group-list");
+    for (const row of [...(innerList?.children ?? [])]) list.append(row);
+    group.remove();
+  }
+  const showAllVursSkills = actorUsesVursSystem(actor) || (
+    getSystemMode() === "default" &&
+    game.settings.get("vurs-pf2e", DEFAULT_VURS_SKILLS_SETTING) === true
+  );
+  const showSaveSkills = getSystemMode() === "default" &&
+    game.settings.get("vurs-pf2e", DEFAULT_SAVE_SKILLS_SETTING) === true;
+  for (const row of list.querySelectorAll(":scope > li[data-statistic]")) {
+    if (!VURS_HOMEBREW_SKILL_SLUGS.includes(row.dataset.statistic)) continue;
+    row.hidden = !showAllVursSkills && !(showSaveSkills && SAVE_SKILL_SLUGS.has(row.dataset.statistic));
+  }
+
+  const usesVurs = actorUsesVursSystem(actor);
+  const isDefaultGrouping = !usesVurs && (
+    getSystemMode() === "default" &&
+    game.settings.get("vurs-pf2e", DEFAULT_SKILL_GROUPING_SETTING) === true
+  );
+  const shouldGroup = usesVurs || isDefaultGrouping;
+  const attributeGroups = isDefaultGrouping ? DEFAULT_SKILL_ATTRIBUTE_GROUPS : SKILL_ATTRIBUTE_GROUPS;
+  const attributeIcons = isDefaultGrouping ? DEFAULT_SKILL_ATTRIBUTE_ICONS : SKILL_ATTRIBUTE_FALLBACK_ICONS;
+  list.classList.toggle("vurs-attribute-group-layout", shouldGroup);
+  if (!shouldGroup) {
+    disableSkillNameHoverScroll(list);
+    return;
+  }
+
+  const rowsByAttribute = new Map(attributeGroups.map(({ attribute }) => [attribute, []]));
+  const ungroupedRows = [];
+  for (const row of [...list.querySelectorAll(":scope > li[data-statistic]")]) {
+    const slug = row.dataset.statistic;
+    // Prepared system data is authoritative here: VURS can reassign a skill's
+    // attribute while the original Statistic instance still holds its PF2e one.
+    const rawAttribute = actor.system?.skills?.[slug]?.attribute ??
+      actor.skills?.[slug]?.attribute ??
+      CONFIG.PF2E.skills?.[slug]?.attribute;
+    const attribute = SKILL_ATTRIBUTE_ALIASES[rawAttribute] ?? rawAttribute;
+    if (attribute) row.dataset.vursSkillAttribute = attribute;
+    if (rowsByAttribute.has(attribute)) rowsByAttribute.get(attribute).push(row);
+    else ungroupedRows.push(row);
+  }
+
+  for (const row of ungroupedRows) list.append(row);
+  for (const { attribute, label, color } of attributeGroups) {
+    const rows = rowsByAttribute.get(attribute);
+    if (!rows?.length) continue;
+
+    const group = document.createElement("li");
+    group.className = "vurs-skill-attribute-group";
+    group.dataset.attribute = attribute;
+    group.style.setProperty("--vurs-skill-attribute-color", color);
+    group.style.setProperty("--vurs-skill-attribute-frame", skillFrameDataUrl(color));
+    const heading = document.createElement("h3");
+    heading.className = "vurs-skill-attribute-group-title";
+    const attributeIcon = attributeIcons[attribute];
+    if (attributeIcon) {
+      const icon = document.createElement("i");
+      icon.className = `fa-solid fa-${attributeIcon.icon} vurs-skill-attribute-header-icon`;
+      icon.setAttribute("aria-hidden", "true");
+      heading.append(icon, document.createTextNode(label));
+    } else {
+      heading.textContent = label;
+    }
+    const innerList = document.createElement("ul");
+    innerList.className = "vurs-skill-attribute-group-list";
+    for (const row of rows) innerList.append(row);
+    group.append(heading, innerList);
+    list.append(group);
+  }
+  applyVursSkillIcons(list, attributeIcons);
+  enableSkillNameHoverScroll(list);
+}
+
+function applyVursSkillIcons(list, attributeIcons = SKILL_ATTRIBUTE_FALLBACK_ICONS) {
+  for (const row of list.querySelectorAll("li[data-statistic]")) {
+    const slug = row.dataset.statistic;
+    const explicitIcon = SKILL_ICONS[slug];
+    const attribute = row.dataset.vursSkillAttribute ?? row.closest(".vurs-skill-attribute-group")?.dataset.attribute;
+    const fallback = attributeIcons[attribute];
+    const icon = explicitIcon ?? fallback?.icon;
+    const name = row.querySelector(":scope > .name, :scope > .vurs-skill-parent-row > .name");
+    const roll = row.querySelector(":scope > a.d20, :scope > .vurs-skill-parent-row > a.d20");
+    if (!name || !roll) continue;
+    name.querySelector(":scope > .vurs-skill-name-icon")?.remove();
+    const existing = roll.querySelector(":scope > .vurs-skill-roll-icon");
+    if (!icon) {
+      existing?.remove();
+      continue;
+    }
+    if (existing?.classList.contains(`fa-${icon}`) && !existing.classList.contains("vurs-skill-icon-hollow")) continue;
+    existing?.remove();
+    const iconElement = document.createElement("i");
+    iconElement.className = `fa-solid fa-${icon} vurs-skill-roll-icon`;
+    iconElement.setAttribute("aria-hidden", "true");
+    roll.append(iconElement);
+  }
+}
+
+function enableSkillNameHoverScroll(list) {
+  for (const name of list.querySelectorAll(".vurs-skill-attribute-group-list .name")) {
+    let text = name.querySelector(":scope > .vurs-skill-name-text");
+    if (!text) {
+      text = document.createElement("span");
+      text.className = "vurs-skill-name-text";
+      text.append(...[...name.childNodes].filter(node => !node.matches?.(".vurs-skill-name-icon")));
+      name.append(text);
+    }
+  }
+
+  if (list._vursSkillNameHoverScrollHandlers) return;
+  const onPointerOver = event => {
+    if (!(event.target instanceof Element)) return;
+    const name = event.target.closest(".vurs-skill-attribute-group-list .name");
+    if (!name || !list.contains(name) || name.classList.contains("vurs-skill-name-scrolling")) return;
+    const text = name.querySelector(":scope > .vurs-skill-name-text");
+    if (!text?.textContent?.trim()) return;
+
+    // Measure the full label in its rendered font, regardless of which skill
+    // or attribute group it belongs to.
+    const computed = getComputedStyle(name);
+    const measure = document.createElement("span");
+    Object.assign(measure.style, {
+      fontFamily: computed.fontFamily,
+      fontSize: computed.fontSize,
+      fontStyle: computed.fontStyle,
+      fontWeight: computed.fontWeight,
+      letterSpacing: computed.letterSpacing,
+      position: "fixed",
+      textTransform: computed.textTransform,
+      visibility: "hidden",
+      whiteSpace: "nowrap",
+      width: "max-content"
+    });
+    measure.textContent = text.textContent;
+    document.body.append(measure);
+    const overflow = measure.getBoundingClientRect().width - name.clientWidth;
+    measure.remove();
+    if (overflow <= 1) return;
+
+    name.style.setProperty("--vurs-skill-name-offset", `${-overflow}px`);
+    name.style.setProperty("--vurs-skill-name-duration", `${Math.max(2, overflow / 30)}s`);
+    name.classList.add("vurs-skill-name-scrolling");
+  };
+  const onPointerOut = event => {
+    if (!(event.target instanceof Element)) return;
+    const name = event.target.closest(".vurs-skill-attribute-group-list .name");
+    if (!name || name.contains(event.relatedTarget)) return;
+    name.classList.remove("vurs-skill-name-scrolling");
+    name.style.removeProperty("--vurs-skill-name-offset");
+    name.style.removeProperty("--vurs-skill-name-duration");
+  };
+  list._vursSkillNameHoverScrollHandlers = { onPointerOver, onPointerOut };
+  list.addEventListener("pointerover", onPointerOver);
+  list.addEventListener("pointerout", onPointerOut);
+}
+
+function disableSkillNameHoverScroll(list) {
+  const handlers = list._vursSkillNameHoverScrollHandlers;
+  if (handlers) {
+    list.removeEventListener("pointerover", handlers.onPointerOver);
+    list.removeEventListener("pointerout", handlers.onPointerOut);
+    delete list._vursSkillNameHoverScrollHandlers;
+  }
+  for (const name of list.querySelectorAll(".name")) {
+    name.classList.remove("vurs-skill-name-scrolling");
+    name.style.removeProperty("--vurs-skill-name-offset");
+    name.style.removeProperty("--vurs-skill-name-duration");
+    const text = name.querySelector(":scope > .vurs-skill-name-text");
+    if (text) {
+      name.append(...text.childNodes);
+      text.remove();
+    }
+    const row = name.closest("li[data-statistic]");
+    row?.querySelector(":scope > a.d20, :scope > .vurs-skill-parent-row > a.d20")
+      ?.querySelector(":scope > .vurs-skill-roll-icon")?.remove();
+  }
+  for (const row of list.querySelectorAll("li[data-statistic]")) delete row.dataset.vursSkillAttribute;
+}
+
+export function applyVursConsolidatedSkillAttributes(actor) {
+  if (!actor?.isOfType?.("character") || !actorUsesVursSystem(actor) || actorUsesAgnosticVurs(actor)) return;
+
+  for (const [childSlug, parentSlug] of Object.entries(CONSOLIDATED_SKILLS)) {
+    const child = actor.skills?.[childSlug];
+    const parent = actor.skills?.[parentSlug];
+    if (!child || !parent?.attribute || child.attribute === parent.attribute) continue;
+
+    const previousAttribute = child.attribute;
+    const data = foundry.utils.deepClone(child.data);
+    data.attribute = parent.attribute;
+    data.domains = (data.domains ?? []).filter(domain => domain !== `${previousAttribute}-based`);
+    data.modifiers = (data.modifiers ?? []).filter(modifier =>
+      modifier.type !== "ability" || modifier.ability === parent.attribute
+    );
+
+    const consolidated = new child.constructor(actor, data, child.config);
+    actor.skills[childSlug] = consolidated;
+    Object.assign(actor.system.skills[childSlug], consolidated.getTraceData(), {
+      attribute: parent.attribute,
+      rank: child.rank,
+      mod: consolidated.check.mod
+    });
+  }
+}
+
+export function nestVursConsolidatedSkills(root, actor) {
+  if (!(root instanceof HTMLElement) || !actor?.isOfType?.("character") ||
+    !actorUsesVursSystem(actor) || actorUsesAgnosticVurs(actor)) return;
+
+  const list = root.querySelector('.tab.proficiencies ul.proficiencies-list:not(.lores-list)');
+  if (!list) return;
+  ensureConsolidatedSkillStyles();
+
+  for (const [childSlug, parentSlug] of Object.entries(CONSOLIDATED_SKILLS)) {
+    const parentRow = list.querySelector(`:scope > li[data-statistic="${parentSlug}"]`);
+    const childRow = list.querySelector(`:scope > li[data-statistic="${childSlug}"]`) ??
+      root.querySelector(`.vurs-consolidated-subskills li[data-statistic="${childSlug}"]`);
+    if (!parentRow || !childRow || childRow.parentElement?.classList.contains("vurs-consolidated-subskills")) continue;
+
+    let inner = parentRow.querySelector(":scope > .vurs-skill-parent-row");
+    if (!inner) {
+      inner = document.createElement("div");
+      inner.className = "vurs-skill-parent-row";
+      for (const node of [...parentRow.childNodes]) inner.append(node);
+      parentRow.append(inner);
+      parentRow.classList.add("vurs-consolidated-parent");
+    }
+    const nested = document.createElement("ul");
+    nested.className = "vurs-consolidated-subskills";
+    nested.setAttribute("aria-label", `${parentRow.querySelector(".name")?.textContent?.trim() ?? parentSlug} subskills`);
+    const selector = childRow.querySelector("select.skill-proficiency");
+    if (selector) {
+      selector.disabled = false;
+      selector.removeAttribute("disabled");
+      selector.setAttribute("aria-label", `${childRow.querySelector(".name")?.textContent?.trim() ?? childSlug}; uses the higher rank of this skill and ${parentSlug}`);
+    }
+    nested.append(childRow);
+    parentRow.append(nested);
+  }
+}
+
+function ensureConsolidatedSkillStyles() {
+  const style = document.getElementById(CONSOLIDATED_SKILLS_STYLE_ID) ?? document.createElement("style");
+  style.id = CONSOLIDATED_SKILLS_STYLE_ID;
+  style.textContent = `
+    .actor.sheet.character .tab.proficiencies ul.proficiencies-list.vurs-attribute-group-layout {
+      align-items: stretch !important;
+      grid-template-columns: repeat(3, minmax(0, 1fr)) !important;
+    }
+    .actor.sheet.character .tab.proficiencies ul.proficiencies-list > li.vurs-consolidated-parent {
+      align-items: stretch !important;
+      display: flex !important;
+      flex-direction: column !important;
+      grid-column: auto !important;
+      padding: var(--space-4) !important;
+    }
+    .actor.sheet.character .tab.proficiencies .vurs-skill-parent-row {
+      align-items: center !important;
+      display: flex !important;
+      min-height: 2.25rem;
+      width: 100%;
+    }
+    .actor.sheet.character .tab.proficiencies ul.vurs-consolidated-subskills {
+      border-left: 1px dotted var(--color-border-light-tertiary);
+      display: flex !important;
+      flex-direction: column !important;
+      gap: var(--space-2);
+      list-style: none;
+      margin: 0 0 var(--space-2) var(--space-16);
+      padding: 0 0 0 var(--space-10);
+      width: auto;
+    }
+    .actor.sheet.character .tab.proficiencies ul.vurs-consolidated-subskills > li {
+      align-items: center !important;
+      background: transparent !important;
+      border: 0 !important;
+      border-image: none !important;
+      box-shadow: none !important;
+      display: flex !important;
+      flex: 0 0 auto;
+      min-height: 1.75rem !important;
+      min-width: 0;
+      padding: 0 !important;
+      position: relative;
+      width: 100%;
+    }
+    .actor.sheet.character .tab.proficiencies ul.vurs-consolidated-subskills > li::before {
+      border-top: 1px dotted var(--color-border-light-tertiary);
+      content: "";
+      left: calc(-1 * var(--space-10));
+      position: absolute;
+      top: 50%;
+      width: var(--space-10);
+    }
+    .actor.sheet.character .tab.proficiencies ul.proficiencies-list > li.vurs-skill-attribute-group {
+      align-self: stretch;
+      align-items: stretch !important;
+      border-image-repeat: repeat !important;
+      border-image-slice: 11 !important;
+      border-image-source: var(--vurs-skill-attribute-frame) !important;
+      border-image-width: 14px !important;
+      border-style: double !important;
+      box-sizing: border-box;
+      display: flex !important;
+      flex-direction: column !important;
+      grid-column: auto !important;
+      min-width: 0;
+      padding: var(--space-2) !important;
+    }
+    .actor.sheet.character .tab.proficiencies .vurs-skill-attribute-group-title {
+      align-items: center;
+      color: var(--vurs-skill-attribute-color);
+      display: flex;
+      font-size: var(--font-size-14);
+      font-family: var(--serif);
+      font-weight: 600;
+      gap: var(--space-2);
+      justify-content: center;
+      line-height: 1.1;
+      margin: 0 0 var(--space-2);
+      text-align: center;
+    }
+    .actor.sheet.character .tab.proficiencies .vurs-skill-attribute-header-icon {
+      font-size: 0.8em;
+    }
+    .actor.sheet.character .tab.proficiencies ul.vurs-skill-attribute-group-list {
+      align-items: stretch;
+      display: grid !important;
+      gap: var(--space-2);
+      grid-auto-rows: min-content;
+      grid-template-columns: minmax(0, 1fr);
+      list-style: none;
+      margin: 0;
+      min-width: 0;
+      padding: 0;
+      width: 100%;
+    }
+    .actor.sheet.character .tab.proficiencies ul.vurs-skill-attribute-group-list > li {
+      align-self: stretch;
+      align-items: center !important;
+      border: 0 !important;
+      border-image: none !important;
+      box-shadow: none !important;
+      box-sizing: border-box;
+      font-size: var(--font-size-14);
+      min-height: 1.8rem !important;
+      min-width: 0;
+      overflow: hidden;
+      padding: 0 var(--space-2) !important;
+      width: 100%;
+    }
+    .actor.sheet.character .tab.proficiencies ul.vurs-skill-attribute-group-list > li a.d20 {
+      flex: 0 0 1.25rem;
+      padding: var(--space-1);
+    }
+    .actor.sheet.character .tab.proficiencies ul.vurs-skill-attribute-group-list > li .modifier {
+      flex: 0 0 1.5rem;
+      margin-right: var(--space-1);
+      width: 1.5rem;
+    }
+    .actor.sheet.character .tab.proficiencies ul.vurs-skill-attribute-group-list > li .name {
+      flex: 1 1 auto;
+      min-width: 0;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    .actor.sheet.character .tab.proficiencies .vurs-skill-name-text {
+      display: inline-block;
+      max-width: 100%;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      vertical-align: bottom;
+      white-space: nowrap;
+    }
+    .actor.sheet.character .tab.proficiencies ul.vurs-skill-attribute-group-list > li a.d20 {
+      position: relative;
+    }
+    .actor.sheet.character .tab.proficiencies .vurs-skill-roll-icon {
+      color: var(--vurs-skill-attribute-color);
+      font-size: 0.65rem;
+      left: 50%;
+      pointer-events: none;
+      position: absolute;
+      text-shadow: 0 0 2px var(--color-shadow-dark), 0 0 3px var(--color-shadow-dark);
+      top: 50%;
+      transform: translate(-50%, -50%);
+      z-index: 1;
+    }
+    .actor.sheet.character .tab.proficiencies .vurs-skill-name-scrolling {
+      z-index: 1;
+    }
+    .actor.sheet.character .tab.proficiencies .vurs-skill-name-scrolling .vurs-skill-name-text {
+      animation: vurs-skill-name-scroll var(--vurs-skill-name-duration) linear 0.25s forwards;
+      max-width: none;
+      overflow: visible;
+      text-overflow: clip;
+    }
+    @keyframes vurs-skill-name-scroll {
+      to { transform: translateX(var(--vurs-skill-name-offset)); }
+    }
+    .actor.sheet.character .tab.proficiencies ul.vurs-skill-attribute-group-list > li select.pf-rank {
+      flex: 0 0 3.1rem;
+      font-size: 8px;
+      height: 1rem;
+      min-width: 0;
+      padding: 0 1px;
+      width: 3.1rem;
+    }
+    .actor.sheet.character .tab.proficiencies ul.vurs-skill-attribute-group-list > li.vurs-consolidated-parent {
+      align-items: stretch !important;
+      display: flex !important;
+      flex-direction: column !important;
+      grid-column: auto !important;
+      min-height: max-content;
+      padding: var(--space-4) !important;
+    }
+    .actor.sheet.character .tab.proficiencies .vurs-consolidated-subskills .name {
+      flex: 1;
+      font-size: var(--font-size-14);
+    }
+    .actor.sheet.character .tab.proficiencies .vurs-consolidated-subskills select.skill-proficiency {
+      display: inline-block !important;
+      visibility: visible !important;
+    }
+  `;
+  if (!style.isConnected) document.head.append(style);
+}

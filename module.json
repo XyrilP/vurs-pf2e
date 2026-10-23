@@ -3,7 +3,7 @@
 	"title": "Vionheart Universe Roleplaying System for Pf2E/Sf2E",
 	"manifest": "https://raw.githubusercontent.com/XyrilP/vurs-pf2e/refs/heads/main/module.json",
 	"download": "https://github.com/XyrilP/vurs-pf2e/archive/refs/heads/main.zip",
-	"version": "12.3",
+	"version": "13.1",
 	"compatibility": {
 		"minimum": "14",
 		"verified": "14",
@@ -26,7 +26,7 @@
 							"attribute": "str"
 						},
 						"dexterity-skill": {
-							"label": "Dexterity",
+							"label": "Agility",
 							"attribute": "dex"
 						},
 						"mobility": {
@@ -51,6 +51,22 @@
 						},
 						"soul": {
 							"label": "Soul",
+							"attribute": "wis"
+						},
+						"fortitude-skill": {
+							"label": "Fortitude",
+							"attribute": "con"
+						},
+						"reflex-skill": {
+							"label": "Reflex",
+							"attribute": "dex"
+						},
+						"will-skill": {
+							"label": "Will",
+							"attribute": "wis"
+						},
+						"perception-skill": {
+							"label": "Perception",
 							"attribute": "wis"
 						}
 					}
@@ -462,6 +478,9 @@
 		]
 	},
 	"description": "",
+	"styles": [
+		"styles/consolidatedSkills.css"
+	],
 	"esmodules": [
 		"scripts/cooldown.js",
 		"scripts/moduleSettings.js",
@@ -469,6 +488,7 @@
 		"scripts/features/modes/fullVurs.js",
 		"scripts/features/modes/agnosticVurs.js",
 		"scripts/features/systemModes.js",
+		"scripts/features/consolidatedSkills.js",
 		"scripts/features/diceless.js",
 		"scripts/generalChanges.js"
 	]
