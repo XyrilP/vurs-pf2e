@@ -622,12 +622,17 @@ function getCanvasActors() {
 }
 
 function refreshCanvasActors() {
-  const actors = new Set(getCanvasActors());
+  const tokens = globalThis.canvas?.tokens?.placeables ?? [];
+  const actors = new Set(tokens.map(token => token.actor).filter(Boolean));
   for (const actor of actors) {
     installActorKeyAttributeSupport(actor, false);
     actor.reset?.();
     actor.sheet?.render?.(false);
   }
+  // Derived VURS HP is applied during actor preparation. That preparation
+  // does not emit an actor update, so token bars can retain their pre-VURS
+  // maximum until each active token is explicitly refreshed.
+  for (const token of tokens) token.refresh?.();
 }
 
 function installKeyAttributeStrikes(reprepare = true) {

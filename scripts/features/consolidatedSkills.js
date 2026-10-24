@@ -878,13 +878,15 @@ function ensureConsolidatedSkillStyles() {
       padding: 0;
     }
     .actor.sheet.character .tab.proficiencies ul.vurs-skill-attribute-group-list > li .modifier {
-      flex: 0 0 1.1rem;
+      flex: 0 0 auto;
       font-size: var(--font-size-14);
-      margin-right: 1px;
-      width: 1.1rem;
+      margin-right: var(--space-2);
+      min-width: 1.1rem;
+      white-space: nowrap;
+      width: auto;
     }
     .actor.sheet.character .tab.proficiencies ul.vurs-skill-attribute-group-list > li .name {
-      flex: 1 1 auto;
+      flex: 1 1 0;
       font-size: var(--font-size-14);
       min-width: 0;
       overflow: hidden;
