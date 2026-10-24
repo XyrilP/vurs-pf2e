@@ -23,6 +23,10 @@
   padding: 0 0 0 var(--space-8);
 }
 
+.actor.sheet.character .tab.proficiencies ul.proficiencies-list.vurs-hide-nested-skills .vurs-consolidated-subskills {
+  display: none !important;
+}
+
 .actor.sheet.character .tab.proficiencies ul.vurs-consolidated-subskills > li {
   align-items: center;
   background: transparent;

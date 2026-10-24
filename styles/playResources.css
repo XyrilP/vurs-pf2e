@@ -1,0 +1,698 @@
+.actor.sheet.character .sidebar > .vurs-play-resources {
+  margin-block: var(--space-8);
+}
+
+.actor.sheet.character .sidebar > .vurs-play-resources > header {
+  align-items: center;
+  display: flex;
+  justify-content: space-between;
+  margin-bottom: var(--space-4);
+}
+
+.actor.sheet.character .sidebar > .vurs-play-resources > header .vurs-play-header-controls {
+  align-items: center;
+  display: flex;
+  gap: 2px;
+}
+
+.actor.sheet.character .sidebar > .vurs-play-resources > header .vurs-play-modifiers,
+.actor.sheet.character .sidebar > .vurs-play-resources > header .vurs-play-reset {
+  background: rgba(255, 255, 255, 0.75);
+  border-radius: 2px 2px 0 0;
+  border: none;
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.4);
+  color: var(--primary);
+  font: 600 var(--font-size-9) var(--sans-serif);
+  letter-spacing: 0.05em;
+  line-height: 1;
+  margin: 0;
+  padding: 2px 3px;
+  text-rendering: optimizeLegibility;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+
+.actor.sheet.character .sidebar > .vurs-play-resources > header h2 {
+  margin: 0;
+}
+
+.actor.sheet.character .sidebar > .vurs-play-resources > header .vurs-play-modifiers,
+.actor.sheet.character .sidebar > .vurs-play-resources > header .vurs-play-reset {
+  cursor: pointer;
+}
+
+.actor.sheet.character .sidebar > .vurs-play-resources > header .vurs-play-modifiers:hover,
+.actor.sheet.character .sidebar > .vurs-play-resources > header .vurs-play-reset:hover {
+  filter: brightness(1.15);
+}
+
+.actor.sheet.character .sidebar > .vurs-play-resources > ol {
+  display: grid;
+  gap: var(--space-2) var(--space-4);
+  grid-template-columns: repeat(10, minmax(0, 1fr));
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.actor.sheet.character .sidebar > .vurs-play-resources .vurs-play-resource {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  font-size: var(--font-size-12);
+  gap: 0 var(--space-4);
+  justify-content: space-between;
+  min-width: 0;
+}
+
+.actor.sheet.character .sidebar > .vurs-play-resources .vurs-play-resource .label {
+  flex: 1 1 auto;
+  font-size: inherit;
+  min-width: 0;
+}
+
+.actor.sheet.character .sidebar > .vurs-play-resources .vurs-play-resource .value {
+  flex: 0 0 auto;
+  font-size: inherit;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.actor.sheet.character .sidebar > .vurs-play-resources .vurs-play-resource:has(.vurs-play-resource-control) {
+  grid-column: span 2;
+  justify-content: center;
+}
+
+.actor.sheet.character .sidebar > .vurs-play-resources .vurs-play-resource-control {
+  align-items: center;
+  appearance: none;
+  aspect-ratio: 1;
+  background: none;
+  border: 0 !important;
+  box-shadow: none !important;
+  color: inherit;
+  cursor: pointer;
+  display: grid;
+  justify-items: center;
+  max-width: 1.6rem;
+  min-width: 0;
+  padding: 0;
+  position: relative;
+  outline: none !important;
+  width: 100%;
+}
+
+.actor.sheet.character .sidebar > .vurs-play-resources .vurs-play-resource-control::before,
+.actor.sheet.character .sidebar > .vurs-play-resources .vurs-play-resource-control::after {
+  content: none;
+  display: none;
+}
+
+.actor.sheet.character .sidebar > .vurs-play-resources .vurs-play-resource-edit {
+  appearance: textfield;
+  background: transparent;
+  border: 0;
+  box-shadow: none;
+  color: inherit;
+  font: inherit;
+  outline: none;
+  text-align: center;
+  min-width: 1ch;
+  padding-inline: 0;
+  width: auto;
+}
+
+.actor.sheet.character .sidebar > .vurs-play-resources .vurs-play-resource-control:hover {
+  filter: brightness(1.2);
+}
+
+.actor.sheet.character .vurs-style-rank-host {
+  position: relative;
+}
+
+.actor.sheet.character .vurs-style-rank-overlay {
+  align-items: center;
+  background: transparent;
+  border: 0 !important;
+  box-shadow: none !important;
+  display: flex;
+  flex-direction: column;
+  gap: 0.05rem;
+  outline: none !important;
+  pointer-events: none;
+  position: absolute;
+  right: 0.75rem;
+  top: 0.5rem;
+  transform: rotate(-8deg);
+  z-index: 5;
+}
+
+.actor.sheet.character .vurs-style-rank-overlay img {
+  background: transparent;
+  border: 0 !important;
+  box-shadow: none !important;
+  height: 2.4rem;
+  object-fit: contain;
+  outline: none !important;
+  width: 2.4rem;
+}
+
+.actor.sheet.character .vurs-style-rank-caption {
+  color: #f3d36a;
+  font-size: 0.68rem;
+  font-weight: 700;
+  line-height: 1;
+  text-align: center;
+  white-space: nowrap;
+}
+
+.actor.sheet.character .vurs-style-rank-overlay.rank-s .vurs-style-rank-caption {
+  color: #f3d36a;
+  -webkit-text-stroke: 0.6px #f3d36a;
+  paint-order: stroke fill;
+}
+
+.actor.sheet.character .sidebar > .vurs-play-resources .vurs-play-resource-control img {
+  background: transparent;
+  border: 0 !important;
+  box-shadow: none !important;
+  height: 100%;
+  object-fit: contain;
+  outline: none !important;
+  position: absolute;
+  width: 100%;
+}
+
+.actor.sheet.character .sidebar > .vurs-play-resources .vurs-play-resource-control .value {
+  background: transparent;
+  border-radius: 0;
+  font-size: inherit;
+  font-weight: 700;
+  padding: 0.1rem 0.2rem;
+  position: relative;
+  text-shadow: 0 1px 2px #000;
+  z-index: 1;
+}
+
+.actor.sheet.character .sidebar > .vurs-play-resources [data-resource="budgetPoints"],
+.actor.sheet.character .sidebar > .vurs-play-resources [data-resource="magicPoints"] {
+  grid-column: span 5;
+}
+
+.actor.sheet.character .sidebar > .vurs-play-resources [data-resource="budgetPoints"] {
+  display: block;
+}
+
+.actor.sheet.character .sidebar > .vurs-play-resources .vurs-play-resource-frame {
+  align-items: center;
+  border: 14px double transparent;
+  border-image: var(--vurs-resource-frame) 11 / 14px repeat;
+  box-sizing: border-box;
+  display: grid;
+  gap: 0.06rem;
+  grid-template-columns: minmax(0, 1fr);
+  grid-template-rows: min-content 0.72rem min-content;
+  height: auto;
+  justify-items: center;
+  min-height: 0;
+  padding: 1px 3px;
+  width: 100%;
+}
+
+.actor.sheet.character .sidebar > .vurs-play-resources .vurs-play-resource-frame > .label {
+  font-size: inherit;
+  line-height: 1;
+  margin: 0;
+  text-align: center;
+}
+
+.actor.sheet.character .sidebar > .vurs-play-resources .vurs-budget-points-bar {
+  border: 0;
+  height: 0.72rem;
+  margin: 0;
+  min-height: 0.72rem;
+  padding: 0;
+  width: 100%;
+}
+
+.actor.sheet.character .sidebar > .vurs-play-resources .vurs-budget-coin-stacks {
+  align-items: center;
+  display: flex;
+  gap: 0;
+  inset: 0;
+  justify-content: space-evenly;
+  pointer-events: none;
+  position: absolute;
+}
+
+.actor.sheet.character .sidebar > .vurs-play-resources .vurs-budget-coin-stack {
+  height: 1.05rem;
+  position: relative;
+  width: 0.55rem;
+}
+
+.actor.sheet.character .sidebar > .vurs-play-resources .vurs-budget-coin-stack .coin {
+  bottom: calc(var(--coin-index, 0) * 0.16rem);
+  color: #80651d;
+  font-size: 0.55rem;
+  left: 0;
+  line-height: 0.42rem;
+  position: absolute;
+  text-shadow: 0 0 1px #000;
+  width: 0.55rem;
+}
+
+.actor.sheet.character .sidebar > .vurs-play-resources .vurs-budget-coin-stack .coin.is-filled {
+  color: #f1c40f;
+}
+
+.actor.sheet.character .sidebar > .vurs-play-resources .vurs-play-resource-maximum {
+  display: inline-flex;
+  position: relative;
+}
+
+.actor.sheet.character .sidebar > .vurs-play-resources .vurs-play-resource-max-reduction-delta {
+  bottom: -0.55em;
+  color: #ff3b3b;
+  font-size: 0.55em;
+  font-weight: 700;
+  line-height: 1.3;
+  pointer-events: none;
+  position: absolute;
+  right: -0.35em;
+  text-align: right;
+  text-shadow: -1px -1px 0 #1a0d0d, 1px -1px 0 #1a0d0d, -1px 1px 0 #1a0d0d, 1px 1px 0 #1a0d0d;
+  white-space: nowrap;
+  z-index: 1;
+}
+
+.actor.sheet.character .sidebar > .vurs-play-resources .vurs-play-resource-max-reduction-delta.is-increase {
+  color: inherit;
+}
+
+.actor.sheet.character .sidebar > .vurs-play-resources .vurs-play-resource-max-reduction {
+  color: #ff3b3b;
+  font-size: 0.75em;
+  font-weight: 700;
+  text-shadow: -1px -1px 0 #1a0d0d, 1px -1px 0 #1a0d0d, -1px 1px 0 #1a0d0d, 1px 1px 0 #1a0d0d;
+}
+
+.actor.sheet.character .sidebar > .vurs-play-resources .vurs-play-resource-max-reduction.is-increase {
+  color: #ff3b3b;
+}
+
+.actor.sheet.character .sidebar > .vurs-play-resources [data-resource="magicPoints"] {
+  display: block;
+}
+
+.actor.sheet.character .sidebar > .vurs-play-resources [data-resource="budgetPoints"] .vurs-play-resource-frame,
+.actor.sheet.character .sidebar > .vurs-play-resources [data-resource="magicPoints"] .vurs-play-resource-frame {
+  border: 0;
+  border-image: none;
+  gap: 0;
+  padding: 0;
+}
+
+.actor.sheet.character .sidebar > .vurs-play-resources [data-resource="magicPoints"] .vurs-play-resource-segments {
+  align-items: center;
+  justify-content: center;
+  height: 1.8rem;
+  margin: 0;
+  min-height: 1.8rem;
+  padding: 0;
+  gap: 0;
+  overflow: hidden;
+}
+
+.actor.sheet.character .sidebar > .vurs-play-resources .vurs-play-resource-segments {
+  display: flex;
+  cursor: pointer;
+  gap: 2px;
+  height: 1.8rem;
+  margin-top: var(--space-2);
+  min-height: 1.8rem;
+  position: relative;
+  width: 100%;
+}
+
+.actor.sheet.character .sidebar > .vurs-play-resources .vurs-play-resource-segment-values {
+  align-items: center;
+  display: flex;
+  font-size: inherit;
+  font-weight: 700;
+  gap: 0.25rem;
+  inset: 0;
+  justify-content: center;
+  position: absolute;
+  text-shadow: 0 1px 2px #000;
+  z-index: 1;
+}
+
+.actor.sheet.character .sidebar > .vurs-play-resources .vurs-play-resource-edit-values {
+  inset: auto;
+  min-height: 0.85rem;
+  position: static;
+  width: 100%;
+}
+
+.actor.sheet.character .sidebar > .vurs-play-resources .vurs-play-resource-segment-values input {
+  cursor: text;
+}
+
+.actor.sheet.character .sidebar > .vurs-play-resources .vurs-play-resource-segments .segment {
+  background: linear-gradient(to right, var(--segment-color, #3498db) var(--segment-fill, 0%), transparent var(--segment-fill, 0%));
+  border: 1px solid var(--segment-color, #3498db);
+  border-radius: 1px;
+  flex: 1 1 0;
+  min-width: 1px;
+}
+
+.actor.sheet.character .sidebar > .vurs-play-resources {
+  position: relative;
+}
+
+.actor.sheet.character .sidebar > .vurs-play-resources > .vurs-play-modifiers-tooltip {
+  background: rgba(12, 9, 5, 0.96);
+  border: 14px double transparent;
+  border-image: var(--vurs-resource-frame) 11 / 14px repeat;
+  box-sizing: border-box;
+  color: var(--text-light);
+  left: 0;
+  min-width: 14rem;
+  padding: 0.35rem 0.5rem 0.5rem;
+  position: absolute;
+  top: 1.35rem;
+  width: min(100%, 18rem);
+  z-index: 20;
+}
+
+.vurs-play-modifiers-tooltip .sidebar_title {
+  border-bottom: 1px solid var(--sidebar-title, #c9a24d);
+  margin-bottom: 0.25rem;
+  padding-bottom: 0.2rem;
+}
+
+.vurs-play-modifiers-tooltip .sidebar_title h2 {
+  font-size: var(--font-size-10);
+  margin: 0;
+}
+
+.vurs-play-modifiers-tooltip > p {
+  margin: 0.2rem 0;
+}
+
+.vurs-play-modifiers-dialog {
+  background: rgba(12, 9, 5, 0.94);
+  border: 14px double transparent;
+  border-image: var(--vurs-resource-frame, url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='33' height='33'%3E%3Cpath d='M1 1h8v2H3v6H1zM32 1h-8v2h6v6h2zM1 32h8v-2H3v-6H1zM32 32h-8v-2h6v-6h2z' fill='%23c9a24d'/%3E%3C/svg%3E")) 11 / 14px repeat;
+  color: var(--text-light);
+}
+
+.vurs-play-modifiers-dialog .window-content {
+  background: transparent;
+  padding: 0.35rem 0.5rem 0.5rem;
+}
+
+.vurs-play-modifiers-tooltip .vurs-play-regeneration-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  width: max-content;
+  min-width: 12rem;
+}
+
+.crb-hover .tooltipster-box .tooltipster-content .vurs-play-modifiers-tooltip {
+  max-height: none;
+  overflow: visible;
+  width: max-content;
+}
+
+.crb-hover .tooltipster-box:has(.vurs-play-modifiers-tooltip),
+.crb-hover .tooltipster-box:has(.vurs-play-modifiers-tooltip) .tooltipster-content {
+  height: auto !important;
+  max-height: none !important;
+  overflow: visible !important;
+}
+
+.vurs-play-modifiers-tooltip .vurs-play-regeneration-list li {
+  align-items: center;
+  display: grid;
+  gap: var(--space-2) var(--space-8);
+  grid: "data label" var(--space-12) "data type" var(--space-12) / 1.875rem 1fr;
+  justify-items: start;
+}
+
+.vurs-play-modifiers-tooltip .vurs-play-regeneration-list .label {
+  color: var(--text-light);
+  font: 400 var(--font-size-12) var(--serif);
+  grid-area: label;
+}
+
+.vurs-play-modifiers-tooltip .vurs-play-regeneration-list .tag-legacy {
+  color: var(--color-pf-tertiary);
+  font: var(--font-size-10) var(--sans-serif);
+  grid-area: type;
+  text-transform: uppercase;
+}
+
+.vurs-play-modifiers-tooltip .vurs-play-regeneration-list .data {
+  color: var(--text-light);
+  font-size: var(--font-size-21);
+  grid-area: data;
+  justify-self: end;
+}
+
+.vurs-play-modifiers-tooltip .vurs-play-regeneration-list strong {
+  color: var(--color-pf-tertiary);
+  font-variant-numeric: tabular-nums;
+}
+
+.item.sheet .sheet-header .details .vurs-play-cost-glyph {
+  align-items: center;
+  color: #000;
+  display: inline-flex;
+  font: 700 var(--font-size-14) var(--sans-serif);
+  gap: 0.05rem;
+  justify-content: center;
+  gap: 0;
+  margin-left: 0.1rem;
+  max-width: none;
+  overflow: visible;
+  text-overflow: clip;
+  white-space: nowrap;
+}
+
+.item.sheet .sheet-header .details .vurs-play-cost-glyph img {
+  background: transparent;
+  border: 0;
+  height: 1.8rem;
+  object-fit: contain;
+  width: 1.8rem;
+}
+
+.item.sheet .sheet-header .details .vurs-play-cost-glyph-group {
+  align-items: center;
+  display: inline-flex;
+  flex: 0 0 auto;
+  gap: 0;
+  white-space: nowrap;
+}
+
+.item.sheet .sheet-header .details .vurs-play-cost-separator {
+  display: inline-block;
+  margin: 0 0.02rem;
+}
+
+.item.sheet .sheet-header .details .vurs-play-cost-glyph .vurs-play-cost-mp-stars {
+  max-width: 8rem;
+}
+
+.item.sheet .sheet-header .details .vurs-play-cost-glyph .vurs-play-cost-mp-star {
+  font-size: clamp(0.45rem, 1.2vw, 1.1rem);
+}
+
+.item.sheet .vurs-play-cost-resource-stacks {
+  align-items: center;
+  display: inline-flex;
+  gap: 0.05rem;
+}
+
+.item.sheet .vurs-play-cost-resource-stack {
+  display: inline-flex;
+  flex-direction: column;
+  line-height: 1;
+  position: relative;
+  white-space: nowrap;
+}
+
+.item.sheet .vurs-play-cost-resource-stack i {
+  line-height: 0.7;
+  position: relative;
+  top: calc(var(--stack-index, 0) * -0.12rem);
+}
+
+.item.sheet .vurs-play-cost-mp-stacks .vurs-play-cost-resource-stack {
+  flex-direction: row;
+  gap: 0.05rem;
+}
+
+.item.sheet .vurs-play-cost-mp-stacks .vurs-play-cost-resource-stack i {
+  top: 0;
+}
+
+.item.sheet .vurs-play-cost-mp-stacks .vurs-play-cost-resource-stack img {
+  height: 1.1rem !important;
+  object-fit: contain;
+  width: auto;
+}
+
+.item.sheet .vurs-play-cost-bp-stacks {
+  color: #f1c40f;
+}
+
+.item.sheet .vurs-play-cost-mp-stacks {
+  color: #5ab8ff;
+}
+
+.item.sheet .vurs-play-cost-mp-star {
+  color: #5ab8ff;
+  flex: 1 1 0;
+  font-size: clamp(0.45rem, 1.2vw, 1.1rem);
+  min-width: 0;
+  text-align: center;
+}
+
+.item.sheet .vurs-play-cost-mp-stars {
+  align-items: center;
+  display: inline-flex;
+  gap: 0;
+  justify-content: center;
+  max-width: 8rem;
+  overflow: hidden;
+  vertical-align: middle;
+}
+
+.actor.sheet.character .sidebar > .vurs-play-resources .vurs-mp-star {
+  color: var(--segment-color, #5ab8ff);
+  flex: 1 1 0;
+  font-size: clamp(0.35rem, 1.2vw, 0.75rem);
+  line-height: 1;
+  margin: 0;
+  min-width: 0;
+  text-align: center;
+}
+
+.actor.sheet.character .sidebar > .vurs-play-resources .vurs-mp-star-stack,
+.item.sheet .vurs-play-cost-mp-star-stack {
+  align-items: center;
+  display: inline-flex;
+  flex-direction: column;
+  gap: 0;
+  justify-content: center;
+  line-height: 0.45;
+  margin: 0 0.08rem;
+  vertical-align: middle;
+}
+
+.actor.sheet.character .sidebar > .vurs-play-resources .vurs-mp-star-stack .vurs-mp-star,
+.item.sheet .vurs-play-cost-mp-star-stack .vurs-play-cost-mp-star {
+  margin-bottom: -0.18rem;
+}
+
+.item.sheet .vurs-play-cost-mp-star-stack {
+  color: #5ab8ff;
+}
+
+
+.item.sheet .vurs-play-cost-inline {
+  align-items: center;
+  display: inline-flex;
+  gap: 0.25rem;
+  margin: 0;
+  vertical-align: middle;
+}
+
+.item.sheet .vurs-play-cost-description-icons {
+  align-items: center;
+  display: inline-flex;
+  gap: 0.05rem;
+}
+
+.item.sheet .vurs-play-cost-description-icons img {
+  background: transparent;
+  border: 0;
+  height: 1.1rem;
+  object-fit: contain;
+  width: 1.1rem !important;
+}
+
+.vurs-play-cost-inline img,
+.vurs-play-cost-description-icons img {
+  background: transparent;
+  border: 0;
+  height: 1.1rem !important;
+  object-fit: contain;
+  display: inline-block !important;
+  width: 1.1rem !important;
+}
+
+.vurs-play-resource-token {
+  align-items: center;
+  display: inline-flex !important;
+  gap: 0.05rem;
+  vertical-align: middle;
+}
+
+.vurs-play-resource-token img {
+  background: transparent;
+  border: 0;
+  display: inline-block !important;
+  height: 1.1rem !important;
+  object-fit: contain;
+  width: 1.1rem !important;
+}
+
+.vurs-play-cost-inline {
+  align-items: center;
+  display: inline-flex !important;
+  gap: 0.25rem;
+  margin: 0;
+  vertical-align: middle;
+}
+
+.vurs-play-cost-inline .vurs-play-cost-description-icons,
+.vurs-play-cost-description-icons {
+  align-items: center;
+  display: inline-flex !important;
+  gap: 0.05rem;
+  vertical-align: middle;
+}
+
+.vurs-play-cost-inline-separator {
+  display: inline-block;
+  margin: 0 0.02rem;
+}
+
+.item.sheet .vurs-play-cost-inline-separator {
+  display: inline-block;
+  margin: 0 0.02rem;
+}
+
+.item.sheet .vurs-play-resource-token {
+  display: inline-flex;
+  margin: 0 0.1rem;
+  vertical-align: middle;
+}
+
+.item.sheet .vurs-play-resource-token > img {
+  background: transparent;
+  border: 0;
+  box-shadow: none;
+  height: 1.1rem;
+  width: 1.1rem;
+}
+
+.item.sheet .vurs-play-resource-token .vurs-play-cost-resource-stack i {
+  font-size: 0.8rem;
+}
+

@@ -2,8 +2,10 @@ const MODULE_ID = "vurs-pf2e";
 const SETTING_KEY = "systemMode";
 const NEGATIVE_HP_SETTING_KEY = "negativeHpInDefault";
 const DEFAULT_SKILL_GROUPING_SETTING_KEY = "groupSkillsByAttributeInDefault";
+const DEFAULT_ATTRIBUTE_MODIFIER_FRAMES_SETTING_KEY = "colorAttributeModifierFramesInDefault";
 const DEFAULT_VURS_SKILLS_SETTING_KEY = "includeVursSkillsInDefault";
 const DEFAULT_SAVE_SKILLS_SETTING_KEY = "addSaveSkillsInDefault";
+const DEFAULT_ACTION_POINTS_SETTING_KEY = "addActionPointsInDefault";
 
 function requestSettingsRefresh(settingName) {
   const confirm = globalThis.Dialog?.confirm;
@@ -63,6 +65,16 @@ function registerModuleSettings() {
     onChange: () => requestSettingsRefresh("Grouped Skills in Default Mode")
   });
 
+  if (!registered(DEFAULT_ATTRIBUTE_MODIFIER_FRAMES_SETTING_KEY)) settings.register(MODULE_ID, DEFAULT_ATTRIBUTE_MODIFIER_FRAMES_SETTING_KEY, {
+    name: "Color Attribute Modifier Borders in Default Mode",
+    hint: "Color character Attribute Modifiers borders to match their attributes in Default mode.",
+    scope: "world",
+    config: true,
+    type: Boolean,
+    default: false,
+    onChange: () => requestSettingsRefresh("Attribute Modifier Border Colors in Default Mode")
+  });
+
   if (!registered(DEFAULT_VURS_SKILLS_SETTING_KEY)) settings.register(MODULE_ID, DEFAULT_VURS_SKILLS_SETTING_KEY, {
     name: "Add VURS Skills in Default Mode",
     hint: "Make VURS homebrew skills available when the world uses Default mode.",
@@ -81,6 +93,16 @@ function registerModuleSettings() {
     type: Boolean,
     default: false,
     onChange: () => requestSettingsRefresh("Saves and Perception in Skills")
+  });
+
+  if (!registered(DEFAULT_ACTION_POINTS_SETTING_KEY)) settings.register(MODULE_ID, DEFAULT_ACTION_POINTS_SETTING_KEY, {
+    name: "Actions and Reactions as Play Resource in Default Mode",
+    hint: "Show three Actions and one Reaction as Play resources for Default actors.",
+    scope: "world",
+    config: true,
+    type: Boolean,
+    default: false,
+    onChange: () => requestSettingsRefresh("Actions in Default Mode")
   });
 
 }

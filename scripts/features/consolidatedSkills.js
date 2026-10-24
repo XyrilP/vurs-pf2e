@@ -31,9 +31,11 @@ const DEFAULT_SKILL_ATTRIBUTE_GROUPS = Object.freeze([
   { attribute: "cha", label: "PF2E.AbilityCha", color: "#e84393" }
 ]);
 const DEFAULT_SKILL_GROUPING_SETTING = "groupSkillsByAttributeInDefault";
+const DEFAULT_ATTRIBUTE_MODIFIER_FRAMES_SETTING = "colorAttributeModifierFramesInDefault";
 const DEFAULT_VURS_SKILLS_SETTING = "includeVursSkillsInDefault";
 const DEFAULT_SAVE_SKILLS_SETTING = "addSaveSkillsInDefault";
 const SKILL_ATTRIBUTE_GROUP_COLUMNS_FLAG = "sheet.groupedSkillsColumns";
+const NESTED_SKILLS_VISIBLE_FLAG = "sheet.nestedSkills";
 const VURS_HOMEBREW_SKILL_SLUGS = Object.freeze([
   "power",
   "dexterity-skill",
@@ -121,6 +123,23 @@ function skillFrameDataUrl(color) {
     .replaceAll("#231f20", color)
     .replace('opacity=".25"', 'opacity=".7"');
   return `url("data:image/svg+xml,${encodeURIComponent(tintedFrame)}")`;
+}
+
+export function colorVursAttributeModifierFrames(root, actor) {
+  if (!(root instanceof HTMLElement) || !actor?.isOfType?.("character")) return;
+
+  const colors = actorUsesVursSystem(actor)
+    ? { str: "#e74c3c", dex: "#2ecc71", con: "#f1c40f", int: "#3498db", cha: "#9b59b6", wis: "#00bcd4" }
+    : game.settings.get("vurs-pf2e", DEFAULT_ATTRIBUTE_MODIFIER_FRAMES_SETTING) === true
+      ? { str: "#e74c3c", dex: "#2ecc71", con: "#f39c12", int: "#3498db", wis: "#00bcd4", cha: "#e84393" }
+      : null;
+  for (const item of root.querySelectorAll(".subsection.attributes li.attribute[data-attribute]")) {
+    const modifier = item.querySelector(":scope > h3.modifier");
+    if (!modifier) continue;
+    const color = colors?.[item.dataset.attribute];
+    if (color) modifier.style.borderImageSource = skillFrameDataUrl(color);
+    else modifier.style.removeProperty("border-image-source");
+  }
 }
 
 export function applyVursStatisticSkillMirrors(actor) {
@@ -379,6 +398,27 @@ export function relabelVursDexteritySkill(root, actor) {
   }
 }
 
+export function relabelVursCoreSkills(root, actor) {
+  if (!(root instanceof HTMLElement) || !actor?.isOfType?.("character")) return;
+
+  const renamedSkills = {
+    arcana: ["PF2E.TraitArcane", "PF2E.Skill.Arcana", "Arcane", "Arcana"],
+    occultism: ["PF2E.TraitOccult", "PF2E.Skill.Occultism", "Occult", "Occultism"],
+    nature: ["PF2E.TraitPrimal", "PF2E.Skill.Nature", "Primal", "Nature"],
+    religion: ["PF2E.TraitDivine", "PF2E.Skill.Religion", "Divine", "Religion"]
+  };
+  const usesVurs = actorUsesVursSystem(actor);
+  for (const [slug, [vursKey, defaultKey, vursFallback, defaultFallback]] of Object.entries(renamedSkills)) {
+    const key = usesVurs ? vursKey : defaultKey;
+    const fallback = usesVurs ? vursFallback : defaultFallback;
+    const localized = game.i18n.localize(key);
+    const label = localized && localized !== key ? localized : fallback;
+    for (const element of root.querySelectorAll(`.tab.proficiencies li[data-statistic="${slug}"] .name`)) {
+      if (element.textContent.trim() !== label) element.textContent = label;
+    }
+  }
+}
+
 export function groupVursSkillsByAttribute(root, actor, localizeDefault = key => game.i18n.localize(key)) {
   if (!(root instanceof HTMLElement) || !actor?.isOfType?.("character")) return;
 
@@ -416,7 +456,8 @@ export function groupVursSkillsByAttribute(root, actor, localizeDefault = key =>
   if (!shouldGroup) {
     list.style.removeProperty("--vurs-skill-attribute-columns");
     list.classList.remove("vurs-skill-layout-two-columns");
-    list.previousElementSibling?.querySelector?.(":scope > .controls > .vurs-skill-column-count")?.remove();
+    list.classList.remove("vurs-hide-nested-skills");
+    list.previousElementSibling?.querySelector?.(":scope > .controls > .vurs-skill-column-count, :scope > .controls > .vurs-skill-nesting-toggle")?.remove();
     disableSkillNameHoverScroll(list);
     return;
   }
@@ -424,7 +465,9 @@ export function groupVursSkillsByAttribute(root, actor, localizeDefault = key =>
   const columns = configuredColumns === 2 ? 2 : 3;
   list.style.setProperty("--vurs-skill-attribute-columns", String(columns));
   list.classList.toggle("vurs-skill-layout-two-columns", columns === 2);
-  addSkillGroupColumnsControl(list, columns, actor);
+  const allowHideNested = usesVurs && !actorUsesAgnosticVurs(actor);
+  const showNestedSkills = foundry.utils.getProperty(actor.flags?.vurs, NESTED_SKILLS_VISIBLE_FLAG) !== false;
+  addSkillGroupColumnsControl(list, columns, actor, allowHideNested, showNestedSkills);
 
   const rowsByAttribute = new Map(attributeGroups.map(({ attribute }) => [attribute, []]));
   const ungroupedRows = [];
@@ -441,10 +484,12 @@ export function groupVursSkillsByAttribute(root, actor, localizeDefault = key =>
     else ungroupedRows.push(row);
   }
 
+  sortSkillRowsByLabel(ungroupedRows);
   for (const row of ungroupedRows) list.append(row);
   for (const { attribute, label, color } of attributeGroups) {
     const rows = rowsByAttribute.get(attribute);
     if (!rows?.length) continue;
+    sortSkillRowsByLabel(rows);
 
     const group = document.createElement("li");
     group.className = "vurs-skill-attribute-group";
@@ -474,7 +519,15 @@ export function groupVursSkillsByAttribute(root, actor, localizeDefault = key =>
   applySkillNameScaling(list);
 }
 
-function addSkillGroupColumnsControl(list, selectedColumns, actor) {
+function sortSkillRowsByLabel(rows) {
+  const collator = new Intl.Collator(game.i18n.lang, { sensitivity: "base", numeric: true });
+  const getLabel = row => row.querySelector(":scope > .name, :scope > .vurs-skill-parent-row > .name")
+    ?.textContent?.replace(/\s+/g, " ").trim() ?? row.dataset.statistic ?? "";
+  rows.sort((left, right) => collator.compare(getLabel(left), getLabel(right)) ||
+    String(left.dataset.statistic ?? "").localeCompare(String(right.dataset.statistic ?? "")));
+}
+
+function addSkillGroupColumnsControl(list, selectedColumns, actor, allowHideNested, showNestedSkills) {
   const header = list.previousElementSibling;
   if (!(header instanceof HTMLElement) || header.tagName !== "HEADER") return;
   let controls = header.querySelector(":scope > .controls");
@@ -483,41 +536,60 @@ function addSkillGroupColumnsControl(list, selectedColumns, actor) {
     controls.className = "controls";
     header.append(controls);
   }
+  controls.querySelector(":scope > .vurs-skill-nesting-toggle")?.remove();
 
   let select = controls.querySelector(":scope > .vurs-skill-column-count");
   if (!select) {
     select = document.createElement("select");
     select.className = "vurs-skill-column-count";
-    select.setAttribute("aria-label", "Core Skills column layout");
-    select.title = "Core Skills column layout";
-    for (const columns of [2, 3]) {
-      const option = document.createElement("option");
-      option.value = String(columns);
-      option.textContent = `${columns} Columns`;
-      select.append(option);
-    }
+    select.setAttribute("aria-label", "Core Skills column layout and nested skill visibility");
+    select.title = "Choose columns and whether to show nested skills";
     select.addEventListener("change", async () => {
-      const columns = Number(select.value) === 2 ? 2 : 3;
+      const selected = parseSkillGroupConfiguration(select.value);
       const previousColumns = Number(foundry.utils.getProperty(actor.flags?.vurs, SKILL_ATTRIBUTE_GROUP_COLUMNS_FLAG)) === 2 ? 2 : 3;
-      setSkillGroupColumns(list, columns);
+      const previousShowNested = foundry.utils.getProperty(actor.flags?.vurs, NESTED_SKILLS_VISIBLE_FLAG) !== false;
+      const canHideNested = select.querySelector('option[value$="-hide"]') !== null;
+      setSkillGroupConfiguration(list, selected.columns, selected.showNested);
       try {
-        await actor.update({ [`flags.vurs.${SKILL_ATTRIBUTE_GROUP_COLUMNS_FLAG}`]: columns });
+        const updates = { [`flags.vurs.${SKILL_ATTRIBUTE_GROUP_COLUMNS_FLAG}`]: selected.columns };
+        if (canHideNested) updates[`flags.vurs.${NESTED_SKILLS_VISIBLE_FLAG}`] = selected.showNested;
+        await actor.update(updates);
       } catch (error) {
-        select.value = String(previousColumns);
-        setSkillGroupColumns(list, previousColumns);
+        const previousValue = formatSkillGroupConfiguration(previousColumns, previousShowNested, allowHideNested);
+        select.value = previousValue;
+        setSkillGroupConfiguration(list, previousColumns, previousShowNested);
         console.error("vurs-pf2e | Could not update the Core Skills column layout", error);
       }
     });
   }
-  select.value = String(selectedColumns);
+  select.replaceChildren();
+  for (const columns of [2, 3]) {
+    for (const showNested of (allowHideNested ? [true, false] : [true])) {
+      const option = document.createElement("option");
+      option.value = formatSkillGroupConfiguration(columns, showNested, allowHideNested);
+      option.textContent = `${columns} Columns${showNested ? "" : " — Hide Nested"}`;
+      select.append(option);
+    }
+  }
+  select.value = formatSkillGroupConfiguration(selectedColumns, showNestedSkills, allowHideNested);
   controls.prepend(select);
 }
 
-function setSkillGroupColumns(list, columns) {
+function parseSkillGroupConfiguration(value) {
+  const hideNested = String(value).endsWith("-hide");
+  return { columns: String(value).startsWith("2") ? 2 : 3, showNested: !hideNested };
+}
+
+function formatSkillGroupConfiguration(columns, showNested, allowHideNested) {
+  return `${columns}${allowHideNested && !showNested ? "-hide" : ""}`;
+}
+
+function setSkillGroupConfiguration(list, columns, showNested) {
   list.style.setProperty("--vurs-skill-attribute-columns", String(columns));
   list.classList.toggle("vurs-skill-layout-two-columns", columns === 2);
+  list.classList.toggle("vurs-hide-nested-skills", !showNested);
   const control = list.previousElementSibling?.querySelector?.(":scope > .controls > .vurs-skill-column-count");
-  if (control) control.value = String(columns);
+  if (control) control.value = formatSkillGroupConfiguration(columns, showNested, control.querySelector('option[value$="-hide"]') !== null);
   applySkillNameScaling(list);
 }
 
@@ -636,9 +708,9 @@ function applySkillNameScaling(list) {
     const fullWidth = measureSkillNameWidth(text, baseSize);
     if (fullWidth <= availableWidth || fullWidth <= 0) continue;
 
-    // Three-column labels shrink by at most half. Hover scrolling handles
+    // Three-column labels shrink by at most 33%. Hover scrolling handles
     // any remaining overflow at that readable minimum size.
-    const scale = Math.max(0.5, availableWidth / fullWidth);
+    const scale = Math.max(0.67, availableWidth / fullWidth);
     text.style.fontSize = `${baseSize * scale}px`;
   }
 
@@ -727,6 +799,9 @@ export function nestVursConsolidatedSkills(root, actor) {
   const list = root.querySelector('.tab.proficiencies ul.proficiencies-list:not(.lores-list)');
   if (!list) return;
   ensureConsolidatedSkillStyles();
+
+  const showNestedSkills = foundry.utils.getProperty(actor.flags?.vurs, NESTED_SKILLS_VISIBLE_FLAG) !== false;
+  list.classList.toggle("vurs-hide-nested-skills", !showNestedSkills);
 
   for (const [childSlug, parentSlug] of Object.entries(CONSOLIDATED_SKILLS)) {
     const parentRow = list.querySelector(`:scope > li[data-statistic="${parentSlug}"]`);

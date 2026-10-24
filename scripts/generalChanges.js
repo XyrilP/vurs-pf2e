@@ -1,4 +1,5 @@
 import { installActorDamageActionContext, installDicelessPatches } from "./features/diceless.js";
+import { renderVursPlayResources } from "./features/playResources.js";
 import { applyFullVursSkillAttributes, applyVursHitPoints } from "./features/modes/fullVurs.js";
 import { applyAgnosticVursSkillAttributes } from "./features/modes/agnosticVurs.js";
 import {
@@ -7,9 +8,11 @@ import {
   addVursExtendedSaveRows,
   hideVursPerceptionSidebarSection,
   relabelVursDexteritySkill,
+  relabelVursCoreSkills,
   linkVursStatisticSkillControls,
   groupVursSkillsByAttribute,
-  nestVursConsolidatedSkills
+  nestVursConsolidatedSkills,
+  colorVursAttributeModifierFrames
 } from "./features/consolidatedSkills.js";
 import {
   actorHasAgnosticSystemFlag,
@@ -139,14 +142,17 @@ Hooks.on("renderApplicationV2", (app, element, context, options) => {
       app?.options?.actor, context?.actor, options?.actor]
       .find(candidate => candidate?.isOfType?.("character")) ??
       game.actors?.contents?.find(candidate => candidate.apps?.[app?.id] === app);
+    renderVursPlayResources(root, actor);
     if (VURS_MAIN_ATTRIBUTE_ENABLED) addMainAttributeChoice(app, root, context, options);
     reorderAttributeBuilderColumns(root, actor);
     reorderCharacterSheetAttributes(root, actor);
     applyActorAbilityLabels(root, actor);
     applyMainAttributeStar(root, actor);
+    colorVursAttributeModifierFrames(root, actor);
     addVursExtendedSaveRows(root, actor);
     hideVursPerceptionSidebarSection(root, actor);
     relabelVursDexteritySkill(root, actor);
+    relabelVursCoreSkills(root, actor);
     linkVursStatisticSkillControls(root, actor);
     nestVursConsolidatedSkills(root, actor);
     groupVursSkillsByAttribute(root, actor, localizeDefaultAbility);
@@ -156,15 +162,47 @@ Hooks.on("renderActorSheet", (app, html) => {
   installActorDamageActionContext(app?.actor);
   applyActorSheetPresentation(app, html);
 });
+Hooks.on("renderItemSheet", (app, html) => addVursAbilityCostField(app, html));
+Hooks.on("preUpdateItem", (item, changes) => {
+  const flatValue = changes?.["flags.vurs.playCost"];
+  const nestedValue = changes?.flags?.vurs?.playCost;
+  const value = flatValue ?? nestedValue;
+  if (value === undefined) return;
+  const normalizedValue = String(value ?? "")
+    .split(/[;,]/)
+    .map(entry => entry.trim())
+    .filter(Boolean)
+    .join("; ");
+  if (normalizedValue) {
+    if (flatValue !== undefined) changes["flags.vurs.playCost"] = normalizedValue;
+    else changes.flags.vurs.playCost = normalizedValue;
+    return;
+  }
+  delete changes["flags.vurs.playCost"];
+  if (changes.flags?.vurs) delete changes.flags.vurs.playCost;
+  changes.flags ??= {};
+  changes.flags.vurs ??= {};
+  changes.flags.vurs["-=playCost"] = null;
+});
 Hooks.on("renderApplication", (app, html) => applyActorSheetPresentation(app, html));
 Hooks.on("updateActor", actor => {
   for (const app of Object.values(actor.apps ?? {})) {
     const root = app?.element instanceof HTMLElement ? app.element : app?.element?.[0];
-    if (root) requestAnimationFrame(() => addVursMaxHpReductionControl(root, actor));
+    if (root) requestAnimationFrame(() => {
+      renderVursPlayResources(root, actor);
+      addVursMaxHpReductionControl(root, actor);
+    });
   }
 });
 Hooks.on("renderChatMessage", (message, html) => {
   const root = html instanceof HTMLElement ? html : html?.[0];
+  const actor = message?.speaker?.actor ? game.actors?.get(message.speaker.actor)
+    : message?.actor ?? null;
+  if (root && actor) replaceVursPlayResourceTokens(root, actor);
+  const originUuid = message?.flags?.pf2e?.origin?.uuid ?? message?.flags?.pf2e?.origin?.itemUuid;
+  const originItem = message?.item ?? (originUuid ? fromUuidSync(originUuid) : null);
+  const playCost = originItem && String(foundry.utils.getProperty(originItem, "flags.vurs.playCost") ?? "").trim();
+  if (root && playCost) replaceVursPlayCostToken(root, playCost);
   const button = root?.querySelector('button[data-action="revertDamage"]');
   if (!button || button.dataset.vursReductionUndo) return;
   button.dataset.vursReductionUndo = "true";
@@ -195,17 +233,260 @@ function applyActorSheetPresentation(app, element) {
   const actor = [app?.actor, app?.document?.actor, app?.document, app?.object]
     .find(candidate => candidate?.isOfType?.("character"));
   if (!root || !actor) return;
+  renderVursPlayResources(root, actor);
+  replaceVursPlayResourceTokens(root, actor);
+  replaceVursPlayCostTokensOnActorSheet(root, actor);
+  if (!root.dataset.vursPlayResourceTokenObserver) {
+    root.dataset.vursPlayResourceTokenObserver = "true";
+    const observer = new MutationObserver(() => {
+      replaceVursPlayResourceTokens(root, actor);
+      replaceVursPlayCostTokensOnActorSheet(root, actor);
+    });
+    observer.observe(root, { childList: true, subtree: true });
+  }
   requestAnimationFrame(() => addVursMaxHpReductionControl(root, actor));
   allowNegativeHpEntry(root, actor);
   reorderCharacterSheetAttributes(root, actor);
   applyActorAbilityLabels(root, actor);
   applyMainAttributeStar(root, actor);
+  colorVursAttributeModifierFrames(root, actor);
   addVursExtendedSaveRows(root, actor);
   hideVursPerceptionSidebarSection(root, actor);
   relabelVursDexteritySkill(root, actor);
+  relabelVursCoreSkills(root, actor);
   linkVursStatisticSkillControls(root, actor);
   nestVursConsolidatedSkills(root, actor);
   groupVursSkillsByAttribute(root, actor, localizeDefaultAbility);
+}
+
+function replaceVursPlayCostTokensOnActorSheet(root, actor) {
+  for (const itemElement of root.querySelectorAll(".item[data-item-id], [data-item-id]")) {
+    const item = actor?.items?.get(itemElement.dataset.itemId);
+    const playCost = item && String(foundry.utils.getProperty(item, "flags.vurs.playCost") ?? "").trim();
+    if (!playCost) continue;
+    replaceVursPlayCostToken(itemElement, playCost);
+  }
+}
+
+function addVursAbilityCostField(app, element) {
+  const item = app?.item ?? app?.object;
+  if (!item || !["action", "feat"].includes(item.type)) return;
+  const root = element instanceof HTMLElement ? element : element?.[0];
+  const playCost = resolveVursPlayCostRolls(String(foundry.utils.getProperty(item, "flags.vurs.playCost") ?? ""), item.actor ?? item.parent?.actor)
+    .split(",")
+    .map(entry => entry.trim())
+    .filter(Boolean)
+    .join(", ");
+  const description = root?.querySelector(".tab.description .editor-content, .tab.description");
+  if (!playCost && description) restoreVursPlayCostTokens(description);
+  if (description) replaceVursPlayResourceTokens(description, item.actor ?? item.parent?.actor);
+  if (playCost) {
+    const details = root?.querySelector(".sheet-header .details");
+    if (details && !details.querySelector(".vurs-play-cost-glyph")) {
+      details.querySelector(".action-glyph, .action-cost")?.remove();
+      const glyph = document.createElement("span");
+      glyph.className = "vurs-play-cost-glyph";
+      playCost.split(";").map(entry => entry.trim()).filter(Boolean).forEach((entry, index) => {
+        if (index) {
+          const separator = document.createElement("span");
+          separator.className = "vurs-play-cost-separator";
+          separator.textContent = "; ";
+          glyph.append(separator);
+        }
+        const group = document.createElement("span");
+        group.className = "vurs-play-cost-glyph-group";
+        group.title = entry;
+        appendVursPlayCostIcons(group, entry);
+        glyph.append(group);
+      });
+      glyph.title = playCost;
+      details.insertBefore(glyph, details.querySelector(".level") ?? null);
+    }
+    if (description) replaceVursPlayCostToken(description, playCost);
+  }
+  const basics = root?.querySelector(".tab.details fieldset.basics");
+  if (!basics || basics.querySelector("[data-vurs-cost-field]")) return;
+
+  const group = document.createElement("div");
+  group.className = "form-group";
+  group.dataset.vursCostField = "true";
+  const label = document.createElement("label");
+  label.textContent = "Play Cost";
+  label.htmlFor = `${app.id ?? item.id}-vurs-cost`;
+  const fields = document.createElement("div");
+  fields.className = "form-fields";
+  const input = document.createElement("input");
+  input.type = "text";
+  input.id = label.htmlFor;
+  input.name = "flags.vurs.playCost";
+  input.value = foundry.utils.getProperty(item, "flags.vurs.playCost") ?? "";
+  input.placeholder = "1 SP; 1 AP or TP";
+  fields.append(input);
+  group.append(label, fields);
+  const actionGroup = basics.querySelector(":scope > .form-group");
+  if (actionGroup?.nextSibling) basics.insertBefore(group, actionGroup.nextSibling);
+  else basics.append(group);
+}
+
+function replaceVursPlayCostToken(description, playCost) {
+  const walker = document.createTreeWalker(description, NodeFilter.SHOW_TEXT);
+  const nodes = [];
+  while (walker.nextNode()) nodes.push(walker.currentNode);
+  for (const node of nodes) {
+    if (!node.nodeValue.includes("VURS.PlayCost")) continue;
+    const parts = node.nodeValue.split("VURS.PlayCost");
+    const fragment = document.createDocumentFragment();
+    parts.forEach((part, index) => {
+      if (part) fragment.append(document.createTextNode(part));
+      if (index >= parts.length - 1) return;
+      const inline = document.createElement("span");
+      inline.className = "vurs-play-cost-description vurs-play-cost-inline";
+      const label = document.createElement("strong");
+      label.textContent = "Play Cost";
+      inline.append(label);
+      playCost.split(";").map(entry => entry.trim()).filter(Boolean).forEach((entry, entryIndex) => {
+        if (entryIndex) inline.append(document.createTextNode("; "));
+        const icons = document.createElement("span");
+        icons.className = "vurs-play-cost-description-icons";
+        icons.title = entry;
+        appendVursPlayCostIcons(icons, entry);
+        inline.append(icons);
+      });
+      fragment.append(inline);
+    });
+    node.replaceWith(fragment);
+  }
+}
+
+function restoreVursPlayCostTokens(description) {
+  for (const token of description.querySelectorAll(".vurs-play-cost-inline")) {
+    token.replaceWith(document.createTextNode("VURS.PlayCost"));
+  }
+}
+
+function replaceVursPlayResourceTokens(description, actor) {
+  const walker = document.createTreeWalker(description, NodeFilter.SHOW_TEXT);
+  const nodes = [];
+  while (walker.nextNode()) nodes.push(walker.currentNode);
+  const aliases = { One: 1, Two: 2, Three: 3, Longer: 4 };
+  const resources = {
+    AP: "AP", SP: "SP", TP: "TP", BP: "BP", MP: "MP", KP: "KP", SR: "SR",
+    actionPoints: "AP", staminaPoints: "SP", tacticPoints: "TP", budgetPoints: "BP",
+    magicPoints: "MP", karmaPoints: "KP", styleRank: "SR"
+  };
+  for (const node of nodes) {
+    const resolvedText = node.nodeValue.replace(/VURS\.PlayResource\.\[\[(.+?)\]\](AP|SP|TP|BP|MP|KP|SR)/gi,
+      (match, formula, resource) => `VURS.PlayResource.${resolveVursPlayCostRolls(`[[${formula}]]`, actor)}${resource}`);
+    if (resolvedText !== node.nodeValue) node.nodeValue = resolvedText;
+    const matches = [...node.nodeValue.matchAll(/VURS\.PlayResource\.((?:(\d+)|(One|Two|Three|Longer))?(AP|SP|TP|BP|MP|KP|SR|actionPoints|staminaPoints|tacticPoints|budgetPoints|magicPoints|karmaPoints|styleRank))/gi)];
+    if (!matches.length) continue;
+    const fragment = document.createDocumentFragment();
+    let offset = 0;
+    for (const match of matches) {
+      fragment.append(document.createTextNode(node.nodeValue.slice(offset, match.index)));
+      const amount = match[2] ? Number(match[2]) : (aliases[match[3]] ?? 1);
+      const resourceKey = Object.keys(resources).find(key => key.toLowerCase() === match[4].toLowerCase());
+      const resource = resources[resourceKey];
+      const rendered = document.createElement("span");
+      rendered.className = "vurs-play-resource-token";
+      rendered.title = `${amount === 4 ? "4+" : amount} ${resource}`;
+      appendVursPlayCostIcons(rendered, `${amount} ${resource}`);
+      fragment.append(rendered);
+      offset = match.index + match[0].length;
+    }
+    fragment.append(document.createTextNode(node.nodeValue.slice(offset)));
+    node.replaceWith(fragment);
+  }
+}
+
+function resolveVursPlayCostRolls(playCost, actor) {
+  const RollClass = globalThis.Roll ?? foundry?.dice?.Roll;
+  if (!playCost.includes("[[") || !RollClass) return playCost;
+  const rollData = actor?.getRollData?.() ?? {};
+  if (actor && !rollData.actor) rollData.actor = actor.getRollData?.() ?? actor;
+  return playCost.replace(/\[\[\s*([^\]]+)\s*\]\]/g, (match, formula) => {
+    try {
+      const roll = RollClass.create(formula, rollData);
+      roll.evaluate({ async: false });
+      return String(Number.isFinite(roll.total) ? roll.total : 0);
+    } catch (error) {
+      console.warn(`${MODULE_ID} | Failed to evaluate Play Cost inline roll`, formula, error);
+      return match;
+    }
+  });
+}
+
+function appendVursPlayCostIcons(container, playCost) {
+  if (!container.title) container.title = playCost;
+  const entries = playCost.split(/\s*(;|,|\band\b|\bor\b|\bcombined\b)\s*/i).filter(Boolean);
+  let lastAmount = 1;
+  let lastOperator = null;
+  for (const entry of entries) {
+    const operator = /^(;|,|\+|and|or|combined)$/i.test(entry) ? entry.toLowerCase() : null;
+    if (operator) {
+      lastOperator = operator;
+      const separator = document.createElement("span");
+      separator.className = "vurs-play-cost-inline-separator";
+      separator.textContent = operator === "or" ? "/" : operator === "and" ? " and " : operator === "combined" ? " combined " : "; ";
+      container.append(separator);
+      continue;
+    }
+    const match = entry.match(/^(\d+)?\s*(AP|SP|TP|BP|MP)$/i);
+    if (!match) {
+      container.append(document.createTextNode(entry));
+      continue;
+    }
+    const amount = Math.max(1, Number(match[1] ?? (lastOperator === "or" ? lastAmount : 1)));
+    const resource = match[2].toUpperCase();
+    if (resource === "BP") {
+      const stacks = document.createElement("span");
+      stacks.className = `vurs-play-cost-resource-stacks vurs-play-cost-${resource.toLowerCase()}-stacks`;
+      const iconTypes = resource === "MP"
+        ? [...Array(Math.floor(amount / 5)).fill("mp-diamond-star-5"), ...Array(amount % 5).fill("mp-diamond-arm")]
+        : Array(amount).fill("coin");
+      const iconCount = iconTypes.length;
+      const stackSize = resource === "BP" ? 5 : 2;
+      for (let offset = 0; offset < iconCount; offset += stackSize) {
+        const stack = document.createElement("span");
+        stack.className = "vurs-play-cost-resource-stack";
+        for (let index = 0; index < Math.min(stackSize, iconCount - offset); index += 1) {
+          const iconType = iconTypes[offset + index];
+          const icon = iconType.startsWith("mp-diamond-") ? document.createElement("img") : document.createElement("i");
+          if (icon instanceof HTMLImageElement) {
+            icon.src = `modules/vurs-pf2e/assets/custom-icons/resource-icons/${iconType === "mp-diamond-star-5" ? "MP-Diamond-Star-5" : "MP-Diamond-Arm"}.svg`;
+            icon.alt = `${amount} MP`;
+          } else icon.className = `fa-solid fa-${iconType}`;
+          icon.style.setProperty("--stack-index", String(index));
+          icon.setAttribute("aria-hidden", "true");
+          stack.append(icon);
+        }
+        stacks.append(stack);
+      }
+      container.append(stacks);
+      lastAmount = amount;
+      continue;
+    }
+    if (resource === "MP") {
+      container.classList.add("vurs-play-cost-mp-stars");
+      for (let index = 0; index < amount; index += 1) {
+        const icon = document.createElement("i");
+        icon.className = "fa-solid fa-star vurs-play-cost-mp-star";
+        icon.setAttribute("aria-hidden", "true");
+        container.append(icon);
+      }
+      lastAmount = amount;
+      continue;
+    }
+    const iconName = amount === 1 ? `One${resource}`
+      : amount === 2 ? `Two${resource}`
+        : amount === 3 ? `Three${resource}` : `Longer${resource}`;
+    const icon = document.createElement("img");
+    icon.src = `modules/vurs-pf2e/assets/custom-icons/resource-icons/${iconName}.svg`;
+    icon.alt = entry;
+    icon.draggable = false;
+    container.append(icon);
+    lastAmount = amount;
+  }
 }
 
 function allowNegativeHpEntry(root, actor) {
@@ -1282,7 +1563,7 @@ function reorderAttributeBuilderColumns(element, actor) {
 }
 
 function reorderCharacterSheetAttributes(element, actor) {
-  if (!isAnyVursMode() && !actorHasVursSystemFlag(actor) && !actorHasAgnosticSystemFlag(actor)) return;
+  if (!actorUsesVursSystem(actor)) return;
   const root = element instanceof HTMLElement ? element : element?.[0];
   const lists = root?.matches?.(".subsection.attributes ul")
     ? [root]

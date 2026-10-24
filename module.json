@@ -3,7 +3,7 @@
 	"title": "Vionheart Universe Roleplaying System for Pf2E/Sf2E",
 	"manifest": "https://raw.githubusercontent.com/XyrilP/vurs-pf2e/refs/heads/main/module.json",
 	"download": "https://github.com/XyrilP/vurs-pf2e/archive/refs/heads/main.zip",
-	"version": "13.1.4",
+	"version": "13.2",
 	"compatibility": {
 		"minimum": "14",
 		"verified": "14",
@@ -479,12 +479,14 @@
 	},
 	"description": "",
 	"styles": [
-		"styles/consolidatedSkills.css"
+		"styles/consolidatedSkills.css",
+		"styles/playResources.css"
 	],
 	"esmodules": [
 		"scripts/cooldown.js",
 		"scripts/moduleSettings.js",
 		"scripts/features/vursFlagScope.js",
+		"scripts/features/playResources.js",
 		"scripts/features/modes/fullVurs.js",
 		"scripts/features/modes/agnosticVurs.js",
 		"scripts/features/systemModes.js",
