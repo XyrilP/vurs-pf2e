@@ -5,6 +5,21 @@ const DEFAULT_SKILL_GROUPING_SETTING_KEY = "groupSkillsByAttributeInDefault";
 const DEFAULT_VURS_SKILLS_SETTING_KEY = "includeVursSkillsInDefault";
 const DEFAULT_SAVE_SKILLS_SETTING_KEY = "addSaveSkillsInDefault";
 
+function requestSettingsRefresh(settingName) {
+  const confirm = globalThis.Dialog?.confirm;
+  if (typeof confirm !== "function") {
+    globalThis.ui?.notifications?.warn?.(`${settingName} changed. Refresh the page to apply it.`);
+    return;
+  }
+
+  confirm({
+    title: "Refresh Required",
+    content: `<p>${settingName} changed. Refresh the page now to apply it?</p>`,
+    yes: () => window.location.reload(),
+    defaultYes: false
+  });
+}
+
 function registerModuleSettings() {
   const settings = globalThis.game?.settings;
   if (!settings?.register) return;
@@ -19,8 +34,7 @@ function registerModuleSettings() {
     onChange: value => {
       Hooks.callAll("vurs-pf2e.systemModeChanged", value);
       // Some system and sheet labels are initialized only once per page.
-      // Reload after the saved setting is applied so all mode changes take effect.
-      window.location.reload();
+      requestSettingsRefresh("System mode");
     },
     choices: {
       default: "Default",
@@ -36,7 +50,7 @@ function registerModuleSettings() {
     config: true,
     type: Boolean,
     default: false,
-    onChange: () => window.location.reload()
+    onChange: () => requestSettingsRefresh("Negative HP in Default Mode")
   });
 
   if (!registered(DEFAULT_SKILL_GROUPING_SETTING_KEY)) settings.register(MODULE_ID, DEFAULT_SKILL_GROUPING_SETTING_KEY, {
@@ -46,7 +60,7 @@ function registerModuleSettings() {
     config: true,
     type: Boolean,
     default: false,
-    onChange: () => window.location.reload()
+    onChange: () => requestSettingsRefresh("Grouped Skills in Default Mode")
   });
 
   if (!registered(DEFAULT_VURS_SKILLS_SETTING_KEY)) settings.register(MODULE_ID, DEFAULT_VURS_SKILLS_SETTING_KEY, {
@@ -56,7 +70,7 @@ function registerModuleSettings() {
     config: true,
     type: Boolean,
     default: false,
-    onChange: () => window.location.reload()
+    onChange: () => requestSettingsRefresh("VURS Skills in Default Mode")
   });
 
   if (!registered(DEFAULT_SAVE_SKILLS_SETTING_KEY)) settings.register(MODULE_ID, DEFAULT_SAVE_SKILLS_SETTING_KEY, {
@@ -66,8 +80,9 @@ function registerModuleSettings() {
     config: true,
     type: Boolean,
     default: false,
-    onChange: () => window.location.reload()
+    onChange: () => requestSettingsRefresh("Saves and Perception in Skills")
   });
+
 }
 
 // Module scripts normally register settings during init. Keep guarded later

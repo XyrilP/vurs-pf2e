@@ -69,6 +69,20 @@ const registeredActorWrappers = new Set();
 let actorCreationHookInstalled = false;
 let rollPatchRetryTimer = null;
 
+function localizeDefaultAbility(key) {
+  const original = originalTranslations.get(key);
+  if (typeof original === "string" && original.length > 0) return original;
+  const standardLabels = {
+    "PF2E.AbilityStr": "Strength",
+    "PF2E.AbilityDex": "Dexterity",
+    "PF2E.AbilityCon": "Constitution",
+    "PF2E.AbilityInt": "Intelligence",
+    "PF2E.AbilityWis": "Wisdom",
+    "PF2E.AbilityCha": "Charisma"
+  };
+  return standardLabels[key] ?? game.i18n.localize(key);
+}
+
 Hooks.once("init", registerCustomIwrTypes);
 
 // Roll classes are available during setup. Wait for PF2e's systemReady hook
@@ -135,7 +149,7 @@ Hooks.on("renderApplicationV2", (app, element, context, options) => {
     relabelVursDexteritySkill(root, actor);
     linkVursStatisticSkillControls(root, actor);
     nestVursConsolidatedSkills(root, actor);
-    groupVursSkillsByAttribute(root, actor);
+    groupVursSkillsByAttribute(root, actor, localizeDefaultAbility);
   });
 });
 Hooks.on("renderActorSheet", (app, html) => {
@@ -191,7 +205,7 @@ function applyActorSheetPresentation(app, element) {
   relabelVursDexteritySkill(root, actor);
   linkVursStatisticSkillControls(root, actor);
   nestVursConsolidatedSkills(root, actor);
-  groupVursSkillsByAttribute(root, actor);
+  groupVursSkillsByAttribute(root, actor, localizeDefaultAbility);
 }
 
 function allowNegativeHpEntry(root, actor) {
@@ -536,22 +550,30 @@ function applySystemMode(mode = getSystemMode()) {
 
 function applyActorAbilityLabels(element, actor) {
   const root = element instanceof HTMLElement ? element : element?.[0];
-  if (!root || !actor?.isOfType?.("character") ||
-    (!actorHasVursSystemFlag(actor) && !actorHasAgnosticSystemFlag(actor))) return;
+  if (!root || !actor?.isOfType?.("character")) return;
+  const useVursLabels = actorUsesVursSystem(actor);
+  const restoreDefaultLabels = !useVursLabels && isAnyVursMode();
+  if (!restoreDefaultLabels && !(useVursLabels && getSystemMode() === "default")) return;
 
   const replacements = new Map();
   const shortLabels = { str: "Str", dex: "Agi", con: "Wea", int: "Int", wis: "Spi", cha: "Voi" };
+  const standardShortLabels = { str: "Str", dex: "Dex", con: "Con", int: "Int", wis: "Wis", cha: "Cha" };
   const standardLabels = { str: "Strength", dex: "Dexterity", con: "Constitution", int: "Intelligence", wis: "Wisdom", cha: "Charisma" };
   for (const [ability, vursLabel] of Object.entries(VURS_ABILITY_LABELS)) {
     const original = game.i18n.localize(`PF2E.Ability${ability[0].toUpperCase()}${ability.slice(1)}`);
     const current = original && original !== `PF2E.Ability${ability[0].toUpperCase()}${ability.slice(1)}`
       ? original
       : standardLabels[ability];
-    replacements.set(current, vursLabel);
-    replacements.set(standardLabels[ability], vursLabel);
+    const label = useVursLabels ? vursLabel : standardLabels[ability];
+    replacements.set(useVursLabels ? current : vursLabel, label);
+    replacements.set(useVursLabels ? standardLabels[ability] : vursLabel, label);
     const shortOriginal = game.i18n.localize(`PF2E.AbilityId.${ability}`);
-    replacements.set(shortOriginal && shortOriginal !== `PF2E.AbilityId.${ability}` ? shortOriginal : shortLabels[ability], shortLabels[ability]);
-    replacements.set(({ str: "Str", dex: "Dex", con: "Con", int: "Int", wis: "Wis", cha: "Cha" })[ability], shortLabels[ability]);
+    const currentShort = shortOriginal && shortOriginal !== `PF2E.AbilityId.${ability}`
+      ? shortOriginal
+      : standardShortLabels[ability];
+    const shortLabel = useVursLabels ? shortLabels[ability] : standardShortLabels[ability];
+    replacements.set(useVursLabels ? currentShort : shortLabels[ability], shortLabel);
+    replacements.set(useVursLabels ? standardShortLabels[ability] : shortLabels[ability], shortLabel);
   }
 
   const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
@@ -833,8 +855,10 @@ function registerVursCharacterPreparationWrappers(actorClass = CONFIG.PF2E?.Acto
           VURS_ABILITY_LABELS.str,
           true
         );
-        if (!isFullVursMode() &&
-          (actorHasVursSystemFlag(this) || actorHasAgnosticSystemFlag(this))) applyActorAbilityDataLabels(this);
+        if (actorUsesAgnosticVurs(this) || (!isFullVursMode() &&
+          (actorHasVursSystemFlag(this) || actorHasAgnosticSystemFlag(this)))) applyActorAbilityDataLabels(this);
+      } else if (isAnyVursMode()) {
+        applyDefaultActorAbilityDataLabels(this);
       }
       applyVursConsolidatedSkillAttributes(this);
       applyVursStatisticSkillMirrors(this);
@@ -1185,6 +1209,18 @@ function applyActorAbilityDataLabels(actor) {
   }
 }
 
+function applyDefaultActorAbilityDataLabels(actor) {
+  const abilities = actor.system?.abilities;
+  if (!abilities) return;
+  const labels = { str: "Strength", dex: "Dexterity", con: "Constitution", int: "Intelligence", wis: "Wisdom", cha: "Charisma" };
+  const shortLabels = { str: "Str", dex: "Dex", con: "Con", int: "Int", wis: "Wis", cha: "Cha" };
+  for (const [slug, label] of Object.entries(labels)) {
+    if (!abilities[slug]) continue;
+    abilities[slug].label = label;
+    abilities[slug].shortLabel = shortLabels[slug];
+  }
+}
+
 function applyMainAttributeStar(element, actor) {
   const root = element instanceof HTMLElement ? element : element?.[0];
   const selectedAttribute = VURS_MAIN_ATTRIBUTE_ENABLED && actorUsesMainAttribute(actor)
@@ -1283,6 +1319,7 @@ async function migrateLegacyVursActorFlags() {
     { legacy: "hpReduction", current: "flags.vurs.hp.maxReduction" },
     { legacy: "vursSystem", current: "flags.vurs.vursSystem" },
     { legacy: "agnosticSystem", current: "flags.vurs.agnosticSystem" },
+    { legacy: "defaultSystem", current: "flags.vurs.defaultSystem" },
     { legacy: "diceless", current: "flags.vurs.diceless" }
   ];
   for (const actor of game.actors?.contents ?? []) {
@@ -1303,7 +1340,7 @@ async function migrateLegacyVursActorFlags() {
       }
     }
 
-    const legacyTopLevelKeys = new Set(["mainAttribute", "MainAttribute", "hpReduction", "vursSystem", "agnosticSystem", "diceless"]);
+    const legacyTopLevelKeys = new Set(["mainAttribute", "MainAttribute", "hpReduction", "vursSystem", "agnosticSystem", "defaultSystem", "diceless"]);
     const legacyHp = legacyFlags.hp;
     const hpContainsOnlyLegacyValue = !legacyHp || (typeof legacyHp === "object" &&
       Object.keys(legacyHp).every(key => key === "maxReduction"));

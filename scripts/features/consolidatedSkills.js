@@ -1,4 +1,4 @@
-import { actorUsesAgnosticVurs, actorUsesVursSystem, getSystemMode } from "./systemModes.js";
+import { actorUsesAgnosticVurs, actorUsesVursSystem, getActorSystemMode } from "./systemModes.js";
 
 const CONSOLIDATED_SKILLS = Object.freeze({
   acrobatics: "mobility",
@@ -15,24 +15,25 @@ const MIRRORED_STATISTIC_SKILLS = Object.freeze({
   "perception-skill": { statistic: "perception", type: "perception" }
 });
 const SKILL_ATTRIBUTE_GROUPS = Object.freeze([
-  { attribute: "str", label: "Strength", color: "#e74c3c" },
-  { attribute: "dex", label: "Agility", color: "#2ecc71" },
-  { attribute: "con", label: "Wealth", color: "#f1c40f" },
-  { attribute: "int", label: "Intelligence", color: "#3498db" },
-  { attribute: "cha", label: "Void", color: "#9b59b6" },
-  { attribute: "wis", label: "Spirit", color: "#00bcd4" }
+  { attribute: "str", label: "PF2E.AbilityStr", color: "#e74c3c" },
+  { attribute: "dex", label: "PF2E.AbilityDex", color: "#2ecc71" },
+  { attribute: "con", label: "PF2E.AbilityCon", color: "#f1c40f" },
+  { attribute: "int", label: "PF2E.AbilityInt", color: "#3498db" },
+  { attribute: "cha", label: "PF2E.AbilityCha", color: "#9b59b6" },
+  { attribute: "wis", label: "PF2E.AbilityWis", color: "#00bcd4" }
 ]);
 const DEFAULT_SKILL_ATTRIBUTE_GROUPS = Object.freeze([
-  { attribute: "str", label: "Strength", color: "#e74c3c" },
-  { attribute: "dex", label: "Dexterity", color: "#2ecc71" },
-  { attribute: "con", label: "Constitution", color: "#f39c12" },
-  { attribute: "int", label: "Intelligence", color: "#3498db" },
-  { attribute: "wis", label: "Wisdom", color: "#00bcd4" },
-  { attribute: "cha", label: "Charisma", color: "#9b59b6" }
+  { attribute: "str", label: "PF2E.AbilityStr", color: "#e74c3c" },
+  { attribute: "dex", label: "PF2E.AbilityDex", color: "#2ecc71" },
+  { attribute: "con", label: "PF2E.AbilityCon", color: "#f39c12" },
+  { attribute: "int", label: "PF2E.AbilityInt", color: "#3498db" },
+  { attribute: "wis", label: "PF2E.AbilityWis", color: "#00bcd4" },
+  { attribute: "cha", label: "PF2E.AbilityCha", color: "#e84393" }
 ]);
 const DEFAULT_SKILL_GROUPING_SETTING = "groupSkillsByAttributeInDefault";
 const DEFAULT_VURS_SKILLS_SETTING = "includeVursSkillsInDefault";
 const DEFAULT_SAVE_SKILLS_SETTING = "addSaveSkillsInDefault";
+const SKILL_ATTRIBUTE_GROUP_COLUMNS_FLAG = "sheet.groupedSkillsColumns";
 const VURS_HOMEBREW_SKILL_SLUGS = Object.freeze([
   "power",
   "dexterity-skill",
@@ -104,14 +105,14 @@ const SKILL_ATTRIBUTE_FALLBACK_ICONS = Object.freeze({
   dex: { icon: "socks" },
   con: { icon: "coins" },
   int: { icon: "certificate" },
-  cha: { icon: "snowflake" },
-  wis: { icon: "ghost" }
+  cha: { icon: "moon" },
+  wis: { icon: "hands-praying" }
 });
 const DEFAULT_SKILL_ATTRIBUTE_ICONS = Object.freeze({
   ...SKILL_ATTRIBUTE_FALLBACK_ICONS,
   con: { icon: "heart" },
   wis: { icon: "eye" },
-  cha: { icon: "music" }
+  cha: { icon: "lips" }
 });
 const PF2E_ELEGANT_SKILL_FRAME = `<svg xmlns="http://www.w3.org/2000/svg" width="33" height="33" overflow="scroll"><style>.st1{stroke:#231f20;stroke-miterlimit:10}.st1,.st2{fill:none}</style><g opacity=".25"><path class="st1" d="M.5 20v-7"/><path class="st2" d="M13 20v-7"/><path class="st1" d="M13 .5h7"/><path class="st2" d="M13 13h7"/><path class="st1" d="M32.5 13v7"/><path class="st2" d="M20 13v7"/><path class="st1" d="M20 32.5h-7"/><path class="st2" d="M20 20h-7"/><g><path class="st1" d="M.5.5h3.1v3.1H.5zM3.6 3.6h3.1v3.1H3.6zM6.8 3.6h3.1v3.1H6.8zM3.6 6.8h3.1v3.1H3.6zM3.6 6.8H.5V13M13 .5H6.8v3.1"/></g><g><path class="st1" d="M29.4.5h3.1v3.1h-3.1zM26.3 3.6h3.1v3.1h-3.1zM26.3 6.8h3.1v3.1h-3.1zM23.1 3.6h3.1v3.1h-3.1zM26.3 3.6V.5H20"/><path class="st1" d="M32.5 13V6.8h-3.1"/></g><g><path class="st1" d="M29.4 29.4h3.1v3.1h-3.1z"/><path class="st1" d="M26.3 26.3h3.1v3.1h-3.1zM23.1 26.3h3.1v3.1h-3.1zM26.3 23.1h3.1v3.1h-3.1zM29.4 26.3h3.1V20M20 32.5h6.3v-3.1"/></g><g><path class="st1" d="M.5 29.4h3.1v3.1H.5zM3.6 26.3h3.1v3.1H3.6zM3.6 23.1h3.1v3.1H3.6zM6.8 26.3h3.1v3.1H6.8z"/><path class="st1" d="M6.8 29.4v3.1H13M.5 20v6.3h3.1"/></g></g></svg>`;
 
@@ -167,7 +168,7 @@ export function linkVursStatisticSkillControls(root, actor) {
 
 function shouldMirrorSaveSkills(actor) {
   return actorUsesVursSystem(actor) || (
-    getSystemMode() === "default" &&
+    getActorSystemMode(actor) === "default" &&
     game.settings.get("vurs-pf2e", DEFAULT_SAVE_SKILLS_SETTING) === true
   );
 }
@@ -378,7 +379,7 @@ export function relabelVursDexteritySkill(root, actor) {
   }
 }
 
-export function groupVursSkillsByAttribute(root, actor) {
+export function groupVursSkillsByAttribute(root, actor, localizeDefault = key => game.i18n.localize(key)) {
   if (!(root instanceof HTMLElement) || !actor?.isOfType?.("character")) return;
 
   const list = root.querySelector('.tab.proficiencies ul.proficiencies-list:not(.lores-list)');
@@ -391,11 +392,12 @@ export function groupVursSkillsByAttribute(root, actor) {
     for (const row of [...(innerList?.children ?? [])]) list.append(row);
     group.remove();
   }
+  const defaultActor = getActorSystemMode(actor) === "default";
   const showAllVursSkills = actorUsesVursSystem(actor) || (
-    getSystemMode() === "default" &&
+    defaultActor &&
     game.settings.get("vurs-pf2e", DEFAULT_VURS_SKILLS_SETTING) === true
   );
-  const showSaveSkills = getSystemMode() === "default" &&
+  const showSaveSkills = defaultActor &&
     game.settings.get("vurs-pf2e", DEFAULT_SAVE_SKILLS_SETTING) === true;
   for (const row of list.querySelectorAll(":scope > li[data-statistic]")) {
     if (!VURS_HOMEBREW_SKILL_SLUGS.includes(row.dataset.statistic)) continue;
@@ -404,7 +406,7 @@ export function groupVursSkillsByAttribute(root, actor) {
 
   const usesVurs = actorUsesVursSystem(actor);
   const isDefaultGrouping = !usesVurs && (
-    getSystemMode() === "default" &&
+    defaultActor &&
     game.settings.get("vurs-pf2e", DEFAULT_SKILL_GROUPING_SETTING) === true
   );
   const shouldGroup = usesVurs || isDefaultGrouping;
@@ -412,9 +414,17 @@ export function groupVursSkillsByAttribute(root, actor) {
   const attributeIcons = isDefaultGrouping ? DEFAULT_SKILL_ATTRIBUTE_ICONS : SKILL_ATTRIBUTE_FALLBACK_ICONS;
   list.classList.toggle("vurs-attribute-group-layout", shouldGroup);
   if (!shouldGroup) {
+    list.style.removeProperty("--vurs-skill-attribute-columns");
+    list.classList.remove("vurs-skill-layout-two-columns");
+    list.previousElementSibling?.querySelector?.(":scope > .controls > .vurs-skill-column-count")?.remove();
     disableSkillNameHoverScroll(list);
     return;
   }
+  const configuredColumns = Number(foundry.utils.getProperty(actor.flags?.vurs, SKILL_ATTRIBUTE_GROUP_COLUMNS_FLAG));
+  const columns = configuredColumns === 2 ? 2 : 3;
+  list.style.setProperty("--vurs-skill-attribute-columns", String(columns));
+  list.classList.toggle("vurs-skill-layout-two-columns", columns === 2);
+  addSkillGroupColumnsControl(list, columns, actor);
 
   const rowsByAttribute = new Map(attributeGroups.map(({ attribute }) => [attribute, []]));
   const ungroupedRows = [];
@@ -443,14 +453,15 @@ export function groupVursSkillsByAttribute(root, actor) {
     group.style.setProperty("--vurs-skill-attribute-frame", skillFrameDataUrl(color));
     const heading = document.createElement("h3");
     heading.className = "vurs-skill-attribute-group-title";
+    const localizedLabel = isDefaultGrouping ? localizeDefault(label) : game.i18n.localize(label);
     const attributeIcon = attributeIcons[attribute];
     if (attributeIcon) {
       const icon = document.createElement("i");
       icon.className = `fa-solid fa-${attributeIcon.icon} vurs-skill-attribute-header-icon`;
       icon.setAttribute("aria-hidden", "true");
-      heading.append(icon, document.createTextNode(label));
+      heading.append(icon, document.createTextNode(localizedLabel));
     } else {
-      heading.textContent = label;
+      heading.textContent = localizedLabel;
     }
     const innerList = document.createElement("ul");
     innerList.className = "vurs-skill-attribute-group-list";
@@ -460,6 +471,54 @@ export function groupVursSkillsByAttribute(root, actor) {
   }
   applyVursSkillIcons(list, attributeIcons);
   enableSkillNameHoverScroll(list);
+  applySkillNameScaling(list);
+}
+
+function addSkillGroupColumnsControl(list, selectedColumns, actor) {
+  const header = list.previousElementSibling;
+  if (!(header instanceof HTMLElement) || header.tagName !== "HEADER") return;
+  let controls = header.querySelector(":scope > .controls");
+  if (!controls) {
+    controls = document.createElement("div");
+    controls.className = "controls";
+    header.append(controls);
+  }
+
+  let select = controls.querySelector(":scope > .vurs-skill-column-count");
+  if (!select) {
+    select = document.createElement("select");
+    select.className = "vurs-skill-column-count";
+    select.setAttribute("aria-label", "Core Skills column layout");
+    select.title = "Core Skills column layout";
+    for (const columns of [2, 3]) {
+      const option = document.createElement("option");
+      option.value = String(columns);
+      option.textContent = `${columns} Columns`;
+      select.append(option);
+    }
+    select.addEventListener("change", async () => {
+      const columns = Number(select.value) === 2 ? 2 : 3;
+      const previousColumns = Number(foundry.utils.getProperty(actor.flags?.vurs, SKILL_ATTRIBUTE_GROUP_COLUMNS_FLAG)) === 2 ? 2 : 3;
+      setSkillGroupColumns(list, columns);
+      try {
+        await actor.update({ [`flags.vurs.${SKILL_ATTRIBUTE_GROUP_COLUMNS_FLAG}`]: columns });
+      } catch (error) {
+        select.value = String(previousColumns);
+        setSkillGroupColumns(list, previousColumns);
+        console.error("vurs-pf2e | Could not update the Core Skills column layout", error);
+      }
+    });
+  }
+  select.value = String(selectedColumns);
+  controls.prepend(select);
+}
+
+function setSkillGroupColumns(list, columns) {
+  list.style.setProperty("--vurs-skill-attribute-columns", String(columns));
+  list.classList.toggle("vurs-skill-layout-two-columns", columns === 2);
+  const control = list.previousElementSibling?.querySelector?.(":scope > .controls > .vurs-skill-column-count");
+  if (control) control.value = String(columns);
+  applySkillNameScaling(list);
 }
 
 function applyVursSkillIcons(list, attributeIcons = SKILL_ATTRIBUTE_FALLBACK_ICONS) {
@@ -506,30 +565,19 @@ function enableSkillNameHoverScroll(list) {
     const text = name.querySelector(":scope > .vurs-skill-name-text");
     if (!text?.textContent?.trim()) return;
 
-    // Measure the full label in its rendered font, regardless of which skill
-    // or attribute group it belongs to.
-    const computed = getComputedStyle(name);
-    const measure = document.createElement("span");
-    Object.assign(measure.style, {
-      fontFamily: computed.fontFamily,
-      fontSize: computed.fontSize,
-      fontStyle: computed.fontStyle,
-      fontWeight: computed.fontWeight,
-      letterSpacing: computed.letterSpacing,
-      position: "fixed",
-      textTransform: computed.textTransform,
-      visibility: "hidden",
-      whiteSpace: "nowrap",
-      width: "max-content"
-    });
-    measure.textContent = text.textContent;
-    document.body.append(measure);
-    const overflow = measure.getBoundingClientRect().width - name.clientWidth;
-    measure.remove();
-    if (overflow <= 1) return;
+    // Restore the normal font size while hovered. This lets the original-size
+    // label scroll even when scaling had reduced it enough to appear to fit.
+    const scaledFontSize = text.style.fontSize;
+    text.style.removeProperty("font-size");
+    const fontSize = Number.parseFloat(getComputedStyle(text).fontSize);
+    const overflow = measureSkillNameWidth(text, fontSize) - name.clientWidth;
+    if (overflow <= 1) {
+      if (scaledFontSize) text.style.fontSize = scaledFontSize;
+      return;
+    }
 
     name.style.setProperty("--vurs-skill-name-offset", `${-overflow}px`);
-    name.style.setProperty("--vurs-skill-name-duration", `${Math.max(2, overflow / 30)}s`);
+    name.style.setProperty("--vurs-skill-name-duration", "2s");
     name.classList.add("vurs-skill-name-scrolling");
   };
   const onPointerOut = event => {
@@ -539,10 +587,66 @@ function enableSkillNameHoverScroll(list) {
     name.classList.remove("vurs-skill-name-scrolling");
     name.style.removeProperty("--vurs-skill-name-offset");
     name.style.removeProperty("--vurs-skill-name-duration");
+    applySkillNameScaling(list);
   };
   list._vursSkillNameHoverScrollHandlers = { onPointerOver, onPointerOut };
   list.addEventListener("pointerover", onPointerOver);
   list.addEventListener("pointerout", onPointerOut);
+}
+
+function measureSkillNameWidth(text, fontSize) {
+  const computed = getComputedStyle(text);
+  const measure = document.createElement("span");
+  Object.assign(measure.style, {
+    display: "inline-block",
+    fontFamily: computed.fontFamily,
+    fontSize: `${fontSize}px`,
+    fontStyle: computed.fontStyle,
+    fontVariant: computed.fontVariant,
+    fontWeight: computed.fontWeight,
+    letterSpacing: computed.letterSpacing,
+    position: "fixed",
+    textTransform: computed.textTransform,
+    visibility: "hidden",
+    whiteSpace: "nowrap",
+    width: "max-content"
+  });
+  measure.textContent = text.textContent;
+  document.body.append(measure);
+  const width = measure.getBoundingClientRect().width;
+  measure.remove();
+  return width;
+}
+
+function applySkillNameScaling(list) {
+  const twoColumns = list.classList.contains("vurs-skill-layout-two-columns");
+  for (const name of list.querySelectorAll(".vurs-skill-attribute-group-list .name")) {
+    const text = name.querySelector(":scope > .vurs-skill-name-text");
+    if (!text) continue;
+    if (twoColumns) {
+      text.style.removeProperty("font-size");
+      continue;
+    }
+    if (name.classList.contains("vurs-skill-name-scrolling")) continue;
+    text.style.removeProperty("font-size");
+
+    const baseSize = Number.parseFloat(getComputedStyle(name).fontSize);
+    const availableWidth = name.clientWidth;
+    if (!Number.isFinite(baseSize) || availableWidth <= 0) continue;
+    const fullWidth = measureSkillNameWidth(text, baseSize);
+    if (fullWidth <= availableWidth || fullWidth <= 0) continue;
+
+    // Three-column labels shrink by at most half. Hover scrolling handles
+    // any remaining overflow at that readable minimum size.
+    const scale = Math.max(0.5, availableWidth / fullWidth);
+    text.style.fontSize = `${baseSize * scale}px`;
+  }
+
+  if (typeof ResizeObserver === "undefined") return;
+  if (!list._vursSkillNameScaleObserver) {
+    list._vursSkillNameScaleObserver = new ResizeObserver(() => applySkillNameScaling(list));
+    list._vursSkillNameScaleObserver.observe(list);
+  }
 }
 
 function disableSkillNameHoverScroll(list) {
@@ -556,8 +660,15 @@ function disableSkillNameHoverScroll(list) {
     name.classList.remove("vurs-skill-name-scrolling");
     name.style.removeProperty("--vurs-skill-name-offset");
     name.style.removeProperty("--vurs-skill-name-duration");
+    name.style.removeProperty("font-size");
+    delete name.dataset.vursSkillBaseFontSize;
+    name.style.removeProperty("font-size");
+    delete name.dataset.vursSkillBaseFontSize;
     const text = name.querySelector(":scope > .vurs-skill-name-text");
     if (text) {
+      text.style.removeProperty("font-size");
+      text.style.removeProperty("transition");
+      text.style.removeProperty("transform");
       name.append(...text.childNodes);
       text.remove();
     }
@@ -565,6 +676,8 @@ function disableSkillNameHoverScroll(list) {
     row?.querySelector(":scope > a.d20, :scope > .vurs-skill-parent-row > a.d20")
       ?.querySelector(":scope > .vurs-skill-roll-icon")?.remove();
   }
+  list._vursSkillNameScaleObserver?.disconnect();
+  delete list._vursSkillNameScaleObserver;
   for (const row of list.querySelectorAll("li[data-statistic]")) delete row.dataset.vursSkillAttribute;
 }
 
@@ -649,7 +762,7 @@ function ensureConsolidatedSkillStyles() {
   style.textContent = `
     .actor.sheet.character .tab.proficiencies ul.proficiencies-list.vurs-attribute-group-layout {
       align-items: stretch !important;
-      grid-template-columns: repeat(3, minmax(0, 1fr)) !important;
+      grid-template-columns: repeat(var(--vurs-skill-attribute-columns, 3), minmax(0, 1fr)) !important;
     }
     .actor.sheet.character .tab.proficiencies ul.proficiencies-list > li.vurs-consolidated-parent {
       align-items: stretch !important;
@@ -661,14 +774,14 @@ function ensureConsolidatedSkillStyles() {
     .actor.sheet.character .tab.proficiencies .vurs-skill-parent-row {
       align-items: center !important;
       display: flex !important;
-      min-height: 2.25rem;
+      min-height: 1.35rem;
       width: 100%;
     }
     .actor.sheet.character .tab.proficiencies ul.vurs-consolidated-subskills {
       border-left: 1px dotted var(--color-border-light-tertiary);
       display: flex !important;
       flex-direction: column !important;
-      gap: var(--space-2);
+      gap: 0;
       list-style: none;
       margin: 0 0 var(--space-2) var(--space-16);
       padding: 0 0 0 var(--space-10);
@@ -682,7 +795,7 @@ function ensureConsolidatedSkillStyles() {
       box-shadow: none !important;
       display: flex !important;
       flex: 0 0 auto;
-      min-height: 1.75rem !important;
+      min-height: 1.1rem !important;
       min-width: 0;
       padding: 0 !important;
       position: relative;
@@ -727,6 +840,13 @@ function ensureConsolidatedSkillStyles() {
     .actor.sheet.character .tab.proficiencies .vurs-skill-attribute-header-icon {
       font-size: 0.8em;
     }
+    .actor.sheet.character .tab.proficiencies > header .controls .vurs-skill-column-count {
+      flex: 0 0 auto;
+      font-size: var(--font-size-12);
+      height: 1.6em;
+      min-width: 6.5em;
+      width: auto;
+    }
     .actor.sheet.character .tab.proficiencies ul.vurs-skill-attribute-group-list {
       align-items: stretch;
       display: grid !important;
@@ -747,23 +867,25 @@ function ensureConsolidatedSkillStyles() {
       box-shadow: none !important;
       box-sizing: border-box;
       font-size: var(--font-size-14);
-      min-height: 1.8rem !important;
+      min-height: 1.2rem !important;
       min-width: 0;
       overflow: hidden;
-      padding: 0 var(--space-2) !important;
+      padding: 0 1px !important;
       width: 100%;
     }
     .actor.sheet.character .tab.proficiencies ul.vurs-skill-attribute-group-list > li a.d20 {
-      flex: 0 0 1.25rem;
-      padding: var(--space-1);
+      flex: 0 0 0.95rem;
+      padding: 0;
     }
     .actor.sheet.character .tab.proficiencies ul.vurs-skill-attribute-group-list > li .modifier {
-      flex: 0 0 1.5rem;
-      margin-right: var(--space-1);
-      width: 1.5rem;
+      flex: 0 0 1.1rem;
+      font-size: var(--font-size-14);
+      margin-right: 1px;
+      width: 1.1rem;
     }
     .actor.sheet.character .tab.proficiencies ul.vurs-skill-attribute-group-list > li .name {
       flex: 1 1 auto;
+      font-size: var(--font-size-14);
       min-width: 0;
       overflow: hidden;
       text-overflow: ellipsis;
@@ -803,10 +925,10 @@ function ensureConsolidatedSkillStyles() {
     @keyframes vurs-skill-name-scroll {
       to { transform: translateX(var(--vurs-skill-name-offset)); }
     }
-    .actor.sheet.character .tab.proficiencies ul.vurs-skill-attribute-group-list > li select.pf-rank {
+    .actor.sheet.character .tab.proficiencies ul.proficiencies-list:not(.vurs-skill-layout-two-columns) ul.vurs-skill-attribute-group-list > li select.pf-rank {
       flex: 0 0 3.1rem;
       font-size: 8px;
-      height: 1rem;
+      height: 0.85rem;
       min-width: 0;
       padding: 0 1px;
       width: 3.1rem;
@@ -826,6 +948,41 @@ function ensureConsolidatedSkillStyles() {
     .actor.sheet.character .tab.proficiencies .vurs-consolidated-subskills select.skill-proficiency {
       display: inline-block !important;
       visibility: visible !important;
+    }
+    .actor.sheet.character .tab.proficiencies ul.proficiencies-list.vurs-skill-layout-two-columns ul.vurs-skill-attribute-group-list > li {
+      font-size: var(--font-size-16);
+    }
+    .actor.sheet.character .tab.proficiencies ul.proficiencies-list.vurs-skill-layout-two-columns ul.vurs-skill-attribute-group-list > li {
+      min-height: 2.25rem !important;
+      padding: 0 var(--space-8) 0 var(--space-4) !important;
+    }
+    .actor.sheet.character .tab.proficiencies ul.proficiencies-list.vurs-skill-layout-two-columns ul.vurs-skill-attribute-group-list > li a.d20 {
+      flex: 0 0 auto;
+      padding: var(--space-4);
+    }
+    .actor.sheet.character .tab.proficiencies ul.proficiencies-list.vurs-skill-layout-two-columns ul.vurs-skill-attribute-group-list > li .modifier {
+      flex: 0 0 1.75rem;
+      font-size: var(--font-size-16);
+      margin-right: var(--space-4);
+      width: 1.75rem;
+    }
+    .actor.sheet.character .tab.proficiencies ul.proficiencies-list.vurs-skill-layout-two-columns ul.vurs-skill-attribute-group-list > li .name,
+    .actor.sheet.character .tab.proficiencies ul.proficiencies-list.vurs-skill-layout-two-columns .vurs-consolidated-subskills .name {
+      font-size: var(--font-size-14);
+      line-height: 0.9;
+      overflow: visible;
+      text-overflow: clip;
+      white-space: normal;
+    }
+    .actor.sheet.character .tab.proficiencies ul.proficiencies-list.vurs-skill-layout-two-columns .vurs-skill-name-text {
+      display: inline;
+      max-width: none;
+      overflow: visible;
+      text-overflow: clip;
+      white-space: normal;
+    }
+    .actor.sheet.character .tab.proficiencies ul.proficiencies-list.vurs-skill-layout-two-columns ul.vurs-consolidated-subskills > li {
+      min-height: 2.25rem !important;
     }
   `;
   if (!style.isConnected) document.head.append(style);

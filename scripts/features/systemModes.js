@@ -36,7 +36,7 @@ function resolveActor(actor) {
   return actor ?? game.actors?.get(reference) ?? null;
 }
 
-function readActorFlag(actor, path) {
+function readActorFlagValue(actor, path) {
   actor = resolveActor(actor);
   let serializedActor;
   try { serializedActor = actor?.toObject?.(); } catch { serializedActor = null; }
@@ -58,51 +58,65 @@ function readActorFlag(actor, path) {
     const flag = currentFlag !== undefined
       ? currentFlag
       : foundry.utils.getProperty(source, `flags.${MODULE_ID}.${path}`);
-    if (flag === 1 || (typeof flag === "string" && flag.trim() === "1")) return true;
+    if (flag === 1 || flag === "1" || flag === true) return 1;
+    if (flag === 0 || flag === "0" || flag === false) return 0;
   }
-  return false;
+  return null;
 }
 
 export function actorHasVursSystemFlag(actor) {
-  return readActorFlag(actor, "vursSystem");
+  return readActorFlagValue(actor, "vursSystem") === 1;
 }
 
 export function actorHasAgnosticSystemFlag(actor) {
-  return readActorFlag(actor, "agnosticSystem");
+  return readActorFlagValue(actor, "agnosticSystem") === 1;
+}
+
+export function getActorSystemMode(actor) {
+  const defaultFlag = readActorFlagValue(actor, "defaultSystem");
+  const fullFlag = readActorFlagValue(actor, "vursSystem");
+  const agnosticFlag = readActorFlagValue(actor, "agnosticSystem");
+
+  // This explicit actor override always selects ordinary PF2e behavior.
+  if (defaultFlag === 1) return "default";
+
+  // Explicitly clearing both flags opts an actor into ordinary PF2e behavior,
+  // even when the world has selected a VURS profile.
+  if (fullFlag === 0 && agnosticFlag === 0) return "default";
+
+  if (isFullVursMode()) {
+    return agnosticFlag === 1 ? AGNOSTIC_VURS_MODE.id : FULL_VURS_MODE.id;
+  }
+  if (isAgnosticVursMode()) {
+    return fullFlag === 1 ? FULL_VURS_MODE.id : AGNOSTIC_VURS_MODE.id;
+  }
+  if (fullFlag === 1) return FULL_VURS_MODE.id;
+  if (agnosticFlag === 1) return AGNOSTIC_VURS_MODE.id;
+  return "default";
 }
 
 export function actorUsesAgnosticVurs(actor) {
-  // A world-wide Full VURS selection takes precedence. Otherwise the actor
-  // flag opts that actor into the Agnostic profile when the world is Default.
-  return !isFullVursMode() && (isAgnosticVursMode() || actorHasAgnosticSystemFlag(actor));
+  return getActorSystemMode(actor) === AGNOSTIC_VURS_MODE.id;
 }
 
 export function actorHasDicelessFlag(actor) {
-  return readActorFlag(actor, "diceless");
+  return readActorFlagValue(actor, "diceless") === 1;
 }
 
 export function actorUsesVursSystem(actor) {
-  return Boolean(getModeProfile()) || actorHasVursSystemFlag(actor) || actorHasAgnosticSystemFlag(actor);
+  return getModeProfile(getActorSystemMode(actor)) !== null;
 }
 
 export function actorUsesMainAttribute(actor) {
-  // The actor-level VURS opt-in enables Main in Default mode, while the
-  // Agnostic VURS world mode intentionally leaves this full-VURS feature off.
-  if (isFullVursMode()) return true;
-  if (actorUsesAgnosticVurs(actor)) return false;
-  return actorHasVursSystemFlag(actor);
+  return getActorSystemMode(actor) === FULL_VURS_MODE.id;
 }
 
 export function actorUsesVursHpRules(actor) {
-  const mode = getSystemMode();
+  const mode = getActorSystemMode(actor);
   if (getModeProfile(mode)?.systemWideNegativeHp) return true;
-  if (mode === "default") {
-    return game.settings.get(MODULE_ID, "negativeHpInDefault") === true ||
-      actorHasVursSystemFlag(actor) || actorHasAgnosticSystemFlag(actor);
-  }
-  return actorHasVursSystemFlag(actor) || actorHasAgnosticSystemFlag(actor);
+  return game.settings.get(MODULE_ID, "negativeHpInDefault") === true;
 }
 
 export function actorUsesDicelessRolls(actor) {
-  return Boolean(getModeProfile()?.systemWideDiceless) || actorHasDicelessFlag(actor) || actorHasVursSystemFlag(actor);
+  return Boolean(getModeProfile(getActorSystemMode(actor))?.systemWideDiceless) || actorHasDicelessFlag(actor);
 }

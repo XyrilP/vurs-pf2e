@@ -372,7 +372,7 @@ function installVursAverageDamage() {
       const isPendingCheckRoll = Boolean(pendingCheck && !pendingCheck.rollApplied);
       const checkActor = pendingCheck?.actor ?? this.options?.actor;
       const actorDiceless = pendingCheck?.actorDiceless || this.options.vursDiceless === true || actorUsesDicelessRolls(checkActor);
-      const dicelessEnabled = isFullVursMode(mode) || actorDiceless;
+      const dicelessEnabled = checkActor ? actorDiceless : isFullVursMode(mode);
       const isVursCheckRoll = dicelessEnabled && (
         isPendingCheckRoll || looksLikePf2eCheckRoll || Number.isFinite(this.options?.vursFixedBase)
       );
@@ -388,7 +388,8 @@ function installVursAverageDamage() {
       }
       const damageActor = getDamageRollActor(this) ?? activeDamageActors.at(-1);
       const damageActorDiceless = this.options?.vursDiceless === true || actorUsesDicelessRolls(damageActor);
-      const isDamageRoll = (isFullVursMode(mode) || damageActorDiceless) && (
+      const damageDicelessEnabled = damageActor ? damageActorDiceless : isFullVursMode(mode);
+      const isDamageRoll = damageDicelessEnabled && (
         ["DamageRoll", "DamageInstance"].includes(rollClass) ||
         this.options?.type === "damage-roll" ||
         Boolean(this.options?.damage)
