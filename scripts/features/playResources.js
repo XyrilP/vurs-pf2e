@@ -294,14 +294,29 @@ async function resetEncounterPlayResources(combat) {
 }
 
 function getFullVursDefaultMax(actor, resourceKey) {
-  if (!actorUsesVursSystem(actor) && getSystemModeForPlayResource(actor) !== "default") return undefined;
-  // Agnostic VURS does not derive Action Points from VURS attributes and
-  // skills, but it still uses the standard three-point Action Point pool.
+  // Agnostic VURS uses fixed Action Point and Reaction pools. Check this
+  // before the system-mode guard, which can otherwise return early.
   if (actorUsesAgnosticVurs(actor)) {
-    if (resourceKey === "actionPoints") return 3;
-    if (resourceKey === "reactions") return 1;
-    return undefined;
+  if (resourceKey === "actionPoints") {
+    const resource = foundry.utils.getProperty(
+      actor,
+      `${PLAY_RESOURCES_PATH}.actionPoints`
+    );
+    return resource?.max ?? 3;
   }
+
+  if (resourceKey === "reactions") {
+    const resource = foundry.utils.getProperty(
+      actor,
+      `${PLAY_RESOURCES_PATH}.reactions`
+    );
+    return resource?.max ?? 1;
+  }
+
+  return undefined;
+}
+
+  if (!actorUsesVursSystem(actor) && getSystemModeForPlayResource(actor) !== "default") return undefined;
   if (getSystemModeForPlayResource(actor) === "default") {
     if (game.settings.get("vurs-pf2e", DEFAULT_ACTION_POINTS_SETTING) !== true) return undefined;
     if (resourceKey === "actionPoints") return 3;

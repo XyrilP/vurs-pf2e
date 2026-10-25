@@ -185,7 +185,10 @@ Hooks.on("preUpdateItem", (item, changes) => {
   changes.flags.vurs["-=playCost"] = null;
 });
 Hooks.on("renderApplication", (app, html) => applyActorSheetPresentation(app, html));
-Hooks.on("updateActor", actor => {
+Hooks.on("updateActor", (actor, changes, options = {}) => {
+  // Clicking a Play-resource control updates only its own row. The update is
+  // persisted normally, but must not trigger the broad VURS UI refresh.
+  if (options.vursPlayResourceOnly) return;
   for (const app of Object.values(actor.apps ?? {})) {
     const root = app?.element instanceof HTMLElement ? app.element : app?.element?.[0];
     if (root) requestAnimationFrame(() => {
