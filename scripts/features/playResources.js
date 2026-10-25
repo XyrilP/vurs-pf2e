@@ -138,8 +138,11 @@ async function togglePlayRegenerationTooltip(section, actor, button) {
     const regeneration = getPlayResourceRegeneration(actor, definition.key, resource);
     if (regeneration) rows.push({ label: `${getPlayResourceShortLabel(actor, definition.key)} Regen`, modifier: regeneration });
   }
-  const hpRegeneration = finiteResourceNumber(foundry.utils.getProperty(actor, "flags.vurs.hp.regeneration"));
-  if (hpRegeneration) rows.unshift({ label: "HP Regeneration", modifier: hpRegeneration });
+  try {
+    for (const source of collectHealingSources(actor)) rows.unshift(source);
+  } catch (error) {
+    console.warn("vurs-pf2e | Failed to collect healing sources for Play modifiers", error);
+  }
   const tooltipId = `${section.closest("form")?.id ?? "vurs-play"}-play-modifiers`;
   const rendered = await foundry.applications.handlebars.renderTemplate(
     "systems/pf2e/templates/actors/partials/modifiers-tooltip.hbs",
@@ -174,6 +177,37 @@ async function togglePlayRegenerationTooltip(section, actor, button) {
   button._vursPlayModifiersTooltipOpen = true;
   instance.open();
   button.setAttribute("aria-expanded", "true");
+}
+
+function collectHealingSources(actor) {
+  const sources = [];
+  const seen = new Set();
+  const add = (label, value) => {
+    const amount = Number(value);
+    if (!Number.isFinite(amount) || amount === 0) return;
+    const key = `${label}|${amount}`;
+    if (seen.has(key)) return;
+    seen.add(key);
+    sources.push({ label, modifier: amount });
+  };
+  const scan = (value, sourceLabel, path = "") => {
+    if (!value || typeof value !== "object") return;
+    for (const [key, child] of Object.entries(value)) {
+      const childPath = path ? `${path}.${key}` : key;
+      if (typeof child === "number" && /fast.?healing/i.test(key)) add(`Fast Healing (${sourceLabel})`, child);
+      else if (typeof child === "number" && /(?:hp\.)?(?:regeneration|regen)/i.test(childPath)) add(`HP Regeneration (${sourceLabel})`, child);
+      else if (child && typeof child === "object") scan(child, sourceLabel, childPath);
+    }
+  };
+  scan(actor.system, actor.name ?? "Actor");
+  scan(actor.flags, actor.name ?? "Actor");
+  const items = actor.items?.contents ?? actor.items ?? [];
+  for (const item of items) {
+    scan(item.system, item.name ?? "Item");
+    scan(item.flags, item.name ?? "Item");
+    for (const effect of item.effects ?? []) scan(effect.changes, item.name ?? "Item");
+  }
+  return sources;
 }
 
 function getPlayResourceShortLabel(actor, key) {
