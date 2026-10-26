@@ -95,20 +95,18 @@ export function renderVursPlayResources(root, actor) {
     const header = document.createElement("header");
     const title = document.createElement("h2");
     title.textContent = "Play";
-    // Left-click applies staged edits; right-click discards staged edits.
+    // The Apply button occupies the former reset-button position. A normal
+    // click applies staged edits; Ctrl+left-click performs the old reset action.
     const apply = document.createElement("button");
     apply.type = "button";
     apply.className = "vurs-play-apply vurs-play-reset";
     apply.textContent = "Apply";
-    apply.title = "Left-click to apply staged changes; right-click to discard them";
-    apply.setAttribute("aria-label", "Apply staged Play resource changes; right-click to discard staged changes");
+    apply.title = "Click to apply staged changes; Ctrl+left-click to reset all Play resources";
+    apply.setAttribute("aria-label", "Apply staged Play resource changes; Ctrl+left-click to reset all Play resources");
     apply.addEventListener("click", event => {
       event.preventDefault();
-      void applyPlayResourceChanges(root, actor, section, apply);
-    });
-    apply.addEventListener("contextmenu", event => {
-      event.preventDefault();
-      discardPlayResourceChanges(root, actor, section, apply);
+      if (event.ctrlKey) void resetPlayResources(root, actor, apply);
+      else void applyPlayResourceChanges(root, actor, section, apply);
     });
     const modifiers = document.createElement("button");
     modifiers.type = "button";
@@ -275,38 +273,19 @@ function getPlayResourceEntries(actor) {
   });
 }
 
-function discardPlayResourceChanges(root, actor, section, button) {
-  if (!section || !section._vursPendingUpdates) return;
-  delete section._vursPendingUpdates;
-  // Rebuild from persisted actor data only on explicit discard, not during edits.
-  renderVursPlayResources(root, actor);
-}
-
 async function resetPlayResources(root, actor, button) {
   const confirmed = await Dialog.confirm({
     title: "Reset Play Resources?",
-    content: "<p>This will recalculate maximums and refill all Play resources. Any unapplied edits will be discarded. Do you want to continue?</p>",
+    content: "<p>This will restore SP, AP, TP, and Reactions to their maximums, set SR and KP to 0, and leave BP and MP unchanged. Any unapplied edits will be discarded. Do you want to continue?</p>",
     defaultYes: false
   });
   if (!confirmed) return;
 
   const section = button.closest(".vurs-play-resources");
   if (section?._vursPendingUpdates) delete section._vursPendingUpdates;
-  const resources = foundry.utils.getProperty(actor, PLAY_RESOURCES_PATH) ?? {};
-  const updates = {};
-  for (const definition of PLAY_RESOURCE_DEFINITIONS) {
-    const resource = resources[definition.key] ?? {};
-    const defaultMax = getFullVursDefaultMax(actor, definition.key);
-    const baseMax = finiteResourceNumber(defaultMax ?? resource.max);
-    const maxReduction = definition.hasMaxReduction ? finiteResourceNumber(resource.maxReduction) : 0;
-    const value = ["styleRank", "karmaPoints"].includes(definition.key)
-      ? 0
-      : Math.max(0, baseMax - maxReduction);
-    updates[`${PLAY_RESOURCES_PATH}.${definition.key}.value`] = value;
-  }
   button.disabled = true;
   try {
-    await actor.update(updates, { render: false });
+    await resetOneActorPlayResources(actor);
     renderVursPlayResources(root, actor);
   } catch (error) {
     console.error("vurs-pf2e | Failed to reset Play resources", error);
@@ -315,21 +294,26 @@ async function resetPlayResources(root, actor, button) {
   }
 }
 
+async function resetOneActorPlayResources(actor) {
+  if (!actor) return;
+  const resources = foundry.utils.getProperty(actor, PLAY_RESOURCES_PATH) ?? {};
+  const updates = {};
+  for (const resourceKey of ["actionPoints", "staminaPoints", "tacticPoints", "reactions"]) {
+    const resource = resources[resourceKey] ?? {};
+    const baseMax = finiteResourceNumber(getFullVursDefaultMax(actor, resourceKey) ?? resource.max);
+    updates[`${PLAY_RESOURCES_PATH}.${resourceKey}.value`] = Math.max(0, baseMax);
+  }
+  updates[`${PLAY_RESOURCES_PATH}.styleRank.value`] = 0;
+  updates[`${PLAY_RESOURCES_PATH}.karmaPoints.value`] = 0;
+  await actor.update(updates, { render: false });
+}
+
 async function resetEncounterPlayResources(combat) {
   const actors = new Set(combat?.combatants?.contents?.map(combatant => combatant.actor).filter(Boolean) ?? []);
   for (const actor of actors) {
     if (!actorUsesVursSystem(actor)) continue;
-    const resources = foundry.utils.getProperty(actor, PLAY_RESOURCES_PATH) ?? {};
-    const updates = {};
-    for (const resourceKey of ["actionPoints", "staminaPoints", "tacticPoints"]) {
-      const resource = resources[resourceKey] ?? {};
-      const baseMax = finiteResourceNumber(getFullVursDefaultMax(actor, resourceKey) ?? resource.max);
-      updates[`${PLAY_RESOURCES_PATH}.${resourceKey}.value`] = Math.max(0, baseMax);
-    }
-    updates[`${PLAY_RESOURCES_PATH}.styleRank.value`] = 0;
-    updates[`${PLAY_RESOURCES_PATH}.karmaPoints.value`] = 0;
     try {
-      await actor.update(updates, { render: false });
+      await resetOneActorPlayResources(actor);
     } catch (error) {
       console.error(`vurs-pf2e | Failed to reset Play resources for ${actor.name} at encounter transition`, error);
     }
@@ -842,11 +826,8 @@ async function savePlayResourceFlags(actor, updates, control) {
     const maxInput = row.querySelector('input[aria-label$="maximum"]');
     if (currentInput) {
       currentInput.max = String(resource.max);
-      currentInput.value = String(resource.value);
-      sizeNumberField(currentInput, resource.value);
+      if (finiteResourceNumber(currentInput.value) > resource.max) currentInput.value = String(resource.max);
     }
-    const maximumDisplay = row.querySelector(".vurs-play-resource-maximum");
-    if (maximumDisplay) maximumDisplay.textContent = formatResourceNumber(resource.max);
     if (maxInput && updates[`${resourceKey}.maxReduction`] !== undefined) {
       maxInput.value = String(resource.max);
       sizeNumberField(maxInput, resource.max);
@@ -864,11 +845,6 @@ async function savePlayResourceFlags(actor, updates, control) {
     }
     const valueDisplay = row.querySelector(":scope > .value");
     if (valueDisplay) valueDisplay.textContent = `${formatResourceNumber(resource.value)} / ${formatResourceNumber(resource.max)}`;
-    const meter = row.querySelector('[role="meter"]');
-    if (meter) {
-      meter.setAttribute("aria-valuemax", String(resource.max));
-      meter.setAttribute("aria-valuenow", String(resource.value));
-    }
   }
   const apply = section.querySelector(".vurs-play-apply");
   if (apply) {
