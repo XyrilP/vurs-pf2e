@@ -261,11 +261,10 @@ function getPlayResourceEntries(actor) {
 
     const maxReduction = definition.hasMaxReduction ? finiteResourceNumber(resource.maxReduction) : 0;
     const max = Math.max(0, baseMax - maxReduction);
-    // Only show resources with a positive effective maximum and configured
-    // regeneration. This keeps the Play panel focused on resources that can
-    // actually regenerate.
+    // The main Play Resources panel must show every resource with a usable
+    // maximum, regardless of whether it regenerates. Regeneration filtering
+    // belongs only in the Play Modifiers tooltip.
     if (max <= 0) return [];
-    if (getPlayResourceRegeneration(actor, definition.key, resource) === 0) return [];
     const value = Math.clamp(finiteResourceNumber(resource.value), 0, max);
     const label = definition.key === "actionPoints" && !actorUsesVursSystem(actor)
       ? "Actions"
@@ -423,6 +422,9 @@ function createPlayResourceRow(resource, actor) {
   const row = document.createElement("li");
   row.className = "vurs-play-resource";
   row.dataset.resource = resource.key;
+  // Keep the render-time resource model on the row so wheel edits do not
+  // rebuild/recalculate every resource on each tick.
+  row._vursResource = resource;
   if (resource.key === "budgetPoints") row.classList.add("budget-points");
   if (resource.key === "magicPoints") row.classList.add("magic-points");
   if (resource.key === "budgetPoints") {
@@ -798,7 +800,7 @@ async function savePlayResourceFlags(actor, updates, control) {
   // every wheel tick caused repeated layout/reflow and made scrolling laggy.
   row.classList.add("has-pending-changes");
   const resourceKey = row.dataset.resource;
-  const resource = getPlayResourceEntries(actor).find(entry => entry.key === resourceKey);
+  const resource = row._vursResource;
   if (resource) {
     for (const [path, nextValue] of Object.entries(updates)) {
       const [key, property] = path.split(".");
@@ -820,10 +822,19 @@ async function savePlayResourceFlags(actor, updates, control) {
       maxInput.value = String(resource.max);
       sizeNumberField(maxInput, resource.max);
     }
+    // Update the icon immediately from the staged value, without persisting
+    // anything or re-rendering the whole resource list. Preloaded Image objects
+    // provide a warm browser cache for repeated icon variants.
     const icon = row.querySelector(".vurs-play-resource-control img");
-    if (icon && resourceKey === "styleRank") {
-      icon.src = `${RESOURCE_ICON_BASE}${getResourceIcon(resource).replace(/\.webp$/i, ".svg")}`;
+    if (icon) {
+      const iconFile = getResourceIcon(resource).replace(/\.webp$/i, ".svg");
+      const preloaded = preloadedResourceIcons.get(iconFile);
+      icon.src = preloaded?.src ?? `${RESOURCE_ICON_BASE}${iconFile}`;
+      const control = icon.closest("button");
+      if (control) control.setAttribute("aria-label", `${resource.label}: ${formatResourceNumber(resource.value)} of ${formatResourceNumber(resource.max)}. Left click to increase; right click to decrease.`);
     }
+    const valueDisplay = row.querySelector(":scope > .value");
+    if (valueDisplay) valueDisplay.textContent = `${formatResourceNumber(resource.value)} / ${formatResourceNumber(resource.max)}`;
   }
   const apply = section.querySelector(".vurs-play-apply");
   if (apply) {
