@@ -203,7 +203,9 @@ async function togglePlayRecoveryTooltip(section, actor, button) {
     icon.title = row.label;
     icon.draggable = false;
     icon.style.cssText = "display:inline-block;width:1.35em;height:1.35em;object-fit:contain;vertical-align:middle;";
-    labelNode.replaceChildren(icon);
+    const recoveryText = document.createTextNode(" Recovery");
+    icon.alt = "";
+    labelNode.replaceChildren(icon, recoveryText);
     labelNode.title = row.label;
     labelNode.setAttribute("aria-label", row.label);
   }
@@ -535,7 +537,7 @@ function createPlayResourceRow(resource, actor) {
 
     const bar = document.createElement("div");
     bar.className = "vurs-play-resource-segments";
-    bar.style.cssText = "display:flex;flex-wrap:wrap;align-content:center;align-items:center;gap:.12em;min-width:0;max-width:100%;overflow:hidden;box-sizing:border-box;";
+    bar.style.cssText = "display:flex;flex:1 1 0%;flex-wrap:wrap;align-content:center;align-items:center;gap:.08em;min-width:0;width:0;max-width:100%;overflow:hidden;box-sizing:border-box;padding:0 .04em;";
     bar.setAttribute("role", "meter");
     bar.setAttribute("aria-label", resource.label);
     bar.setAttribute("aria-valuemin", "0");
@@ -550,6 +552,7 @@ function createPlayResourceRow(resource, actor) {
         const filled = segmentData.start + index < resource.value;
         star.className = `${filled ? "fa-solid" : "fa-regular"} fa-star vurs-mp-star ${filled ? "is-filled" : "is-empty"}`;
         star.style.setProperty("--segment-color", segmentData.color);
+        star.style.cssText += ";flex:0 0 auto;min-width:0;max-width:100%;font-size:.82em;line-height:1;";
         star.title = segmentData.label ?? resource.label;
         bar.append(star);
       }
@@ -895,6 +898,7 @@ async function savePlayResourceFlags(actor, updates, control) {
           const filled = segmentData.start + index < resource.value;
           star.className = `${filled ? "fa-solid" : "fa-regular"} fa-star vurs-mp-star ${filled ? "is-filled" : "is-empty"}`;
           star.style.setProperty("--segment-color", segmentData.color);
+          star.style.cssText += ";flex:0 0 auto;min-width:0;max-width:100%;font-size:.82em;line-height:1;";
           star.title = segmentData.label ?? resource.label;
           magicBar.append(star);
         }
