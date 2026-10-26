@@ -140,7 +140,32 @@ export function renderVursPlayResources(root, actor) {
   }
 
   const list = section.querySelector("ol");
-  list.replaceChildren(...entries.map(resource => createPlayResourceRow(resource, actor)));
+  // Reconcile rows by resource key instead of replacing the whole list on every
+  // sheet render. This preserves unchanged DOM nodes and their event handlers.
+  const existingRows = new Map([...list.children]
+    .filter(row => row.matches("li.vurs-play-resource"))
+    .map(row => [row.dataset.resource, row]));
+  const nextRows = [];
+  for (const resource of entries) {
+    const existing = existingRows.get(resource.key);
+    const previous = existing?._vursResource;
+    const unchanged = previous && previous.value === resource.value && previous.max === resource.max &&
+      previous.baseMax === resource.baseMax && previous.maxReduction === resource.maxReduction &&
+      previous.label === resource.label && previous.icon === resource.icon && previous.segmented === resource.segmented;
+    if (unchanged) {
+      // Refresh the model reference without touching the rendered layout.
+      existing._vursResource = resource;
+      nextRows.push(existing);
+    } else {
+      nextRows.push(createPlayResourceRow(resource, actor));
+    }
+    existingRows.delete(resource.key);
+  }
+  // replaceChildren with the same nodes is a no-op for unchanged rows in most
+  // browsers, but only call it when membership/order actually differs.
+  const currentRows = [...list.children];
+  const sameLayout = currentRows.length === nextRows.length && currentRows.every((row, index) => row === nextRows[index]);
+  if (!sameLayout) list.replaceChildren(...nextRows);
   const headers = [...sidebar.querySelectorAll(":scope > header")];
   const resourceLabels = new Set([
     normalizeLabel("Resources"),
