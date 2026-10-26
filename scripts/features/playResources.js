@@ -95,18 +95,20 @@ export function renderVursPlayResources(root, actor) {
     const header = document.createElement("header");
     const title = document.createElement("h2");
     title.textContent = "Play";
-    // The Apply button occupies the former reset-button position. A normal
-    // click applies staged edits; Ctrl+left-click performs the old reset action.
+    // Left-click applies staged edits; right-click discards staged edits.
     const apply = document.createElement("button");
     apply.type = "button";
     apply.className = "vurs-play-apply vurs-play-reset";
     apply.textContent = "Apply";
-    apply.title = "Click to apply staged changes; Ctrl+left-click to reset all Play resources";
-    apply.setAttribute("aria-label", "Apply staged Play resource changes; Ctrl+left-click to reset all Play resources");
+    apply.title = "Left-click to apply staged changes; right-click to discard them";
+    apply.setAttribute("aria-label", "Apply staged Play resource changes; right-click to discard staged changes");
     apply.addEventListener("click", event => {
       event.preventDefault();
-      if (event.ctrlKey) void resetPlayResources(root, actor, apply);
-      else void applyPlayResourceChanges(root, actor, section, apply);
+      void applyPlayResourceChanges(root, actor, section, apply);
+    });
+    apply.addEventListener("contextmenu", event => {
+      event.preventDefault();
+      discardPlayResourceChanges(root, actor, section, apply);
     });
     const modifiers = document.createElement("button");
     modifiers.type = "button";
@@ -271,6 +273,13 @@ function getPlayResourceEntries(actor) {
       : definition.label;
     return [{ ...definition, label, value, max, baseMax, maxReduction }];
   });
+}
+
+function discardPlayResourceChanges(root, actor, section, button) {
+  if (!section || !section._vursPendingUpdates) return;
+  delete section._vursPendingUpdates;
+  // Rebuild from persisted actor data only on explicit discard, not during edits.
+  renderVursPlayResources(root, actor);
 }
 
 async function resetPlayResources(root, actor, button) {
@@ -833,8 +842,11 @@ async function savePlayResourceFlags(actor, updates, control) {
     const maxInput = row.querySelector('input[aria-label$="maximum"]');
     if (currentInput) {
       currentInput.max = String(resource.max);
-      if (finiteResourceNumber(currentInput.value) > resource.max) currentInput.value = String(resource.max);
+      currentInput.value = String(resource.value);
+      sizeNumberField(currentInput, resource.value);
     }
+    const maximumDisplay = row.querySelector(".vurs-play-resource-maximum");
+    if (maximumDisplay) maximumDisplay.textContent = formatResourceNumber(resource.max);
     if (maxInput && updates[`${resourceKey}.maxReduction`] !== undefined) {
       maxInput.value = String(resource.max);
       sizeNumberField(maxInput, resource.max);
@@ -852,6 +864,11 @@ async function savePlayResourceFlags(actor, updates, control) {
     }
     const valueDisplay = row.querySelector(":scope > .value");
     if (valueDisplay) valueDisplay.textContent = `${formatResourceNumber(resource.value)} / ${formatResourceNumber(resource.max)}`;
+    const meter = row.querySelector('[role="meter"]');
+    if (meter) {
+      meter.setAttribute("aria-valuemax", String(resource.max));
+      meter.setAttribute("aria-valuenow", String(resource.value));
+    }
   }
   const apply = section.querySelector(".vurs-play-apply");
   if (apply) {
