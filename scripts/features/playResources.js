@@ -69,16 +69,19 @@ export function renderVursPlayResources(root, actor) {
     const header = document.createElement("header");
     const title = document.createElement("h2");
     title.textContent = "Play";
-    const reset = document.createElement("button");
-    reset.type = "button";
-    reset.className = "vurs-play-reset";
-    const resetIcon = document.createElement("i");
-    resetIcon.className = "fa-solid fa-arrow-rotate-right";
-    resetIcon.setAttribute("aria-hidden", "true");
-    reset.append(resetIcon);
-    reset.title = "Recalculate maximums and refill all Play resources";
-    reset.setAttribute("aria-label", "Recalculate maximums and refill all Play resources");
-    reset.addEventListener("click", () => void resetPlayResources(root, actor, reset));
+    // The Apply button occupies the former reset-button position. A normal
+    // click applies staged edits; Ctrl+left-click performs the old reset action.
+    const apply = document.createElement("button");
+    apply.type = "button";
+    apply.className = "vurs-play-apply vurs-play-reset";
+    apply.textContent = "Apply";
+    apply.title = "Click to apply staged changes; Ctrl+left-click to reset all Play resources";
+    apply.setAttribute("aria-label", "Apply staged Play resource changes; Ctrl+left-click to reset all Play resources");
+    apply.addEventListener("click", event => {
+      event.preventDefault();
+      if (event.ctrlKey) void resetPlayResources(root, actor, apply);
+      else void applyPlayResourceChanges(root, actor, section, apply);
+    });
     const modifiers = document.createElement("button");
     modifiers.type = "button";
     modifiers.className = "vurs-play-modifiers";
@@ -91,7 +94,7 @@ export function renderVursPlayResources(root, actor) {
     });
     const controls = document.createElement("span");
     controls.className = "vurs-play-header-controls";
-    controls.append(reset, modifiers);
+    controls.append(apply, modifiers);
     header.append(title, controls);
     section.append(header, document.createElement("ol"));
   }
@@ -249,6 +252,15 @@ function getPlayResourceEntries(actor) {
 }
 
 async function resetPlayResources(root, actor, button) {
+  const confirmed = await Dialog.confirm({
+    title: "Reset Play Resources?",
+    content: "<p>This will recalculate maximums and refill all Play resources. Any unapplied edits will be discarded. Do you want to continue?</p>",
+    defaultYes: false
+  });
+  if (!confirmed) return;
+
+  const section = button.closest(".vurs-play-resources");
+  if (section?._vursPendingUpdates) delete section._vursPendingUpdates;
   const resources = foundry.utils.getProperty(actor, PLAY_RESOURCES_PATH) ?? {};
   const updates = {};
   for (const definition of PLAY_RESOURCE_DEFINITIONS) {
@@ -414,13 +426,27 @@ function createPlayResourceRow(resource, actor) {
     control.append(icon, value);
     control.addEventListener("click", event => {
       event.preventDefault();
+      if (control.dataset.updating) return;
       void adjustPlayResource(actor, resource, 1, control);
     });
     control.addEventListener("contextmenu", event => {
       event.preventDefault();
+      if (control.dataset.updating) return;
       void adjustPlayResource(actor, resource, -1, control);
     });
     row.append(control);
+
+    // All icon resources get the same direct-edit field as BP/MP, so a value
+    // can be entered in one operation instead of clicking repeatedly.
+    const editFields = document.createElement("span");
+    editFields.className = "vurs-play-resource-segment-values vurs-play-resource-edit-values";
+    const currentValue = createEditableCurrentValue(resource, actor);
+    const maximum = document.createElement("span");
+    maximum.className = "vurs-play-resource-maximum";
+    maximum.textContent = formatResourceNumber(resource.max);
+    maximum.setAttribute("aria-label", `${resource.label} maximum`);
+    editFields.append(currentValue, " / ", maximum);
+    row.append(editFields);
   } else if (resource.key === "budgetPoints") {
     const frame = document.createElement("div");
     frame.className = "vurs-play-resource-frame";
@@ -585,6 +611,41 @@ function getMagicPointSegments(actor, resource) {
   return segments;
 }
 
+function addResourceWheelEditing(input, getMaximum) {
+  input.addEventListener("wheel", event => {
+    event.preventDefault();
+    if (input.disabled || input.dataset.updating) return;
+    const direction = event.deltaY < 0 ? 1 : -1;
+    const maximum = getMaximum();
+    const next = Math.max(0, Math.min(maximum, finiteResourceNumber(input.value) + direction));
+    if (next === finiteResourceNumber(input.value)) return;
+    input.value = String(next);
+    input.dispatchEvent(new Event("change", { bubbles: true }));
+  }, { passive: false });
+}
+
+function createEditableCurrentValue(resource, actor) {
+  const input = document.createElement("input");
+  input.className = "vurs-play-resource-edit";
+  input.type = "number";
+  input.min = "0";
+  input.max = String(resource.max);
+  input.step = "1";
+  input.value = String(resource.value);
+  sizeNumberField(input, resource.value);
+  input.setAttribute("aria-label", `${resource.label} current value`);
+  input.title = `Edit ${resource.label}`;
+  input.addEventListener("change", () => {
+    const next = Math.clamp(finiteResourceNumber(input.value), 0, resource.max);
+    input.value = String(next);
+    sizeNumberField(input, next);
+    void savePlayResourceValue(actor, resource.key, next, input);
+  });
+  // Scrolling over the field adjusts the value by one and saves immediately.
+  addResourceWheelEditing(input, () => resource.max);
+  return input;
+}
+
 function createEditableResourceFields(resource, actor) {
   const currentValue = document.createElement("input");
   currentValue.className = "vurs-play-resource-edit";
@@ -602,6 +663,7 @@ function createEditableResourceFields(resource, actor) {
     sizeNumberField(currentValue, next);
     void savePlayResourceValue(actor, resource.key, next, currentValue);
   });
+  addResourceWheelEditing(currentValue, () => resource.max);
 
   const maximum = document.createElement("input");
   maximum.className = "vurs-play-resource-edit";
@@ -619,6 +681,7 @@ function createEditableResourceFields(resource, actor) {
     const maxReduction = resource.baseMax - nextMax;
     void savePlayResourceFlag(actor, `${resource.key}.maxReduction`, maxReduction, maximum);
   });
+  addResourceWheelEditing(maximum, () => Number.POSITIVE_INFINITY);
 
   const maximumDisplay = document.createElement("span");
   maximumDisplay.className = "vurs-play-resource-maximum";
@@ -674,16 +737,20 @@ function addPlayResourceControlHandlers(control, actor, resource) {
 }
 
 async function adjustPlayResource(actor, resource, amount, control) {
-  const current = finiteResourceNumber(foundry.utils.getProperty(actor, `${PLAY_RESOURCES_PATH}.${resource.key}.value`));
-  const next = Math.clamp(current + amount, 0, resource.max);
+  const pending = getPendingPlayResourceUpdates(control);
+  const current = finiteResourceNumber(pending[`${resource.key}.value`] ?? foundry.utils.getProperty(actor, `${PLAY_RESOURCES_PATH}.${resource.key}.value`));
+  const pendingReduction = pending[`${resource.key}.maxReduction`];
+  const max = pendingReduction === undefined ? resource.max : Math.max(0, resource.baseMax - finiteResourceNumber(pendingReduction));
+  const next = Math.clamp(current + amount, 0, max);
   if (next === current) return;
   await savePlayResourceValue(actor, resource.key, next, control);
 }
 
 async function adjustPlayResourceMaxReduction(actor, resource, amount, control) {
-  const path = `${PLAY_RESOURCES_PATH}.${resource.key}.maxReduction`;
-  const current = finiteResourceNumber(foundry.utils.getProperty(actor, path));
-  await savePlayResourceFlag(actor, `${resource.key}.maxReduction`, current + amount, control);
+  const path = `${resource.key}.maxReduction`;
+  const pending = getPendingPlayResourceUpdates(control);
+  const current = finiteResourceNumber(pending[path] ?? foundry.utils.getProperty(actor, `${PLAY_RESOURCES_PATH}.${path}`));
+  await savePlayResourceFlag(actor, path, current + amount, control);
 }
 
 async function savePlayResourceValue(actor, resourceKey, value, control) {
@@ -695,32 +762,48 @@ async function savePlayResourceFlag(actor, resourcePath, value, control) {
 }
 
 async function savePlayResourceFlags(actor, updates, control) {
-  const changes = Object.fromEntries(Object.entries(updates).map(([key, value]) => [`${PLAY_RESOURCES_PATH}.${key}`, value]));
-  // Keep a stable reference to the resource section and key: the optimistic
-  // refresh replaces the clicked control, so the original control is detached
-  // by the time the asynchronous Actor update finishes.
-  const originalRow = control?.closest?.("li.vurs-play-resource");
-  const section = originalRow?.closest?.(".vurs-play-resources");
-  const resourceKey = originalRow?.dataset.resource;
-  const disableable = control instanceof HTMLButtonElement || control instanceof HTMLInputElement;
-  if (disableable) control.disabled = true;
-  else control.dataset.updating = "true";
-  // Update the visible control immediately. Waiting for actor.update() before
-  // touching the DOM made every click feel delayed by document preparation and
-  // update hooks. The persisted update still runs normally in the background.
-  refreshPlayResourceRow(control, actor, updates, true);
+  const row = control?.closest?.("li.vurs-play-resource");
+  const section = row?.closest?.(".vurs-play-resources");
+  if (!section || !row) return;
+
+  // Queue edits locally; nothing is persisted until Apply is clicked.
+  const pending = section._vursPendingUpdates ?? (section._vursPendingUpdates = {});
+  Object.assign(pending, updates);
+  refreshPlayResourceRow(control, actor, pending, false);
+  const apply = section.querySelector(".vurs-play-apply");
+  if (apply) {
+    apply.disabled = false;
+    apply.classList.add("has-pending-changes");
+    apply.textContent = "Apply *";
+  }
+}
+
+function getPendingPlayResourceUpdates(control) {
+  const section = control?.closest?.(".vurs-play-resources");
+  return section?._vursPendingUpdates ?? {};
+}
+
+async function applyPlayResourceChanges(root, actor, section, button) {
+  const pending = section?._vursPendingUpdates;
+  if (!pending || !Object.keys(pending).length || button.disabled) return;
+  const changes = Object.fromEntries(Object.entries(pending).map(([key, value]) => [`${PLAY_RESOURCES_PATH}.${key}`, value]));
+  button.disabled = true;
   try {
-    // Play resources are self-contained UI state. Suppress VURS's broad
-    // updateActor refresh; only this row and the Style Rank overlay are updated.
     await actor.update(changes, { render: false, vursPlayResourceOnly: true });
-    // The optimistic row already shows the saved value. Just unlock its
-    // current control instead of rebuilding the row a second time; replacing
-    // DOM nodes again here causes avoidable style/layout recalculation.
-    finishCurrentPlayResourceRow(section, resourceKey);
+    delete section._vursPendingUpdates;
+    renderVursPlayResources(root, actor);
   } catch (error) {
-    console.error("vurs-pf2e | Failed to update play resources", error);
-    // Restore the display from the actor's last successfully saved state.
-    refreshCurrentPlayResourceRow(section, resourceKey, actor);
+    console.error("vurs-pf2e | Failed to apply Play resource changes", error);
+    button.disabled = false;
+  } finally {
+    if (section.isConnected) {
+      const currentApply = section.querySelector(".vurs-play-apply");
+      if (currentApply) {
+        currentApply.disabled = false;
+        currentApply.classList.remove("has-pending-changes");
+        currentApply.textContent = "Apply";
+      }
+    }
   }
 }
 
@@ -766,7 +849,7 @@ function refreshPlayResourceRow(control, actor, pendingUpdates = null, pending =
       if (key !== resourceKey) continue;
       if (property === "value") resource.value = Math.clamp(finiteResourceNumber(value), 0, resource.max);
       if (property === "maxReduction") {
-        resource.maxReduction = Math.max(0, finiteResourceNumber(value));
+        resource.maxReduction = finiteResourceNumber(value);
         resource.max = Math.max(0, resource.baseMax - resource.maxReduction);
         resource.value = Math.clamp(resource.value, 0, resource.max);
       }
