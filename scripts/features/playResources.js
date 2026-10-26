@@ -552,7 +552,7 @@ function createPlayResourceRow(resource, actor) {
         const filled = segmentData.start + index < resource.value;
         star.className = `${filled ? "fa-solid" : "fa-regular"} fa-star vurs-mp-star ${filled ? "is-filled" : "is-empty"}`;
         star.style.setProperty("--segment-color", segmentData.color);
-        star.style.cssText += ";flex:0 0 auto;min-width:0;max-width:100%;font-size:.82em;line-height:1;";
+        star.style.cssText += ";flex:0 0 auto;min-width:0;max-width:100%;font-size:1em;line-height:1;";
         star.title = segmentData.label ?? resource.label;
         bar.append(star);
       }
@@ -564,17 +564,19 @@ function createPlayResourceRow(resource, actor) {
     row.append(frame);
   }
 
-  if (resource.hasMaxReduction && resource.maxReduction !== 0 && resource.key !== "budgetPoints") {
+  if (resource.hasMaxReduction && resource.maxReduction !== 0) {
     const reduction = document.createElement("span");
     reduction.className = "vurs-play-resource-max-reduction";
     if (resource.maxReduction < 0) reduction.classList.add("is-increase");
     const adjustment = resource.maxReduction > 0
-      ? `âˆ’${formatResourceNumber(resource.maxReduction)}`
+      ? `−${formatResourceNumber(resource.maxReduction)}`
       : `+${formatResourceNumber(Math.abs(resource.maxReduction))}`;
     reduction.textContent = adjustment;
-    reduction.setAttribute("aria-label", `Maximum reduced by ${formatResourceNumber(resource.maxReduction)}`);
-    reduction.title = `Maximum reduced by ${formatResourceNumber(resource.maxReduction)}`;
-    value.append(" ", reduction);
+    reduction.setAttribute("aria-label", `Maximum adjusted by ${formatResourceNumber(resource.maxReduction)}`);
+    reduction.title = `Maximum adjusted by ${formatResourceNumber(resource.maxReduction)}`;
+    // BP and MP render their own resource bars and don't append the generic
+    // value node, so put the adjustment directly on the row for every resource.
+    row.append(reduction);
   }
 
   if (resource.segmented && resource.key !== "magicPoints") {
@@ -679,8 +681,10 @@ function addResourceWheelEditing(input, getMaximum) {
     if (input.disabled || input.dataset.updating) return;
 
     // Normalize trackpads and mouse wheels while preserving multi-notch input.
-    const delta = Math.sign(event.deltaY) * Math.max(1, Math.round(Math.abs(event.deltaY) / 100));
-    pendingDelta += event.deltaY < 0 ? delta : -delta;
+    const steps = Math.max(1, Math.round(Math.abs(event.deltaY) / 100));
+    // deltaY is negative when scrolling up and positive when scrolling down.
+    // Use the positive step magnitude so the direction cannot be inverted twice.
+    pendingDelta += event.deltaY < 0 ? steps : -steps;
     if (frameScheduled) return;
     frameScheduled = true;
     requestAnimationFrame(() => {
@@ -800,13 +804,13 @@ function addPlayResourceControlHandlers(control, actor, resource) {
   control.addEventListener("click", event => {
     event.preventDefault();
     if (control.dataset.updating || event.target?.closest?.("input")) return;
-    if (event.ctrlKey) void adjustPlayResourceMaxReduction(actor, resource, -1, control);
+    if (event.ctrlKey) void adjustPlayResourceMaxReduction(actor, resource, 1, control);
     else void adjustPlayResource(actor, resource, 1, control);
   });
   control.addEventListener("contextmenu", event => {
     event.preventDefault();
     if (control.dataset.updating || event.target?.closest?.("input")) return;
-    if (event.ctrlKey) void adjustPlayResourceMaxReduction(actor, resource, 1, control);
+    if (event.ctrlKey) void adjustPlayResourceMaxReduction(actor, resource, -1, control);
     else void adjustPlayResource(actor, resource, -1, control);
   });
 }
@@ -871,6 +875,40 @@ async function savePlayResourceFlags(actor, updates, control) {
       maxInput.value = String(resource.max);
       sizeNumberField(maxInput, resource.max);
     }
+    // Keep the visible max-reduction delta synchronized with staged edits,
+    // including edits made through the numeric maximum field or Ctrl-click.
+    if (resource.hasMaxReduction) {
+      const maximumDisplay = row.querySelector(".vurs-play-resource-maximum");
+      let delta = maximumDisplay?.querySelector(".vurs-play-resource-max-reduction-delta");
+      if (resource.maxReduction !== 0 && maximumDisplay) {
+        if (!delta) {
+          delta = document.createElement("span");
+          delta.className = "vurs-play-resource-max-reduction-delta";
+          maximumDisplay.append(delta);
+        }
+        delta.classList.toggle("is-increase", resource.maxReduction < 0);
+        delta.textContent = resource.maxReduction > 0
+          ? `−${formatResourceNumber(resource.maxReduction)}`
+          : `+${formatResourceNumber(Math.abs(resource.maxReduction))}`;
+        delta.title = `Maximum adjustment: ${delta.textContent}`;
+      } else if (delta) {
+        delta.remove();
+      }
+      const rowReduction = row.querySelector(":scope > .vurs-play-resource-max-reduction");
+      if (resource.maxReduction !== 0) {
+        const indicator = rowReduction ?? document.createElement("span");
+        indicator.className = "vurs-play-resource-max-reduction";
+        indicator.classList.toggle("is-increase", resource.maxReduction < 0);
+        indicator.textContent = resource.maxReduction > 0
+          ? `−${formatResourceNumber(resource.maxReduction)}`
+          : `+${formatResourceNumber(Math.abs(resource.maxReduction))}`;
+        indicator.setAttribute("aria-label", `Maximum adjusted by ${formatResourceNumber(resource.maxReduction)}`);
+        indicator.title = `Maximum adjusted by ${formatResourceNumber(resource.maxReduction)}`;
+        if (!rowReduction) row.append(indicator);
+      } else {
+        rowReduction?.remove();
+      }
+    }
     // Update the icon immediately from the staged value, without persisting
     // anything or re-rendering the whole resource list. Preloaded Image objects
     // provide a warm browser cache for repeated icon variants.
@@ -898,7 +936,7 @@ async function savePlayResourceFlags(actor, updates, control) {
           const filled = segmentData.start + index < resource.value;
           star.className = `${filled ? "fa-solid" : "fa-regular"} fa-star vurs-mp-star ${filled ? "is-filled" : "is-empty"}`;
           star.style.setProperty("--segment-color", segmentData.color);
-          star.style.cssText += ";flex:0 0 auto;min-width:0;max-width:100%;font-size:.82em;line-height:1;";
+          star.style.cssText += ";flex:0 0 auto;min-width:0;max-width:100%;font-size:1em;line-height:1;";
           star.title = segmentData.label ?? resource.label;
           magicBar.append(star);
         }
