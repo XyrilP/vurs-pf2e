@@ -72,11 +72,24 @@ export function renderVursPlayResources(root, actor) {
   // Play Resources are shared by character and NPC actors. Keep this check
   // independent of the character-only sheet enhancements in generalChanges.
   if (!(root instanceof HTMLElement) || !actor || !(actor.isOfType?.("character") || actor.isOfType?.("npc") || ["character", "npc"].includes(actor.type))) return;
-  // Character sheets expose a sidebar; NPC sheets and alternate sheet layouts
-  // may not. Use the best available stable sheet container as a fallback.
-  const sidebar = (root.matches?.(".sidebar") ? root : null)
-    ?? root.querySelector(".sidebar[data-tab='sidebar'], aside > .sidebar, .sheet-body > .sidebar, .sheet-body, .sheet-content, .window-content")
-    ?? root;
+  // Keep Play Resources inside the actual left-hand sidebar. Never fall back
+  // to .sheet-content or .window-content: those are the main body/application
+  // wrapper on some NPC sheets and inserting a section there can disrupt the
+  // sheet layout or make the resource panel appear outside the sheet.
+  const sidebarSelectors = [
+    ".sidebar[data-tab='sidebar']",
+    ".npc-sidebar",
+    ".sheet-sidebar",
+    "aside.sidebar",
+    ".sidebar",
+    "aside"
+  ];
+  const sidebar = (root.matches?.(sidebarSelectors.join(",")) ? root : null)
+    ?? sidebarSelectors.map(selector => root.querySelector(selector)).find(Boolean);
+  if (!sidebar) {
+    console.warn("vurs-pf2e | Could not find a left sidebar for Play Resources; leaving the NPC sheet unchanged.");
+    return;
+  }
   renderStyleRankOverlay(root, actor);
 
   let section = sidebar.querySelector(":scope > .vurs-play-resources");
