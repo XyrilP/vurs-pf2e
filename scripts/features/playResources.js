@@ -192,16 +192,20 @@ async function togglePlayRecoveryTooltip(section, actor, button) {
   // Add the same resource artwork used by the Play Resources panel to each
   // recovery modifier, while keeping PF2e's native tooltip layout and styling.
   for (const row of rows) {
-    const labelNode = [...content.querySelectorAll(".label, .name, label, span, strong")]
-      .find(node => node.childElementCount === 0 && node.textContent?.trim() === row.label);
+    const labelNode = [...content.querySelectorAll(".label, .name, label, span, strong, dt, h4, h5")]
+      .find(node => node.textContent?.trim() === row.label);
     if (!labelNode) continue;
     const icon = document.createElement("img");
     icon.className = "vurs-play-modifier-icon";
-    icon.src = `${RESOURCE_ICON_BASE}${getResourceIcon(row.resource).replace(/\.webp$/i, ".svg")}`;
-    icon.alt = "";
+    const iconFile = getResourceIcon(row.resource).replace(/\.webp$/i, ".svg");
+    icon.src = `${RESOURCE_ICON_BASE}${iconFile}`;
+    icon.alt = row.label;
+    icon.title = row.label;
     icon.draggable = false;
-    icon.style.cssText = "width:1.25em;height:1.25em;object-fit:contain;vertical-align:middle;margin-right:.35em;";
-    labelNode.prepend(icon);
+    icon.style.cssText = "display:inline-block;width:1.35em;height:1.35em;object-fit:contain;vertical-align:middle;";
+    labelNode.replaceChildren(icon);
+    labelNode.title = row.label;
+    labelNode.setAttribute("aria-label", row.label);
   }
   section.append(content);
   button.dataset.tooltipContent = `#${content.id}`;
@@ -506,6 +510,7 @@ function createPlayResourceRow(resource, actor) {
     frame.append(label);
     const bar = document.createElement("div");
     bar.className = "vurs-play-resource-segments vurs-budget-points-bar";
+    bar.style.cssText = "min-width:0;max-width:100%;overflow:hidden;box-sizing:border-box;";
     bar.setAttribute("role", "meter");
     bar.setAttribute("aria-valuemin", "0");
     bar.setAttribute("aria-valuemax", String(resource.max));
@@ -530,6 +535,7 @@ function createPlayResourceRow(resource, actor) {
 
     const bar = document.createElement("div");
     bar.className = "vurs-play-resource-segments";
+    bar.style.cssText = "display:flex;flex-wrap:wrap;align-content:center;align-items:center;gap:.12em;min-width:0;max-width:100%;overflow:hidden;box-sizing:border-box;";
     bar.setAttribute("role", "meter");
     bar.setAttribute("aria-label", resource.label);
     bar.setAttribute("aria-valuemin", "0");
@@ -872,6 +878,28 @@ async function savePlayResourceFlags(actor, updates, control) {
       icon.src = preloaded?.src ?? `${RESOURCE_ICON_BASE}${iconFile}`;
       const control = icon.closest("button");
       if (control) control.setAttribute("aria-label", `${resource.label}: ${formatResourceNumber(resource.value)} of ${formatResourceNumber(resource.max)}. Left click to increase; right click to decrease.`);
+    }
+    // Keep segmented BP coins and MP stars synchronized with staged values.
+    const budgetCoins = row.querySelector(".vurs-budget-coin-stacks");
+    if (resourceKey === "budgetPoints" && budgetCoins) {
+      budgetCoins.replaceWith(createBudgetCoinStacks(resource));
+      const bar = row.querySelector(".vurs-budget-points-bar");
+      if (bar) bar.setAttribute("aria-valuenow", String(resource.value));
+    }
+    const magicBar = resourceKey === "magicPoints" ? row.querySelector(".vurs-play-resource-segments") : null;
+    if (magicBar) {
+      magicBar.replaceChildren();
+      for (const segmentData of getMagicPointSegments(actor, resource)) {
+        for (let index = 0; index < Math.max(0, Math.floor(segmentData.size)); index += 1) {
+          const star = document.createElement("i");
+          const filled = segmentData.start + index < resource.value;
+          star.className = `${filled ? "fa-solid" : "fa-regular"} fa-star vurs-mp-star ${filled ? "is-filled" : "is-empty"}`;
+          star.style.setProperty("--segment-color", segmentData.color);
+          star.title = segmentData.label ?? resource.label;
+          magicBar.append(star);
+        }
+      }
+      magicBar.setAttribute("aria-valuenow", String(resource.value));
     }
     const valueDisplay = row.querySelector(":scope > .value");
     if (valueDisplay) valueDisplay.textContent = `${formatResourceNumber(resource.value)} / ${formatResourceNumber(resource.max)}`;
