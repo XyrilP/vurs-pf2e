@@ -110,6 +110,8 @@ export function renderVursPlayResources(root, actor) {
       if (event.ctrlKey) void resetPlayResources(root, actor, apply);
       else {
         delete section._vursPendingUpdates;
+        apply.textContent = "Apply";
+        apply.classList.remove("has-pending-changes");
         renderVursPlayResources(root, actor);
       }
     });
@@ -281,13 +283,15 @@ function getPlayResourceEntries(actor) {
 async function resetPlayResources(root, actor, button) {
   const confirmed = await Dialog.confirm({
     title: "Reset Play Resources?",
-    content: "<p>This will restore SP, AP, TP, and Reactions to their maximums, set SR and KP to 0, and leave BP and MP unchanged. Any unapplied edits will be discarded. Do you want to continue?</p>",
+    content: "",
     defaultYes: false
   });
   if (!confirmed) return;
 
   const section = button.closest(".vurs-play-resources");
   if (section?._vursPendingUpdates) delete section._vursPendingUpdates;
+  button.textContent = "Apply";
+  button.classList.remove("has-pending-changes");
   button.disabled = true;
   try {
     await resetOneActorPlayResources(actor);
@@ -854,9 +858,10 @@ async function savePlayResourceFlags(actor, updates, control) {
   }
   const apply = section.querySelector(".vurs-play-apply");
   if (apply) {
+    const hasPending = Object.keys(pending).length > 0;
     apply.disabled = false;
-    apply.classList.add("has-pending-changes");
-    apply.textContent = "Apply *";
+    apply.classList.toggle("has-pending-changes", hasPending);
+    apply.textContent = hasPending ? "Apply *" : "Apply";
   }
 }
 
