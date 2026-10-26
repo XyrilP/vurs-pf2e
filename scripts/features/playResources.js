@@ -95,18 +95,23 @@ export function renderVursPlayResources(root, actor) {
     const header = document.createElement("header");
     const title = document.createElement("h2");
     title.textContent = "Play";
-    // The Apply button occupies the former reset-button position. A normal
-    // click applies staged edits; Ctrl+left-click performs the old reset action.
     const apply = document.createElement("button");
     apply.type = "button";
     apply.className = "vurs-play-apply vurs-play-reset";
     apply.textContent = "Apply";
-    apply.title = "Click to apply staged changes; Ctrl+left-click to reset all Play resources";
-    apply.setAttribute("aria-label", "Apply staged Play resource changes; Ctrl+left-click to reset all Play resources");
+    apply.title = "Click to apply; right-click to discard; Ctrl+right-click to reset";
+    apply.setAttribute("aria-label", "Apply staged changes; right-click to discard; Ctrl+right-click to reset resources");
     apply.addEventListener("click", event => {
       event.preventDefault();
+      void applyPlayResourceChanges(root, actor, section, apply);
+    });
+    apply.addEventListener("contextmenu", event => {
+      event.preventDefault();
       if (event.ctrlKey) void resetPlayResources(root, actor, apply);
-      else void applyPlayResourceChanges(root, actor, section, apply);
+      else {
+        delete section._vursPendingUpdates;
+        renderVursPlayResources(root, actor);
+      }
     });
     const modifiers = document.createElement("button");
     modifiers.type = "button";
@@ -826,7 +831,8 @@ async function savePlayResourceFlags(actor, updates, control) {
     const maxInput = row.querySelector('input[aria-label$="maximum"]');
     if (currentInput) {
       currentInput.max = String(resource.max);
-      if (finiteResourceNumber(currentInput.value) > resource.max) currentInput.value = String(resource.max);
+      currentInput.value = String(resource.value);
+      sizeNumberField(currentInput, resource.value);
     }
     if (maxInput && updates[`${resourceKey}.maxReduction`] !== undefined) {
       maxInput.value = String(resource.max);
