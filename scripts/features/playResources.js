@@ -220,7 +220,7 @@ function getPlayResourceShortLabel(actor, key) {
 
 function formatSignedModifier(value) {
   const number = finiteResourceNumber(value);
-  return `${number >= 0 ? "+" : "−"}${formatResourceNumber(Math.abs(number))}`;
+  return `${number >= 0 ? "+" : "âˆ’"}${formatResourceNumber(Math.abs(number))}`;
 }
 
 function getPlayResourceEntries(actor) {
@@ -294,29 +294,21 @@ async function resetEncounterPlayResources(combat) {
 }
 
 function getFullVursDefaultMax(actor, resourceKey) {
-  // Agnostic VURS uses fixed Action Point and Reaction pools. Check this
-  // before the system-mode guard, which can otherwise return early.
-  if (actorUsesAgnosticVurs(actor)) {
-  if (resourceKey === "actionPoints") {
-    const resource = foundry.utils.getProperty(
-      actor,
-      `${PLAY_RESOURCES_PATH}.actionPoints`
-    );
-    return resource?.max ?? 3;
-  }
-
-  if (resourceKey === "reactions") {
-    const resource = foundry.utils.getProperty(
-      actor,
-      `${PLAY_RESOURCES_PATH}.reactions`
-    );
-    return resource?.max ?? 1;
-  }
-
-  return undefined;
-}
-
   if (!actorUsesVursSystem(actor) && getSystemModeForPlayResource(actor) !== "default") return undefined;
+  // Agnostic VURS does not derive Action Points from VURS attributes and
+  // skills. Preserve an explicitly stored maximum (which may be above 3),
+  // and use the standard three-point pool only when no maximum is configured.
+  if (actorUsesAgnosticVurs(actor)) {
+    if (resourceKey === "actionPoints") {
+      const storedMax = foundry.utils.getProperty(actor, `${PLAY_RESOURCES_PATH}.actionPoints.max`);
+      if (storedMax !== undefined && storedMax !== null && storedMax !== "" && Number.isFinite(Number(storedMax))) {
+        return Math.max(0, Number(storedMax));
+      }
+      return 3;
+    }
+    if (resourceKey === "reactions") return 1;
+    return undefined;
+  }
   if (getSystemModeForPlayResource(actor) === "default") {
     if (game.settings.get("vurs-pf2e", DEFAULT_ACTION_POINTS_SETTING) !== true) return undefined;
     if (resourceKey === "actionPoints") return 3;
@@ -493,7 +485,7 @@ function createPlayResourceRow(resource, actor) {
     reduction.className = "vurs-play-resource-max-reduction";
     if (resource.maxReduction < 0) reduction.classList.add("is-increase");
     const adjustment = resource.maxReduction > 0
-      ? `−${formatResourceNumber(resource.maxReduction)}`
+      ? `âˆ’${formatResourceNumber(resource.maxReduction)}`
       : `+${formatResourceNumber(Math.abs(resource.maxReduction))}`;
     reduction.textContent = adjustment;
     reduction.setAttribute("aria-label", `Maximum reduced by ${formatResourceNumber(resource.maxReduction)}`);
@@ -636,7 +628,7 @@ function createEditableResourceFields(resource, actor) {
     delta.className = "vurs-play-resource-max-reduction-delta";
     if (resource.maxReduction < 0) delta.classList.add("is-increase");
     delta.textContent = resource.maxReduction > 0
-      ? `−${formatResourceNumber(resource.maxReduction)}`
+      ? `âˆ’${formatResourceNumber(resource.maxReduction)}`
       : `+${formatResourceNumber(Math.abs(resource.maxReduction))}`;
     delta.title = `Maximum adjustment: ${delta.textContent}`;
     maximumDisplay.append(delta);
@@ -707,13 +699,64 @@ async function savePlayResourceFlags(actor, updates, control) {
   const disableable = control instanceof HTMLButtonElement || control instanceof HTMLInputElement;
   if (disableable) control.disabled = true;
   else control.dataset.updating = "true";
+  // Update the visible control immediately. Waiting for actor.update() before
+  // touching the DOM made every click feel delayed by document preparation and
+  // update hooks. The persisted update still runs normally in the background.
+  refreshPlayResourceRow(control, actor, updates, true);
   try {
-    await actor.update(changes, { render: false });
+    // Play resources are self-contained UI state. Suppress VURS's broad
+    // updateActor refresh; only this row and the Style Rank overlay are updated.
+    await actor.update(changes, { render: false, vursPlayResourceOnly: true });
+    refreshPlayResourceRow(control, actor);
   } catch (error) {
     console.error("vurs-pf2e | Failed to update play resources", error);
-  } finally {
-    if (disableable) control.disabled = false;
-    else delete control.dataset.updating;
+    // Restore the display from the actor's last successfully saved state.
+    refreshPlayResourceRow(control, actor);
+  }
+}
+
+function refreshPlayResourceRow(control, actor, pendingUpdates = null, pending = false) {
+  const row = control?.closest?.("li.vurs-play-resource");
+  const section = row?.closest?.(".vurs-play-resources");
+  if (!row || !section || !row.isConnected) return;
+
+  const resourceKey = row.dataset.resource;
+  const resource = getPlayResourceEntries(actor).find(entry => entry.key === resourceKey);
+  if (!resource) {
+    row.remove();
+    return;
+  }
+
+  // Apply the pending value to the UI before awaiting Foundry's actor update.
+  // This is a display-only optimistic update; actor data is still persisted by
+  // actor.update() and the row is reconciled from saved data afterward.
+  if (pendingUpdates) {
+    for (const [path, value] of Object.entries(pendingUpdates)) {
+      const [key, property] = path.split(".");
+      if (key !== resourceKey) continue;
+      if (property === "value") resource.value = Math.clamp(finiteResourceNumber(value), 0, resource.max);
+      if (property === "maxReduction") {
+        resource.maxReduction = Math.max(0, finiteResourceNumber(value));
+        resource.max = Math.max(0, resource.baseMax - resource.maxReduction);
+        resource.value = Math.clamp(resource.value, 0, resource.max);
+      }
+    }
+  }
+
+  const replacement = createPlayResourceRow(resource, actor);
+  if (pending) {
+    const replacementControl = replacement.querySelector(".vurs-play-resource-control, input");
+    if (replacementControl) {
+      replacementControl.dataset.updating = "true";
+      if (replacementControl instanceof HTMLButtonElement || replacementControl instanceof HTMLInputElement) {
+        replacementControl.disabled = true;
+      }
+    }
+  }
+  row.replaceWith(replacement);
+  if (resourceKey === "styleRank") {
+    const sheet = replacement.closest(".actor.sheet.character") ?? replacement.closest("form");
+    if (sheet) renderStyleRankOverlay(sheet, actor, pendingUpdates?.["styleRank.value"]);
   }
 }
 
@@ -761,7 +804,7 @@ function finiteResourceNumber(value) {
   return Number.isFinite(number) ? number : 0;
 }
 
-function renderStyleRankOverlay(root, actor) {
+function renderStyleRankOverlay(root, actor, rankOverride = undefined) {
   const sheet = root.matches(".actor.sheet.character")
     ? root
     : root.closest(".actor.sheet.character") ?? root.querySelector(".actor.sheet.character");
@@ -774,7 +817,7 @@ function renderStyleRankOverlay(root, actor) {
     return;
   }
   const rank = Math.clamp(Math.floor(finiteResourceNumber(
-    foundry.utils.getProperty(actor, `${PLAY_RESOURCES_PATH}.styleRank.value`)
+    rankOverride ?? foundry.utils.getProperty(actor, `${PLAY_RESOURCES_PATH}.styleRank.value`)
   )), 0, 5);
   if (rank === 0) {
     existing?.remove();
