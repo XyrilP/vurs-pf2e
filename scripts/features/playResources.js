@@ -141,11 +141,6 @@ async function togglePlayRegenerationTooltip(section, actor, button) {
     const regeneration = getPlayResourceRegeneration(actor, definition.key, resource);
     if (regeneration) rows.push({ label: `${getPlayResourceShortLabel(actor, definition.key)} Regen`, modifier: regeneration });
   }
-  try {
-    for (const source of collectHealingSources(actor)) rows.unshift(source);
-  } catch (error) {
-    console.warn("vurs-pf2e | Failed to collect healing sources for Play modifiers", error);
-  }
   const tooltipId = `${section.closest("form")?.id ?? "vurs-play"}-play-modifiers`;
   const rendered = await foundry.applications.handlebars.renderTemplate(
     "systems/pf2e/templates/actors/partials/modifiers-tooltip.hbs",
@@ -240,9 +235,11 @@ function getPlayResourceEntries(actor) {
 
     const maxReduction = definition.hasMaxReduction ? finiteResourceNumber(resource.maxReduction) : 0;
     const max = Math.max(0, baseMax - maxReduction);
-    // Keep editable maxima visible at zero so they can be recovered from an
-    // accidental reduction down to their base maximum.
-    if (max <= 0 && !definition.hasMaxReduction) return [];
+    // Only show resources with a positive effective maximum and configured
+    // regeneration. This keeps the Play panel focused on resources that can
+    // actually regenerate.
+    if (max <= 0) return [];
+    if (getPlayResourceRegeneration(actor, definition.key, resource) === 0) return [];
     const value = Math.clamp(finiteResourceNumber(resource.value), 0, max);
     const label = definition.key === "actionPoints" && !actorUsesVursSystem(actor)
       ? "Actions"
@@ -423,7 +420,9 @@ function createPlayResourceRow(resource, actor) {
     icon.src = `modules/vurs-pf2e/assets/custom-icons/resource-icons/${iconFile}`;
     icon.alt = "";
     icon.draggable = false;
-    control.append(icon, value);
+    // Keep numeric values outside the icon; the adjacent editable field is
+    // the single place for current/max numbers.
+    control.append(icon);
     control.addEventListener("click", event => {
       event.preventDefault();
       if (control.dataset.updating) return;
@@ -641,7 +640,7 @@ function createEditableCurrentValue(resource, actor) {
     sizeNumberField(input, next);
     void savePlayResourceValue(actor, resource.key, next, input);
   });
-  // Scrolling over the field adjusts the value by one and saves immediately.
+  // Scrolling over the field stages the value; Apply persists it.
   addResourceWheelEditing(input, () => resource.max);
   return input;
 }
@@ -769,7 +768,37 @@ async function savePlayResourceFlags(actor, updates, control) {
   // Queue edits locally; nothing is persisted until Apply is clicked.
   const pending = section._vursPendingUpdates ?? (section._vursPendingUpdates = {});
   Object.assign(pending, updates);
-  refreshPlayResourceRow(control, actor, pending, false);
+  // Mark the row as staged without rebuilding it. Replacing the full row for
+  // every wheel tick caused repeated layout/reflow and made scrolling laggy.
+  row.classList.add("has-pending-changes");
+  const resourceKey = row.dataset.resource;
+  const resource = getPlayResourceEntries(actor).find(entry => entry.key === resourceKey);
+  if (resource) {
+    for (const [path, nextValue] of Object.entries(updates)) {
+      const [key, property] = path.split(".");
+      if (key !== resourceKey) continue;
+      if (property === "value") resource.value = Math.clamp(finiteResourceNumber(nextValue), 0, resource.max);
+      if (property === "maxReduction") {
+        resource.maxReduction = finiteResourceNumber(nextValue);
+        resource.max = Math.max(0, resource.baseMax - resource.maxReduction);
+        resource.value = Math.clamp(resource.value, 0, resource.max);
+      }
+    }
+    const currentInput = row.querySelector('input[aria-label$="current value"]');
+    const maxInput = row.querySelector('input[aria-label$="maximum"]');
+    if (currentInput) {
+      currentInput.max = String(resource.max);
+      if (finiteResourceNumber(currentInput.value) > resource.max) currentInput.value = String(resource.max);
+    }
+    if (maxInput && updates[`${resourceKey}.maxReduction`] !== undefined) {
+      maxInput.value = String(resource.max);
+      sizeNumberField(maxInput, resource.max);
+    }
+    const icon = row.querySelector(".vurs-play-resource-control img");
+    if (icon && resourceKey === "styleRank") {
+      icon.src = `modules/vurs-pf2e/assets/custom-icons/resource-icons/${getResourceIcon(resource).replace(/\.webp$/i, ".svg")}`;
+    }
+  }
   const apply = section.querySelector(".vurs-play-apply");
   if (apply) {
     apply.disabled = false;
