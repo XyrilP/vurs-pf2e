@@ -140,8 +140,8 @@ Hooks.on("renderApplicationV2", (app, element, context, options) => {
     const root = app?.element ?? element;
     const actor = [app?.actor, app?.document?.actor, app?.document,
       app?.options?.actor, context?.actor, options?.actor]
-      .find(candidate => candidate?.isOfType?.("character") || candidate?.isOfType?.("npc")) ??
-      game.actors?.contents?.find(candidate => (candidate?.isOfType?.("character") || candidate?.isOfType?.("npc")) && candidate.apps?.[app?.id] === app);
+      .find(candidate => candidate?.isOfType?.("character") || candidate?.isOfType?.("npc") || ["character", "npc"].includes(candidate?.type)) ??
+      game.actors?.contents?.find(candidate => candidate.apps?.[app?.id] === app);
     renderVursPlayResources(root, actor);
     if (VURS_MAIN_ATTRIBUTE_ENABLED) addMainAttributeChoice(app, root, context, options);
     reorderAttributeBuilderColumns(root, actor);
@@ -234,9 +234,12 @@ if (VURS_MAIN_ATTRIBUTE_ENABLED) {
 function applyActorSheetPresentation(app, element) {
   const root = element instanceof HTMLElement ? element : element?.[0];
   const actor = [app?.actor, app?.document?.actor, app?.document, app?.object]
-    .find(candidate => candidate?.isOfType?.("character") || candidate?.isOfType?.("npc"));
+    .find(candidate => candidate?.isOfType?.("character") || candidate?.isOfType?.("npc") || ["character", "npc"].includes(candidate?.type));
   if (!root || !actor) return;
+  // Play Resources support both characters and NPCs. The remaining sheet
+  // presentation helpers below are intentionally character-only.
   renderVursPlayResources(root, actor);
+  if (!(actor.isOfType?.("character") || actor.type === "character")) return;
   replaceVursPlayResourceTokens(root, actor);
   replaceVursPlayCostTokensOnActorSheet(root, actor);
   if (!root.dataset.vursPlayResourceTokenObserver) {
@@ -247,8 +250,6 @@ function applyActorSheetPresentation(app, element) {
     });
     observer.observe(root, { childList: true, subtree: true });
   }
-  // The remaining presentation changes are character-sheet specific.
-  if (!actor.isOfType?.("character")) return;
   requestAnimationFrame(() => addVursMaxHpReductionControl(root, actor));
   allowNegativeHpEntry(root, actor);
   reorderCharacterSheetAttributes(root, actor);
@@ -848,21 +849,12 @@ function applySystemMode(mode = getSystemMode()) {
   // Reprepare world, synthetic-token, and open-sheet actors. PF2e can prepare
   // token actors separately from their world actor, which otherwise leaves a
   // sheet displaying the pre-VURS values until its next update.
-  const openApplications = Object.values(ui.windows ?? {});
-  // Include every world actor type (characters and NPCs), synthetic token
-  // actors, and actors referenced by currently open sheets. System switching
-  // must refresh NPC sheets too, even when their sheet is not the actor's
-  // primary `actor.sheet` application.
   const actors = new Set([
     ...(game.actors?.contents ?? []),
     ...getCanvasActors(),
     game.user?.character,
-    ...openApplications.map(app => app.actor ?? app.document?.actor ?? app.document),
-    ...openApplications.flatMap(app => {
-      const actor = app.actor ?? app.document?.actor ?? app.document;
-      return actor?.apps ? Object.values(actor.apps).map(actorApp => actorApp?.actor ?? actor) : [];
-    })
-  ].filter(actor => actor?.isOfType?.("character") || actor?.isOfType?.("npc")));
+    ...Object.values(ui.windows ?? {}).map(app => app.actor)
+  ].filter(Boolean));
   for (const actor of actors) {
     installActorKeyAttributeSupport(actor, false);
     // PF2e's reset clears cached prepared state before rebuilding it. Calling
@@ -870,11 +862,8 @@ function applySystemMode(mode = getSystemMode()) {
     // the next document update (such as changing HP).
     actor.reset?.();
     actor.sheet?.render?.(false);
-    // Explicitly rerender each open sheet for this actor. This covers NPC
-    // sheets whose active Application is not exposed through actor.sheet.
-    for (const app of Object.values(actor.apps ?? {})) app.render?.(false);
   }
-  for (const app of openApplications) app.render?.(false);
+  for (const app of Object.values(ui.windows ?? {})) app.render?.(false);
 }
 
 function applyActorAbilityLabels(element, actor) {
