@@ -241,18 +241,9 @@ function applyActorSheetPresentation(app, element) {
   replaceVursPlayCostTokensOnActorSheet(root, actor);
   if (!root.dataset.vursPlayResourceTokenObserver) {
     root.dataset.vursPlayResourceTokenObserver = "true";
-    let tokenRefreshScheduled = false;
     const observer = new MutationObserver(() => {
-      // Coalesce bursts of sheet mutations into one token scan per frame.
-      // This avoids rescanning the full sheet repeatedly during a single render.
-      if (tokenRefreshScheduled) return;
-      tokenRefreshScheduled = true;
-      requestAnimationFrame(() => {
-        tokenRefreshScheduled = false;
-        if (!root.isConnected) return;
-        replaceVursPlayResourceTokens(root, actor);
-        replaceVursPlayCostTokensOnActorSheet(root, actor);
-      });
+      replaceVursPlayResourceTokens(root, actor);
+      replaceVursPlayCostTokensOnActorSheet(root, actor);
     });
     observer.observe(root, { childList: true, subtree: true });
   }

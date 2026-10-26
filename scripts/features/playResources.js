@@ -127,10 +127,10 @@ export function renderVursPlayResources(root, actor) {
     modifiers.className = "vurs-play-modifiers";
     modifiers.classList.add("hover");
     modifiers.textContent = "Modifiers";
-    modifiers.title = "Show Play regeneration modifiers";
+    modifiers.title = "Show Play recovery modifiers";
     modifiers.addEventListener("click", event => {
       event.preventDefault();
-      void togglePlayRegenerationTooltip(section, actor, modifiers);
+      void togglePlayRecoveryTooltip(section, actor, modifiers);
     });
     const controls = document.createElement("span");
     controls.className = "vurs-play-header-controls";
@@ -140,32 +140,7 @@ export function renderVursPlayResources(root, actor) {
   }
 
   const list = section.querySelector("ol");
-  // Reconcile rows by resource key instead of replacing the whole list on every
-  // sheet render. This preserves unchanged DOM nodes and their event handlers.
-  const existingRows = new Map([...list.children]
-    .filter(row => row.matches("li.vurs-play-resource"))
-    .map(row => [row.dataset.resource, row]));
-  const nextRows = [];
-  for (const resource of entries) {
-    const existing = existingRows.get(resource.key);
-    const previous = existing?._vursResource;
-    const unchanged = previous && previous.value === resource.value && previous.max === resource.max &&
-      previous.baseMax === resource.baseMax && previous.maxReduction === resource.maxReduction &&
-      previous.label === resource.label && previous.icon === resource.icon && previous.segmented === resource.segmented;
-    if (unchanged) {
-      // Refresh the model reference without touching the rendered layout.
-      existing._vursResource = resource;
-      nextRows.push(existing);
-    } else {
-      nextRows.push(createPlayResourceRow(resource, actor));
-    }
-    existingRows.delete(resource.key);
-  }
-  // replaceChildren with the same nodes is a no-op for unchanged rows in most
-  // browsers, but only call it when membership/order actually differs.
-  const currentRows = [...list.children];
-  const sameLayout = currentRows.length === nextRows.length && currentRows.every((row, index) => row === nextRows[index]);
-  if (!sameLayout) list.replaceChildren(...nextRows);
+  list.replaceChildren(...entries.map(resource => createPlayResourceRow(resource, actor)));
   const headers = [...sidebar.querySelectorAll(":scope > header")];
   const resourceLabels = new Set([
     normalizeLabel("Resources"),
@@ -182,7 +157,7 @@ export function renderVursPlayResources(root, actor) {
   else if (!section.isConnected) sidebar.append(section);
 }
 
-async function togglePlayRegenerationTooltip(section, actor, button) {
+async function togglePlayRecoveryTooltip(section, actor, button) {
   const existing = button._vursPlayModifiersTooltip;
   if (existing && button._vursPlayModifiersTooltipOpen) {
     existing.close();
@@ -203,8 +178,8 @@ async function togglePlayRegenerationTooltip(section, actor, button) {
     const resource = resources[definition.key] && typeof resources[definition.key] === "object"
       ? resources[definition.key]
       : {};
-    const regeneration = getPlayResourceRegeneration(actor, definition.key, resource);
-    if (regeneration) rows.push({ label: `${getPlayResourceShortLabel(actor, definition.key)} Regen`, modifier: regeneration });
+    const recovery = getPlayResourceRegeneration(actor, definition.key, resource);
+    if (recovery) rows.push({ key: definition.key, resource: { ...resource, key: definition.key, label: definition.label }, label: `${getPlayResourceShortLabel(actor, definition.key)} Recovery`, modifier: recovery });
   }
   const tooltipId = `${section.closest("form")?.id ?? "vurs-play"}-play-modifiers`;
   const rendered = await foundry.applications.handlebars.renderTemplate(
@@ -214,6 +189,20 @@ async function togglePlayRegenerationTooltip(section, actor, button) {
   const content = document.createRange().createContextualFragment(rendered).firstElementChild;
   if (!content) return;
   content.classList.add("vurs-play-modifiers-tooltip");
+  // Add the same resource artwork used by the Play Resources panel to each
+  // recovery modifier, while keeping PF2e's native tooltip layout and styling.
+  for (const row of rows) {
+    const labelNode = [...content.querySelectorAll(".label, .name, label, span, strong")]
+      .find(node => node.childElementCount === 0 && node.textContent?.trim() === row.label);
+    if (!labelNode) continue;
+    const icon = document.createElement("img");
+    icon.className = "vurs-play-modifier-icon";
+    icon.src = `${RESOURCE_ICON_BASE}${getResourceIcon(row.resource).replace(/\.webp$/i, ".svg")}`;
+    icon.alt = "";
+    icon.draggable = false;
+    icon.style.cssText = "width:1.25em;height:1.25em;object-fit:contain;vertical-align:middle;margin-right:.35em;";
+    labelNode.prepend(icon);
+  }
   section.append(content);
   button.dataset.tooltipContent = `#${content.id}`;
   const closeOnOutsideClick = event => {
@@ -426,16 +415,15 @@ async function regenerateActorAtTurnStart(actor) {
     updates[`${PLAY_RESOURCES_PATH}.${definition.key}.value`] = Math.clamp(current + regeneration, 0, entry.max);
   }
 
-  const hp = actor.system?.attributes?.hp;
-  const hpRegeneration = finiteResourceNumber(foundry.utils.getProperty(actor, "flags.vurs.hp.regeneration"));
-  if (hp && hpRegeneration) {
-    updates["system.attributes.hp.value"] = Math.clamp(
-      finiteResourceNumber(hp.value) + hpRegeneration,
-      0,
-      finiteResourceNumber(hp.max)
-    );
+  if (!Object.keys(updates).length) return;
+
+  // Turn-start recovery only updates VURS play resources. PF2e handles HP.
+  await actor.update(updates, { render: false, vursPlayResourceOnly: true });
+
+  for (const app of Object.values(actor.apps ?? {})) {
+    const root = app?.element instanceof HTMLElement ? app.element : app?.element?.[0];
+    if (root) renderVursPlayResources(root, actor);
   }
-  if (Object.keys(updates).length) await actor.update(updates, { render: true });
 }
 
 function getPlayResourceRegeneration(actor, key, resource) {
