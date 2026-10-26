@@ -537,7 +537,7 @@ function createPlayResourceRow(resource, actor) {
 		
 		const bar = document.createElement("div");
 		bar.className = "vurs-play-resource-segments";
-		bar.style.cssText = "display:flex;flex-wrap:wrap;align-content:center;align-items:center;gap:.12em;min-width:0;max-width:100%;overflow:hidden;box-sizing:border-box;min-height:0;height:1em;max-height:100%;overflow:hidden";
+		bar.style.cssText = "display:flex;flex-wrap:wrap;align-content:center;align-items:center;gap:.12em;min-width:0;max-width:100%;box-sizing:border-box;min-height:0;height:1em;max-height:100%";
 		bar.setAttribute("role", "meter");
 		bar.setAttribute("aria-label", resource.label);
 		bar.setAttribute("aria-valuemin", "0");
