@@ -89,6 +89,13 @@ export function renderVursPlayResources(root, actor) {
     return;
   }
 
+  if (!document.getElementById("vurs-play-pending-glow")) {
+    const style = document.createElement("style");
+    style.id = "vurs-play-pending-glow";
+    style.textContent = "@keyframes vurs-play-pending-glow { 0%, 100% { opacity: .35; } 50% { opacity: 1; } } .vurs-play-apply.has-pending-changes { position: relative; isolation: isolate; } .vurs-play-apply.has-pending-changes::after { content: \"\"; position: absolute; inset: -2px; border-radius: inherit; box-shadow: 0 0 9px 2px rgba(255, 190, 70, .8); opacity: .35; pointer-events: none; z-index: -1; animation: vurs-play-pending-glow 1.5s ease-in-out infinite; } @media (prefers-reduced-motion: reduce) { .vurs-play-apply.has-pending-changes::after { animation: none; opacity: .75; } }";
+    document.head.append(style);
+  }
+
   if (!section) {
     section = document.createElement("section");
     section.className = "vurs-play-resources";
@@ -861,7 +868,7 @@ async function savePlayResourceFlags(actor, updates, control) {
     const hasPending = Object.keys(pending).length > 0;
     apply.disabled = false;
     apply.classList.toggle("has-pending-changes", hasPending);
-    apply.textContent = hasPending ? "Apply *" : "Apply";
+    apply.textContent = "Apply";
   }
 }
 
@@ -896,8 +903,7 @@ async function applyPlayResourceChanges(root, actor, section, button) {
 
 function getCurrentPlayResourceControl(section, resourceKey) {
   if (!section?.isConnected || !resourceKey) return null;
-  const row = [...section.querySelectorAll("li.vurs-play-resource")]
-    .find(candidate => candidate.dataset.resource === resourceKey);
+  const row = section.querySelector(`li.vurs-play-resource[data-resource="${CSS.escape(resourceKey)}"]`);
   return row?.querySelector(".vurs-play-resource-control, .vurs-play-resource-segments, input") ?? null;
 }
 
