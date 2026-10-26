@@ -21,6 +21,31 @@ const PLAY_RESOURCE_DEFINITIONS = Object.freeze([
   { key: "magicPoints", label: "Magic Points", hasMaxReduction: true, segmented: true }
 ]);
 
+const RESOURCE_ICON_BASE = "modules/vurs-pf2e/assets/custom-icons/resource-icons/";
+const RESOURCE_ICON_PRELOAD_FILES = Object.freeze([
+  "PassiveSP.svg", "PassiveTP.svg", "PassiveKP.svg", "PassiveSR.svg", "Passive.svg",
+  "OneSP.svg", "TwoSP.svg", "ThreeSP.svg", "LongerSP.svg",
+  "OneTP.svg", "TwoTP.svg", "ThreeTP.svg", "LongerTP.svg",
+  "OneKP.svg", "TwoKP.svg", "ThreeKP.svg", "LongerKP.svg",
+  "OneSR.svg", "TwoSR.svg", "ThreeSR.svg", "LongerSR.svg",
+  "OneAction.svg", "TwoActions.svg", "ThreeActions.svg",
+  "OneAP.svg", "TwoAP.svg", "ThreeAP.svg", "LongerAP.svg", "Reaction.svg",
+  "Style-Rank_1.svg", "Style-Rank_2.svg", "Style-Rank_3.svg", "Style-Rank_4.svg", "Style-Rank_5.svg"
+]);
+const preloadedResourceIcons = new Map();
+let resourceIconsPreloadStarted = false;
+
+function preloadResourceIcons() {
+  if (resourceIconsPreloadStarted) return;
+  resourceIconsPreloadStarted = true;
+  for (const file of RESOURCE_ICON_PRELOAD_FILES) {
+    const image = new Image();
+    image.decoding = "async";
+    image.src = `${RESOURCE_ICON_BASE}${file}`;
+    preloadedResourceIcons.set(file, image);
+  }
+}
+
 const PF2E_RESOURCE_FRAME = `<svg xmlns="http://www.w3.org/2000/svg" width="33" height="33" overflow="scroll"><style>.st1{stroke:#231f20;stroke-miterlimit:10}.st1,.st2{fill:none}</style><g opacity=".7"><path class="st1" d="M.5 20v-7"/><path class="st2" d="M13 20v-7"/><path class="st1" d="M13 .5h7"/><path class="st2" d="M13 13h7"/><path class="st1" d="M32.5 13v7"/><path class="st2" d="M20 13v7"/><path class="st1" d="M20 32.5h-7"/><path class="st2" d="M20 20h-7"/><g><path class="st1" d="M.5.5h3.1v3.1H.5zM3.6 3.6h3.1v3.1H3.6zM6.8 3.6h3.1v3.1H6.8zM3.6 6.8h3.1v3.1H3.6zM3.6 6.8H.5V13M13 .5H6.8v3.1"/></g><g><path class="st1" d="M29.4.5h3.1v3.1h-3.1zM26.3 3.6h3.1v3.1h-3.1zM26.3 6.8h3.1v3.1h-3.1zM23.1 3.6h3.1v3.1h-3.1zM26.3 3.6V.5H20"/><path class="st1" d="M32.5 13V6.8h-3.1"/></g><g><path class="st1" d="M29.4 29.4h3.1v3.1h-3.1z"/><path class="st1" d="M26.3 26.3h3.1v3.1h-3.1zM23.1 26.3h3.1v3.1h-3.1zM26.3 23.1h3.1v3.1h-3.1zM29.4 26.3V20M20 32.5h6.3v-3.1"/></g><g><path class="st1" d="M.5 29.4h3.1v3.1H.5zM3.6 26.3h3.1v3.1H3.6zM3.6 23.1h3.1v3.1H3.6zM6.8 26.3h3.1v3.1H6.8z"/><path class="st1" d="M6.8 29.4v3.1H13M.5 20v6.3h3.1"/></g></g></svg>`;
 
 function resourceFrameDataUrl(color) {
@@ -43,6 +68,7 @@ Hooks.on("updateCombat", (combat, changes) => {
 });
 
 export function renderVursPlayResources(root, actor) {
+  preloadResourceIcons();
   if (!(root instanceof HTMLElement) || !actor?.isOfType?.("character")) return;
   const sidebar = root.matches(".sidebar") ? root : root.querySelector(".sidebar[data-tab='sidebar'], aside > .sidebar");
   if (!sidebar) return;
@@ -417,7 +443,7 @@ function createPlayResourceRow(resource, actor) {
     control.setAttribute("aria-label", `${resource.label}: ${formatResourceNumber(resource.value)} of ${formatResourceNumber(resource.max)}. Left click to increase; right click to decrease.`);
     const icon = document.createElement("img");
     const iconFile = getResourceIcon(resource).replace(/\.webp$/i, ".svg");
-    icon.src = `modules/vurs-pf2e/assets/custom-icons/resource-icons/${iconFile}`;
+    icon.src = `${RESOURCE_ICON_BASE}${iconFile}`;
     icon.alt = "";
     icon.draggable = false;
     // Keep numeric values outside the icon; the adjacent editable field is
@@ -796,7 +822,7 @@ async function savePlayResourceFlags(actor, updates, control) {
     }
     const icon = row.querySelector(".vurs-play-resource-control img");
     if (icon && resourceKey === "styleRank") {
-      icon.src = `modules/vurs-pf2e/assets/custom-icons/resource-icons/${getResourceIcon(resource).replace(/\.webp$/i, ".svg")}`;
+      icon.src = `${RESOURCE_ICON_BASE}${getResourceIcon(resource).replace(/\.webp$/i, ".svg")}`;
     }
   }
   const apply = section.querySelector(".vurs-play-apply");
@@ -971,7 +997,7 @@ function renderStyleRankOverlay(root, actor, rankOverride = undefined) {
   overlay.className = `vurs-style-rank-overlay rank-${rank}${rank === 5 ? " rank-s" : ""}`;
   const rankCode = [null, "1D", "2C", "3B", "4A", "5S"][rank];
   const icon = document.createElement("img");
-  icon.src = `modules/vurs-pf2e/assets/custom-icons/resource-icons/Style-Rank_${rankCode}.svg`;
+  icon.src = `${RESOURCE_ICON_BASE}Style-Rank_${rankCode}.svg`;
   icon.alt = `Style Rank ${rankCode}`;
   const caption = document.createElement("span");
   caption.className = "vurs-style-rank-caption";
