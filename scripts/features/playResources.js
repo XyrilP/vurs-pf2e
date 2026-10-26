@@ -537,7 +537,7 @@ function createPlayResourceRow(resource, actor) {
 
     const bar = document.createElement("div");
     bar.className = "vurs-play-resource-segments";
-    bar.style.cssText = "display:grid;flex:1 1 0%;align-content:center;align-items:center;gap:0;min-width:0;width:0;max-width:100%;overflow:hidden;box-sizing:border-box;padding:0;";
+    bar.style.cssText = "display:flex;flex:1 1 0%;flex-wrap:wrap;align-content:center;align-items:center;gap:.08em;min-width:0;width:0;max-width:100%;overflow:hidden;box-sizing:border-box;padding:0 .04em;";
     bar.setAttribute("role", "meter");
     bar.setAttribute("aria-label", resource.label);
     bar.setAttribute("aria-valuemin", "0");
@@ -552,13 +552,11 @@ function createPlayResourceRow(resource, actor) {
         const filled = segmentData.start + index < resource.value;
         star.className = `${filled ? "fa-solid" : "fa-regular"} fa-star vurs-mp-star ${filled ? "is-filled" : "is-empty"}`;
         star.style.setProperty("--segment-color", segmentData.color);
-        star.style.cssText += ";display:block;justify-self:center;min-width:0;max-width:100%;font-size:1em;line-height:1;";
+        star.style.cssText += ";flex:0 0 auto;min-width:0;max-width:100%;font-size:1em;line-height:1;";
         star.title = segmentData.label ?? resource.label;
         bar.append(star);
       }
     }
-    const starCount = getMagicPointSegments(actor, resource).reduce((total, segment) => total + Math.max(0, Math.floor(segment.size)), 0);
-    bar.style.gridTemplateColumns = starCount > 0 ? `repeat(${starCount}, minmax(0, 1fr))` : "minmax(0, 1fr)";
     const fields = document.createElement("span");
     fields.className = "vurs-play-resource-segment-values vurs-play-resource-edit-values";
     fields.append(...createEditableResourceFields(resource, actor));
@@ -910,13 +908,11 @@ async function savePlayResourceFlags(actor, updates, control) {
           const filled = segmentData.start + index < resource.value;
           star.className = `${filled ? "fa-solid" : "fa-regular"} fa-star vurs-mp-star ${filled ? "is-filled" : "is-empty"}`;
           star.style.setProperty("--segment-color", segmentData.color);
-          star.style.cssText += ";display:block;justify-self:center;min-width:0;max-width:100%;font-size:1em;line-height:1;";
+          star.style.cssText += ";flex:0 0 auto;min-width:0;max-width:100%;font-size:1em;line-height:1;";
           star.title = segmentData.label ?? resource.label;
           magicBar.append(star);
         }
       }
-      const starCount = magicSegments.reduce((total, segment) => total + Math.max(0, Math.floor(segment.size)), 0);
-      magicBar.style.gridTemplateColumns = starCount > 0 ? `repeat(${starCount}, minmax(0, 1fr))` : "minmax(0, 1fr)";
       magicBar.setAttribute("aria-valuenow", String(resource.value));
     }
     const valueDisplay = row.querySelector(":scope > .value");
