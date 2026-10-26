@@ -713,7 +713,10 @@ async function savePlayResourceFlags(actor, updates, control) {
     // Play resources are self-contained UI state. Suppress VURS's broad
     // updateActor refresh; only this row and the Style Rank overlay are updated.
     await actor.update(changes, { render: false, vursPlayResourceOnly: true });
-    refreshCurrentPlayResourceRow(section, resourceKey, actor);
+    // The optimistic row already shows the saved value. Just unlock its
+    // current control instead of rebuilding the row a second time; replacing
+    // DOM nodes again here causes avoidable style/layout recalculation.
+    finishCurrentPlayResourceRow(section, resourceKey);
   } catch (error) {
     console.error("vurs-pf2e | Failed to update play resources", error);
     // Restore the display from the actor's last successfully saved state.
@@ -721,11 +724,24 @@ async function savePlayResourceFlags(actor, updates, control) {
   }
 }
 
-function refreshCurrentPlayResourceRow(section, resourceKey, actor) {
-  if (!section?.isConnected || !resourceKey) return;
+function getCurrentPlayResourceControl(section, resourceKey) {
+  if (!section?.isConnected || !resourceKey) return null;
   const row = [...section.querySelectorAll("li.vurs-play-resource")]
     .find(candidate => candidate.dataset.resource === resourceKey);
-  const currentControl = row?.querySelector(".vurs-play-resource-control, .vurs-play-resource-segments, input");
+  return row?.querySelector(".vurs-play-resource-control, .vurs-play-resource-segments, input") ?? null;
+}
+
+function finishCurrentPlayResourceRow(section, resourceKey) {
+  const currentControl = getCurrentPlayResourceControl(section, resourceKey);
+  if (!currentControl) return;
+  delete currentControl.dataset.updating;
+  if (currentControl instanceof HTMLButtonElement || currentControl instanceof HTMLInputElement) {
+    currentControl.disabled = false;
+  }
+}
+
+function refreshCurrentPlayResourceRow(section, resourceKey, actor) {
+  const currentControl = getCurrentPlayResourceControl(section, resourceKey);
   if (currentControl) refreshPlayResourceRow(currentControl, actor);
 }
 
