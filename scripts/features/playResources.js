@@ -639,15 +639,32 @@ function getMagicPointSegments(actor, resource) {
 }
 
 function addResourceWheelEditing(input, getMaximum) {
+  // Keep the wheel handler itself extremely cheap. Browsers can deliver many
+  // wheel events per frame; stage only the latest value once per animation frame.
+  let pendingDelta = 0;
+  let frameScheduled = false;
   input.addEventListener("wheel", event => {
     event.preventDefault();
     if (input.disabled || input.dataset.updating) return;
-    const direction = event.deltaY < 0 ? 1 : -1;
-    const maximum = getMaximum();
-    const next = Math.max(0, Math.min(maximum, finiteResourceNumber(input.value) + direction));
-    if (next === finiteResourceNumber(input.value)) return;
-    input.value = String(next);
-    input.dispatchEvent(new Event("change", { bubbles: true }));
+
+    // Normalize trackpads and mouse wheels while preserving multi-notch input.
+    const delta = Math.sign(event.deltaY) * Math.max(1, Math.round(Math.abs(event.deltaY) / 100));
+    pendingDelta += event.deltaY < 0 ? delta : -delta;
+    if (frameScheduled) return;
+    frameScheduled = true;
+    requestAnimationFrame(() => {
+      frameScheduled = false;
+      const change = pendingDelta;
+      pendingDelta = 0;
+      if (!change || input.disabled || !input.isConnected) return;
+      const current = finiteResourceNumber(input.value);
+      const maximum = getMaximum();
+      const next = Math.max(0, Math.min(maximum, current + change));
+      if (next === current) return;
+      input.value = String(next);
+      // One change/staging pass per frame, not per raw wheel event.
+      input.dispatchEvent(new Event("change", { bubbles: true }));
+    });
   }, { passive: false });
 }
 
