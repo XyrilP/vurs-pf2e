@@ -696,6 +696,12 @@ async function savePlayResourceFlag(actor, resourcePath, value, control) {
 
 async function savePlayResourceFlags(actor, updates, control) {
   const changes = Object.fromEntries(Object.entries(updates).map(([key, value]) => [`${PLAY_RESOURCES_PATH}.${key}`, value]));
+  // Keep a stable reference to the resource section and key: the optimistic
+  // refresh replaces the clicked control, so the original control is detached
+  // by the time the asynchronous Actor update finishes.
+  const originalRow = control?.closest?.("li.vurs-play-resource");
+  const section = originalRow?.closest?.(".vurs-play-resources");
+  const resourceKey = originalRow?.dataset.resource;
   const disableable = control instanceof HTMLButtonElement || control instanceof HTMLInputElement;
   if (disableable) control.disabled = true;
   else control.dataset.updating = "true";
@@ -707,12 +713,20 @@ async function savePlayResourceFlags(actor, updates, control) {
     // Play resources are self-contained UI state. Suppress VURS's broad
     // updateActor refresh; only this row and the Style Rank overlay are updated.
     await actor.update(changes, { render: false, vursPlayResourceOnly: true });
-    refreshPlayResourceRow(control, actor);
+    refreshCurrentPlayResourceRow(section, resourceKey, actor);
   } catch (error) {
     console.error("vurs-pf2e | Failed to update play resources", error);
     // Restore the display from the actor's last successfully saved state.
-    refreshPlayResourceRow(control, actor);
+    refreshCurrentPlayResourceRow(section, resourceKey, actor);
   }
+}
+
+function refreshCurrentPlayResourceRow(section, resourceKey, actor) {
+  if (!section?.isConnected || !resourceKey) return;
+  const row = [...section.querySelectorAll("li.vurs-play-resource")]
+    .find(candidate => candidate.dataset.resource === resourceKey);
+  const currentControl = row?.querySelector(".vurs-play-resource-control, .vurs-play-resource-segments, input");
+  if (currentControl) refreshPlayResourceRow(currentControl, actor);
 }
 
 function refreshPlayResourceRow(control, actor, pendingUpdates = null, pending = false) {
