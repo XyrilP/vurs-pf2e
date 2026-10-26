@@ -537,7 +537,7 @@ function createPlayResourceRow(resource, actor) {
 
     const bar = document.createElement("div");
     bar.className = "vurs-play-resource-segments";
-    bar.style.cssText = "display:flex;flex:1 1 0%;flex-wrap:wrap;align-content:center;align-items:center;gap:.08em;min-width:0;width:0;max-width:100%;overflow:hidden;box-sizing:border-box;padding:0 .04em;";
+    bar.style.cssText = "display:grid;flex:1 1 0%;align-content:center;align-items:center;gap:0;min-width:0;width:0;max-width:100%;overflow:hidden;box-sizing:border-box;padding:0;";
     bar.setAttribute("role", "meter");
     bar.setAttribute("aria-label", resource.label);
     bar.setAttribute("aria-valuemin", "0");
@@ -552,31 +552,18 @@ function createPlayResourceRow(resource, actor) {
         const filled = segmentData.start + index < resource.value;
         star.className = `${filled ? "fa-solid" : "fa-regular"} fa-star vurs-mp-star ${filled ? "is-filled" : "is-empty"}`;
         star.style.setProperty("--segment-color", segmentData.color);
-        star.style.cssText += ";flex:0 0 auto;min-width:0;max-width:100%;font-size:1em;line-height:1;";
+        star.style.cssText += ";display:block;justify-self:center;min-width:0;max-width:100%;font-size:1em;line-height:1;";
         star.title = segmentData.label ?? resource.label;
         bar.append(star);
       }
     }
+    const starCount = getMagicPointSegments(actor, resource).reduce((total, segment) => total + Math.max(0, Math.floor(segment.size)), 0);
+    bar.style.gridTemplateColumns = starCount > 0 ? `repeat(${starCount}, minmax(0, 1fr))` : "minmax(0, 1fr)";
     const fields = document.createElement("span");
     fields.className = "vurs-play-resource-segment-values vurs-play-resource-edit-values";
     fields.append(...createEditableResourceFields(resource, actor));
     frame.append(bar, fields);
     row.append(frame);
-  }
-
-  if (resource.hasMaxReduction && resource.maxReduction !== 0) {
-    const reduction = document.createElement("span");
-    reduction.className = "vurs-play-resource-max-reduction";
-    if (resource.maxReduction < 0) reduction.classList.add("is-increase");
-    const adjustment = resource.maxReduction > 0
-      ? `−${formatResourceNumber(resource.maxReduction)}`
-      : `+${formatResourceNumber(Math.abs(resource.maxReduction))}`;
-    reduction.textContent = adjustment;
-    reduction.setAttribute("aria-label", `Maximum adjusted by ${formatResourceNumber(resource.maxReduction)}`);
-    reduction.title = `Maximum adjusted by ${formatResourceNumber(resource.maxReduction)}`;
-    // BP and MP render their own resource bars and don't append the generic
-    // value node, so put the adjustment directly on the row for every resource.
-    row.append(reduction);
   }
 
   if (resource.segmented && resource.key !== "magicPoints") {
@@ -894,20 +881,6 @@ async function savePlayResourceFlags(actor, updates, control) {
       } else if (delta) {
         delta.remove();
       }
-      const rowReduction = row.querySelector(":scope > .vurs-play-resource-max-reduction");
-      if (resource.maxReduction !== 0) {
-        const indicator = rowReduction ?? document.createElement("span");
-        indicator.className = "vurs-play-resource-max-reduction";
-        indicator.classList.toggle("is-increase", resource.maxReduction < 0);
-        indicator.textContent = resource.maxReduction > 0
-          ? `−${formatResourceNumber(resource.maxReduction)}`
-          : `+${formatResourceNumber(Math.abs(resource.maxReduction))}`;
-        indicator.setAttribute("aria-label", `Maximum adjusted by ${formatResourceNumber(resource.maxReduction)}`);
-        indicator.title = `Maximum adjusted by ${formatResourceNumber(resource.maxReduction)}`;
-        if (!rowReduction) row.append(indicator);
-      } else {
-        rowReduction?.remove();
-      }
     }
     // Update the icon immediately from the staged value, without persisting
     // anything or re-rendering the whole resource list. Preloaded Image objects
@@ -930,17 +903,20 @@ async function savePlayResourceFlags(actor, updates, control) {
     const magicBar = resourceKey === "magicPoints" ? row.querySelector(".vurs-play-resource-segments") : null;
     if (magicBar) {
       magicBar.replaceChildren();
-      for (const segmentData of getMagicPointSegments(actor, resource)) {
+      const magicSegments = getMagicPointSegments(actor, resource);
+      for (const segmentData of magicSegments) {
         for (let index = 0; index < Math.max(0, Math.floor(segmentData.size)); index += 1) {
           const star = document.createElement("i");
           const filled = segmentData.start + index < resource.value;
           star.className = `${filled ? "fa-solid" : "fa-regular"} fa-star vurs-mp-star ${filled ? "is-filled" : "is-empty"}`;
           star.style.setProperty("--segment-color", segmentData.color);
-          star.style.cssText += ";flex:0 0 auto;min-width:0;max-width:100%;font-size:1em;line-height:1;";
+          star.style.cssText += ";display:block;justify-self:center;min-width:0;max-width:100%;font-size:1em;line-height:1;";
           star.title = segmentData.label ?? resource.label;
           magicBar.append(star);
         }
       }
+      const starCount = magicSegments.reduce((total, segment) => total + Math.max(0, Math.floor(segment.size)), 0);
+      magicBar.style.gridTemplateColumns = starCount > 0 ? `repeat(${starCount}, minmax(0, 1fr))` : "minmax(0, 1fr)";
       magicBar.setAttribute("aria-valuenow", String(resource.value));
     }
     const valueDisplay = row.querySelector(":scope > .value");
