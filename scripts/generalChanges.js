@@ -848,12 +848,21 @@ function applySystemMode(mode = getSystemMode()) {
   // Reprepare world, synthetic-token, and open-sheet actors. PF2e can prepare
   // token actors separately from their world actor, which otherwise leaves a
   // sheet displaying the pre-VURS values until its next update.
+  const openApplications = Object.values(ui.windows ?? {});
+  // Include every world actor type (characters and NPCs), synthetic token
+  // actors, and actors referenced by currently open sheets. System switching
+  // must refresh NPC sheets too, even when their sheet is not the actor's
+  // primary `actor.sheet` application.
   const actors = new Set([
     ...(game.actors?.contents ?? []),
     ...getCanvasActors(),
     game.user?.character,
-    ...Object.values(ui.windows ?? {}).map(app => app.actor)
-  ].filter(Boolean));
+    ...openApplications.map(app => app.actor ?? app.document?.actor ?? app.document),
+    ...openApplications.flatMap(app => {
+      const actor = app.actor ?? app.document?.actor ?? app.document;
+      return actor?.apps ? Object.values(actor.apps).map(actorApp => actorApp?.actor ?? actor) : [];
+    })
+  ].filter(actor => actor?.isOfType?.("character") || actor?.isOfType?.("npc")));
   for (const actor of actors) {
     installActorKeyAttributeSupport(actor, false);
     // PF2e's reset clears cached prepared state before rebuilding it. Calling
@@ -861,8 +870,11 @@ function applySystemMode(mode = getSystemMode()) {
     // the next document update (such as changing HP).
     actor.reset?.();
     actor.sheet?.render?.(false);
+    // Explicitly rerender each open sheet for this actor. This covers NPC
+    // sheets whose active Application is not exposed through actor.sheet.
+    for (const app of Object.values(actor.apps ?? {})) app.render?.(false);
   }
-  for (const app of Object.values(ui.windows ?? {})) app.render?.(false);
+  for (const app of openApplications) app.render?.(false);
 }
 
 function applyActorAbilityLabels(element, actor) {

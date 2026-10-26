@@ -49,9 +49,18 @@ export function renderVursPlayResources(root, actor) {
   renderStyleRankOverlay(root, actor);
 
   let section = sidebar.querySelector(":scope > .vurs-play-resources");
+  const storedResources = foundry.utils.getProperty(actor, PLAY_RESOURCES_PATH) ?? {};
+  const hasStoredPlayResources = PLAY_RESOURCE_DEFINITIONS.some(definition => {
+    const resource = storedResources[definition.key];
+    return resource && typeof resource === "object" &&
+      Number.isFinite(Number(resource.max)) && Number(resource.max) > 0;
+  });
   const hasDefaultPlayResources = getFullVursDefaultMax(actor, "reactions") > 0 ||
     getFullVursDefaultMax(actor, "actionPoints") > 0;
-  if (!actorUsesVursSystem(actor) && !hasDefaultPlayResources) {
+  // NPCs may have explicitly configured Play Resources without actor-scoped
+  // VURS mode flags. Do not hide those resources just because mode defaults
+  // are unavailable for this actor.
+  if (!actorUsesVursSystem(actor) && !hasDefaultPlayResources && !hasStoredPlayResources) {
     section?.remove();
     return;
   }
