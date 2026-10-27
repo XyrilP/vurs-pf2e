@@ -761,7 +761,7 @@ function addResourceWheelEditing(input, getMaximum) {
 		
 		// Normalize trackpads and mouse wheels while preserving multi-notch input.
 		const delta = Math.sign(event.deltaY) * Math.max(1, Math.round(Math.abs(event.deltaY) / 100));
-		pendingDelta += event.deltaY < 0 ? delta : -delta;
+		pendingDelta += -delta;
 		if (frameScheduled) return;
 		frameScheduled = true;
 		requestAnimationFrame(() => {
