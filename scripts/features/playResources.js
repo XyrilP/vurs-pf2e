@@ -355,7 +355,10 @@ function getPlayResourceEntries(actor) {
     // belongs only in the Play Modifiers tooltip.
     if (max <= 0) return [];
     const initialValue = resource.value === undefined || resource.value === null || resource.value === ""
-      ? (["budgetPoints", "magicPoints"].includes(definition.key) ? max : 0)
+      ? (["budgetPoints", "magicPoints"].includes(definition.key) ||
+          (actorUsesAgnosticVurs(actor) && (definition.key === "actionPoints" || definition.key === "reactions"))
+          ? max
+          : 0)
       : finiteResourceNumber(resource.value);
     const value = Math.clamp(initialValue, 0, max);
     const label = definition.key === "actionPoints" && !actorUsesVursSystem(actor)
@@ -415,11 +418,12 @@ async function resetEncounterPlayResources(combat) {
 }
 
 function getFullVursDefaultMax(actor, resourceKey) {
-  if (!actorUsesVursSystem(actor) && getSystemModeForPlayResource(actor) !== "default") return undefined;
-  // Agnostic VURS does not derive Action Points from VURS attributes and
-  // skills. Preserve an explicitly stored maximum (which may be above 3),
-  // and use the standard three-point pool only when no maximum is configured.
-  if (actorUsesAgnosticVurs(actor)) {
+  const agnostic = actorUsesAgnosticVurs(actor);
+  const agnosticNpc = agnostic && isNpcActor(actor);
+  if (!actorUsesVursSystem(actor) && !agnostic && getSystemModeForPlayResource(actor) !== "default") return undefined;
+  // Agnostic PCs keep the classic 3 AP / 1 Reaction defaults. Agnostic NPCs
+  // get the full VURS resource set, while retaining Agnostic minimums.
+  if (agnostic && !agnosticNpc) {
     if (resourceKey === "actionPoints") {
       const storedMax = foundry.utils.getProperty(actor, `${PLAY_RESOURCES_PATH}.actionPoints.max`);
       if (storedMax !== undefined && storedMax !== null && storedMax !== "" && Number.isFinite(Number(storedMax))) {
@@ -430,6 +434,7 @@ function getFullVursDefaultMax(actor, resourceKey) {
     if (resourceKey === "reactions") return 1;
     return undefined;
   }
+  if (agnosticNpc && resourceKey === "reactions") return 1;
   if (getSystemModeForPlayResource(actor) === "default") {
     if (game.settings.get("vurs-pf2e", DEFAULT_ACTION_POINTS_SETTING) !== true) return undefined;
     if (resourceKey === "actionPoints") return 3;
@@ -446,7 +451,7 @@ function getFullVursDefaultMax(actor, resourceKey) {
 
   switch (resourceKey) {
     case "actionPoints":
-      return Math.max(2, 2 + Math.min(attributeModifier("dex"), skillRank("mobility")));
+      return Math.max(agnosticNpc ? 3 : 2, 2 + Math.min(attributeModifier("dex"), skillRank("mobility")));
     case "staminaPoints":
       return Math.max(0, Math.min(attributeModifier("str"), skillRank("athletics")));
     case "tacticPoints":
@@ -504,7 +509,7 @@ function getPlayResourceRegeneration(actor, key, resource) {
     return finiteResourceNumber(resource.regeneration);
   }
   if (resource.regeneration === null) return 0;
-  if (!actorUsesVursSystem(actor)) {
+  if (!actorUsesVursSystem(actor) && !(actorUsesAgnosticVurs(actor) && isNpcActor(actor))) {
     if (game.settings.get("vurs-pf2e", DEFAULT_ACTION_POINTS_SETTING) !== true) return 0;
     return { actionPoints: 3, reactions: 1 }[key] ?? 0;
   }
