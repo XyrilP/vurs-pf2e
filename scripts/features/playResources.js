@@ -114,6 +114,11 @@ export function renderVursPlayResources(root, actor) {
       .vurs-play-resources.vurs-play-resources-npc .value { font-size: .72rem; white-space: nowrap; }
       .vurs-play-resources.vurs-play-resources-npc .vurs-play-resource-frame { min-width: 0; gap: .15rem; }
       .vurs-play-resources.vurs-play-resources-npc .vurs-play-resource-segments { min-width: 0; }
+      .vurs-play-resources.vurs-play-resources-npc .vurs-play-header-controls { align-items: center; margin-left: auto; }
+      .vurs-play-resources.vurs-play-resources-npc .vurs-play-apply { font-size: .62rem; line-height: 1.1; padding: .08rem .2rem; min-height: 1.15rem; }
+      .vurs-play-resources.vurs-play-resources-npc .vurs-play-modifiers { display: none; font-size: .68rem; padding: .08rem .2rem; min-height: 1.25rem; }
+      .vurs-play-resources.vurs-play-resources-npc:hover .vurs-play-modifiers,
+      .vurs-play-resources.vurs-play-resources-npc:focus-within .vurs-play-modifiers { display: inline-flex; }
     `;
     document.head.append(style);
   }
@@ -193,8 +198,18 @@ export function renderVursPlayResources(root, actor) {
   const initiativeHeader = headers.find(header => initiativeLabels.has(normalizeLabel(header.querySelector("h2")?.textContent)));
   const initiativeBlock = initiativeHeader
     ?? sidebar.querySelector(":scope > .initiative, :scope > [data-tab='initiative'], :scope > section.initiative, :scope > .npc-initiative");
-  if (initiativeBlock) sidebar.insertBefore(section, initiativeBlock);
-  else if (!section.isConnected) sidebar.append(section);
+  if (isNpc) {
+    // NPC Play stays above the Initiative section.
+    if (initiativeBlock) sidebar.insertBefore(section, initiativeBlock);
+    else if (!section.isConnected) sidebar.append(section);
+  } else if (initiativeHeader) {
+    // On PC sheets, keep Play directly after the Initiative heading and before
+    // its roller/content, rather than before the whole Initiative section.
+    const next = initiativeHeader.nextElementSibling;
+    if (next !== section) sidebar.insertBefore(section, next);
+  } else if (initiativeBlock) {
+    sidebar.insertBefore(section, initiativeBlock);
+  } else if (!section.isConnected) sidebar.append(section);
 }
 
 async function togglePlayRegenerationTooltip(section, actor, button) {
