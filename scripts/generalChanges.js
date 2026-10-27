@@ -137,7 +137,7 @@ Hooks.on("canvasReady", refreshCanvasActors);
 // opened before ready-time actor preparation finishes.
 
 function isSupportedVursActor(actor) {
-	return actor?.isOfType?.("character", "npc");
+	return actor?.isOfType?.("character", "npc") ?? false;
 }
 
 Hooks.on("renderApplicationV2", (app, element, context, options) => {
@@ -145,13 +145,8 @@ Hooks.on("renderApplicationV2", (app, element, context, options) => {
 		const root = app?.element ?? element;
 		const actor = [app?.actor, app?.document?.actor, app?.document,
 		app?.options?.actor, context?.actor, options?.actor]
-		.find(candidate => candidate?.isOfType?.("character")) ??
+		.find(candidate => isSupportedVursActor(candidate)) ??
 		game.actors?.contents?.find(candidate => candidate.apps?.[app?.id] === app);
-		const isCharacterSheet =
-		app?.actor?.isOfType?.("character") ||
-		app?.document?.actor?.isOfType?.("character") ||
-		app?.document?.isOfType?.("character") ||
-		app?.object?.isOfType?.("character");
 		
 		if (isSupportedVursActor(actor)) {
 			renderVursPlayResources(root, actor);
@@ -250,7 +245,7 @@ if (VURS_MAIN_ATTRIBUTE_ENABLED) {
 function applyActorSheetPresentation(app, element) {
 	const root = element instanceof HTMLElement ? element : element?.[0];
 	const actor = [app?.actor, app?.document?.actor, app?.document, app?.object]
-    .find(candidate => candidate?.isOfType?.("character"));
+    .find(candidate => isSupportedVursActor(candidate));
 	if (!root || !actor) return;
 	renderVursPlayResources(root, actor);
 	replaceVursPlayResourceTokens(root, actor);
