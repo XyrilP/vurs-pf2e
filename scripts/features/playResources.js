@@ -345,15 +345,16 @@ function getPlayResourceEntries(actor) {
 		const defaultMax = getFullVursDefaultMax(actor, definition.key);
 		// Full VURS defaults are derived from current stats and ranks, so an old
 		// stored max must not freeze them when the actor improves.
-		const baseMax = finiteResourceNumber(defaultMax ?? resource.max);
-		if (baseMax <= 0) return [];
 		
+		const baseMax = finiteResourceNumber(defaultMax ?? resource.max);
 		const maxReduction = definition.hasMaxReduction ? finiteResourceNumber(resource.maxReduction) : 0;
 		const max = Math.max(0, baseMax - maxReduction);
-		// The main Play Resources panel must show every resource with a usable
-		// maximum, regardless of whether it regenerates. Regeneration filtering
-		// belongs only in the Play Modifiers tooltip.
-		if (max <= 0) return [];
+		
+		// BP and MP remain visible when maxReduction reduces their maximum to zero.
+		// Other resources retain the existing behavior.
+		if (baseMax <= 0 && !definition.hasMaxReduction) return [];
+		if (max <= 0 && !definition.hasMaxReduction) return [];
+		
 		// New resources start full by default. Style Rank and Karma Points are
 		// intentionally passive/empty until the user sets them. Agnostic NPC AP
 		// and Reactions therefore start at their maximums (minimum 3 AP, 1 Reaction).
@@ -648,7 +649,7 @@ function createPlayResourceRow(resource, actor) {
 		reduction.className = "vurs-play-resource-max-reduction";
 		if (resource.maxReduction < 0) reduction.classList.add("is-increase");
 		const adjustment = resource.maxReduction > 0
-		? `âˆ’${formatResourceNumber(resource.maxReduction)}`
+		? `-${formatResourceNumber(resource.maxReduction)}`
 		: `+${formatResourceNumber(Math.abs(resource.maxReduction))}`;
 		reduction.textContent = adjustment;
 		reduction.setAttribute("aria-label", `Maximum reduced by ${formatResourceNumber(resource.maxReduction)}`);
@@ -847,7 +848,7 @@ function createEditableResourceFields(resource, actor) {
 		delta.className = "vurs-play-resource-max-reduction-delta";
 		if (resource.maxReduction < 0) delta.classList.add("is-increase");
 		delta.textContent = resource.maxReduction > 0
-		? `âˆ’${formatResourceNumber(resource.maxReduction)}`
+		? `-${formatResourceNumber(resource.maxReduction)}`
 		: `+${formatResourceNumber(Math.abs(resource.maxReduction))}`;
 		delta.title = `Maximum adjustment: ${delta.textContent}`;
 		maximumDisplay.append(delta);
