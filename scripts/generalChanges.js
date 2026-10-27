@@ -137,20 +137,31 @@ Hooks.on("canvasReady", refreshCanvasActors);
 // opened before ready-time actor preparation finishes.
 
 function isSupportedVursActor(actor) {
-	return actor?.isOfType?.("character", "npc") ?? false;
+	return Boolean(
+		actor?.isOfType?.("character") ||
+		actor?.isOfType?.("npc")
+	);
 }
 
 Hooks.on("renderApplicationV2", (app, element, context, options) => {
 	requestAnimationFrame(() => {
 		const root = app?.element ?? element;
-		const actor = [app?.actor, app?.document?.actor, app?.document,
-		app?.options?.actor, context?.actor, options?.actor]
-		.find(candidate => isSupportedVursActor(candidate)) ??
-		game.actors?.contents?.find(candidate => candidate.apps?.[app?.id] === app);
+		const actor = [
+			app?.actor,
+			app?.document?.actor,
+			app?.document,
+			app?.object,
+			app?.options?.actor,
+			context?.actor,
+			options?.actor
+		].find(candidate => isSupportedVursActor(candidate)) ??
+		game.actors?.contents?.find(
+			candidate =>
+			candidate.apps?.[app?.id] === app &&
+			isSupportedVursActor(candidate)
+		);
 		
-		if (isSupportedVursActor(actor)) {
-			renderVursPlayResources(root, actor);
-		}
+		// Do not render Play Resources in the generic ApplicationV2 hook.
 		
 		if (VURS_MAIN_ATTRIBUTE_ENABLED) {
 			addMainAttributeChoice(app, root, context, options);
@@ -197,12 +208,21 @@ Hooks.on("preUpdateItem", (item, changes) => {
 });
 Hooks.on("renderApplication", (app, html) => applyActorSheetPresentation(app, html));
 Hooks.on("updateActor", (actor, changes, options = {}) => {
-	// Clicking a Play-resource control updates only its own row. The update is
-	// persisted normally, but must not trigger the broad VURS UI refresh.
-	if (options.vursPlayResourceOnly) return;
+	if (options.vursPlayResourceOnly || !isSupportedVursActor(actor)) return;
+	
 	for (const app of Object.values(actor.apps ?? {})) {
-		const root = app?.element instanceof HTMLElement ? app.element : app?.element?.[0];
-		if (root) requestAnimationFrame(() => {
+		const root = app?.element instanceof HTMLElement
+		? app.element
+		: app?.element?.[0];
+		
+		if (!root) continue;
+		
+		// Refresh only when this application already contains Play Resources.
+		if (!root.querySelector(".vurs-play-resources, [data-vurs-play-resources]")) {
+			continue;
+		}
+		
+		requestAnimationFrame(() => {
 			renderVursPlayResources(root, actor);
 			addVursMaxHpReductionControl(root, actor);
 		});
@@ -244,8 +264,12 @@ if (VURS_MAIN_ATTRIBUTE_ENABLED) {
 
 function applyActorSheetPresentation(app, element) {
 	const root = element instanceof HTMLElement ? element : element?.[0];
-	const actor = [app?.actor, app?.document?.actor, app?.document, app?.object]
-    .find(candidate => isSupportedVursActor(candidate));
+	const actor = [
+		app?.actor,
+		app?.document?.actor,
+		app?.document,
+		app?.object
+	].find(candidate => isSupportedVursActor(candidate));
 	if (!root || !actor) return;
 	renderVursPlayResources(root, actor);
 	replaceVursPlayResourceTokens(root, actor);
