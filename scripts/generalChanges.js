@@ -140,14 +140,9 @@ Hooks.on("renderApplicationV2", (app, element, context, options) => {
     const root = app?.element ?? element;
     const actor = [app?.actor, app?.document?.actor, app?.document,
       app?.options?.actor, context?.actor, options?.actor]
-      .find(candidate => candidate?.isOfType?.("character") || candidate?.isOfType?.("npc") || ["character", "npc"].includes(candidate?.type)) ??
+      .find(candidate => candidate?.isOfType?.("character")) ??
       game.actors?.contents?.find(candidate => candidate.apps?.[app?.id] === app);
-    // Only inject Play Resources into an actual character/NPC sheet. ApplicationV2
-    // also renders dialogs and utility windows; a loose actor association is not enough.
-    const isActorSheet = Boolean(
-      app?.actor && (app.actor.isOfType?.("character") || app.actor.isOfType?.("npc") || ["character", "npc"].includes(app.actor.type))
-    ) && Boolean(root?.matches?.(".application.sheet, .sheet") || root?.querySelector?.(".sheet-header, .character, .npc, [data-actor-id]"));
-    if (isActorSheet) renderVursPlayResources(root, actor);
+    renderVursPlayResources(root, actor);
     if (VURS_MAIN_ATTRIBUTE_ENABLED) addMainAttributeChoice(app, root, context, options);
     reorderAttributeBuilderColumns(root, actor);
     reorderCharacterSheetAttributes(root, actor);
@@ -239,12 +234,9 @@ if (VURS_MAIN_ATTRIBUTE_ENABLED) {
 function applyActorSheetPresentation(app, element) {
   const root = element instanceof HTMLElement ? element : element?.[0];
   const actor = [app?.actor, app?.document?.actor, app?.document, app?.object]
-    .find(candidate => candidate?.isOfType?.("character") || candidate?.isOfType?.("npc") || ["character", "npc"].includes(candidate?.type));
+    .find(candidate => candidate?.isOfType?.("character"));
   if (!root || !actor) return;
-  // Play Resources support both characters and NPCs. The remaining sheet
-  // presentation helpers below are intentionally character-only.
   renderVursPlayResources(root, actor);
-  if (!(actor.isOfType?.("character") || actor.type === "character")) return;
   replaceVursPlayResourceTokens(root, actor);
   replaceVursPlayCostTokensOnActorSheet(root, actor);
   if (!root.dataset.vursPlayResourceTokenObserver) {
@@ -979,9 +971,24 @@ function addMainAttributeChoice(app, element, context = {}, renderOptions = {}) 
   const rows = root.querySelector(".attribute-rows");
   if (!rows) return;
   const findActor = () => {
-    const builder = app ?? foundry.applications?.instances?.get?.("attribute-builder");
-    return renderOptions.actor ?? context.actor ?? builder?.options?.actor ?? builder?.actor ?? builder?.document ??
-      game.actors?.contents?.find(candidate => candidate.apps?.["attribute-builder"] === builder);
+    // Resolve the application associated with this specific DOM root first.
+    // PF2e can render more than one builder, and the global instance lookup may
+    // return a stale or actor-less application when a builder is opened from a sheet.
+    const appElement = root.closest?.(".application[data-appid], .window-app[data-appid]");
+    const appId = Number(appElement?.dataset?.appid);
+    const rootApp = Number.isFinite(appId) ? ui.windows?.[appId] : null;
+    const builder = app ?? rootApp ?? foundry.applications?.instances?.get?.("attribute-builder");
+    const candidates = [
+      renderOptions.actor, context.actor,
+      builder?.actor, builder?.document?.actor, builder?.document,
+      builder?.options?.actor, app?.actor, app?.document?.actor, app?.document,
+      rootApp?.actor, rootApp?.document?.actor, rootApp?.document,
+      ...game.actors?.contents?.filter(candidate =>
+        candidate.apps?.[builder?.id] === builder || candidate.apps?.[rootApp?.id] === rootApp ||
+        candidate.apps?.["attribute-builder"] === builder || candidate.apps?.["attribute-builder"] === rootApp
+      ) ?? []
+    ];
+    return candidates.find(candidate => candidate?.isOfType?.("character")) ?? null;
   };
   const actor = findActor();
   if (!actorUsesMainAttribute(actor)) {
@@ -1026,7 +1033,7 @@ function addMainAttributeChoice(app, element, context = {}, renderOptions = {}) 
         const nextMainAttribute = getMainAttribute(targetActor) === ability ? null : ability;
         await targetActor.update({ "flags.vurs.mainAttribute": nextMainAttribute });
         targetActor.sheet?.render(false);
-        app?.render?.({ force: true });
+        (rootApp ?? app)?.render?.({ force: true });
       });
       column.append(button);
       choices.append(column);
