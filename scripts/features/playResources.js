@@ -551,7 +551,7 @@ function createPlayResourceRow(resource, actor) {
     bar.title = `${resource.label}: click to increase; right-click to decrease; Ctrl-right-click to apply maximum reduction; Ctrl-click to increase the maximum.`;
     bar.setAttribute("aria-label", `${resource.label}: ${formatResourceNumber(resource.value)} of ${formatResourceNumber(resource.max)}. Click to increase; right-click to decrease; Ctrl-right-click to apply maximum reduction; Ctrl-click to increase the maximum.`);
     addPlayResourceControlHandlers(bar, actor, resource);
-    bar.append(createBudgetCoinStacks(resource));
+    bar.append(createBudgetCoinStacks(resource, actor));
     const fields = document.createElement("span");
     fields.className = "vurs-play-resource-segment-values vurs-play-resource-edit-values";
     fields.append(...createEditableResourceFields(resource, actor));
@@ -576,14 +576,24 @@ function createPlayResourceRow(resource, actor) {
     bar.title = `${resource.label}: click to increase; right-click to decrease; Ctrl-right-click to apply maximum reduction; Ctrl-click to increase the maximum.`;
     bar.setAttribute("aria-label", `${resource.label}: ${formatResourceNumber(resource.value)} of ${formatResourceNumber(resource.max)}. Click to increase; right-click to decrease; Ctrl-right-click to apply maximum reduction; Ctrl-click to increase the maximum.`);
     addPlayResourceControlHandlers(bar, actor, resource);
-    for (const segmentData of getMagicPointSegments(actor, resource)) {
-      for (let index = 0; index < Math.max(0, Math.floor(segmentData.size)); index += 1) {
-        const star = document.createElement("i");
-        const filled = segmentData.start + index < resource.value;
-        star.className = `${filled ? "fa-solid" : "fa-regular"} fa-star vurs-mp-star ${filled ? "is-filled" : "is-empty"}`;
-        star.style.setProperty("--segment-color", segmentData.color);
-        star.title = segmentData.label ?? resource.label;
-        bar.append(star);
+    if (isNpcActor(actor)) {
+      // NPC sheets use one generic MP star regardless of the maximum.
+      const star = document.createElement("i");
+      const filled = resource.value > 0;
+      star.className = `${filled ? "fa-solid" : "fa-regular"} fa-star vurs-mp-star ${filled ? "is-filled" : "is-empty"}`;
+      star.style.setProperty("--segment-color", "#f1c40f");
+      star.title = resource.label;
+      bar.append(star);
+    } else {
+      for (const segmentData of getMagicPointSegments(actor, resource)) {
+        for (let index = 0; index < Math.max(0, Math.floor(segmentData.size)); index += 1) {
+          const star = document.createElement("i");
+          const filled = segmentData.start + index < resource.value;
+          star.className = `${filled ? "fa-solid" : "fa-regular"} fa-star vurs-mp-star ${filled ? "is-filled" : "is-empty"}`;
+          star.style.setProperty("--segment-color", segmentData.color);
+          star.title = segmentData.label ?? resource.label;
+          bar.append(star);
+        }
       }
     }
     const fields = document.createElement("span");
@@ -806,10 +816,17 @@ function createEditableResourceFields(resource, actor) {
   return [currentValue, " / ", maximumDisplay];
 }
 
-function createBudgetCoinStacks(resource) {
+function createBudgetCoinStacks(resource, actor) {
   const coins = document.createElement("span");
   coins.className = "vurs-budget-coin-stacks";
   coins.setAttribute("aria-hidden", "true");
+  if (isNpcActor(actor)) {
+    // NPC sheets use one generic BP coin regardless of the maximum.
+    const coin = document.createElement("i");
+    coin.className = `fa-solid fa-coin coin ${resource.value > 0 ? "is-filled" : "is-empty"}`;
+    coins.append(coin);
+    return coins;
+  }
   const count = Math.min(200, Math.max(0, Math.ceil(resource.max)));
   for (let offset = 0; offset < count; offset += 5) {
     const stack = document.createElement("span");
