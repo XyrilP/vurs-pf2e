@@ -352,8 +352,10 @@ function getPlayResourceEntries(actor) {
 		
 		// BP and MP remain visible when maxReduction reduces their maximum to zero.
 		// Other resources retain the existing behavior.
-		if (baseMax <= 0 && !definition.hasMaxReduction) return [];
-		if (max <= 0 && !definition.hasMaxReduction) return [];
+		// Hide resources with no base maximum unless a valid base maximum
+		// was reduced to zero by maxReduction.
+		if (baseMax <= 0) return [];
+		if (max <= 0 && !(definition.hasMaxReduction && maxReduction > 0)) return [];
 		
 		// New resources start full by default. Style Rank and Karma Points are
 		// intentionally passive/empty until the user sets them. Agnostic NPC AP
