@@ -1056,19 +1056,38 @@ function addMainAttributeChoice(app, element, context = {}, renderOptions = {}) 
 			column.className = "row-column svelte-8m1dup";
 			const button = exampleButton?.cloneNode(true) ?? document.createElement("button");
 			button.classList.add("attribute-button", "boost");
-			button.type = "button";
+			button.style.pointerEvents = "auto";
+			button.style.position = "relative";
+			button.style.zIndex = "2";
 			button.textContent = "BOOST";
 			button.dataset.vursMainAttribute = ability;
-			button.addEventListener("click", async () => {
+			button.addEventListener("click", async (event) => {
+				event.preventDefault();
+				event.stopPropagation();
+				
 				const targetActor = findActor();
+				
 				if (!targetActor?.isOfType?.("character")) {
-					ui.notifications?.warn("Could not find the character for this Attribute Boost builder.");
+					ui.notifications?.warn(
+						"Could not find the character for this Attribute Boost builder."
+					);
 					return;
 				}
-				const nextMainAttribute = getMainAttribute(targetActor) === ability ? null : ability;
-				await targetActor.update({ "flags.vurs.mainAttribute": nextMainAttribute });
-				targetActor.sheet?.render(false);
-				(rootApp ?? app)?.render?.({ force: true });
+				
+				try {
+					const nextMainAttribute =
+					getMainAttribute(targetActor) === ability ? null : ability;
+					
+					await targetActor.update({
+						"flags.vurs.mainAttribute": nextMainAttribute
+					});
+					
+					targetActor.sheet?.render(false);
+					app?.render?.({ force: true });
+					} catch (error) {
+					console.error("VURS | Failed to set Main Attribute", error);
+					ui.notifications?.error("Failed to update the Main Attribute.");
+				}
 			});
 			column.append(button);
 			choices.append(column);
