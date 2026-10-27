@@ -173,30 +173,15 @@ export function renderVursPlayResources(root, actor) {
       }
     });
     title.addEventListener("mouseenter", () => {
-      if (!isNpc) return;
-      clearTimeout(title._vursPlayHoverTimer);
-      title._vursPlayHoverTimer = setTimeout(() => {
-        void openPlayRegenerationTooltip(section, actor, title);
-      }, 1000);
-    });
-    title.addEventListener("mouseleave", event => {
-      if (!isNpc) return;
-      clearTimeout(title._vursPlayHoverTimer);
-      const tooltip = section.querySelector(".vurs-play-modifiers-tooltip");
-      if (tooltip && event.relatedTarget instanceof Node && tooltip.contains(event.relatedTarget)) return;
-      closePlayRegenerationTooltip(title);
+      if (isNpc) void togglePlayRegenerationTooltip(section, actor, title);
     });
     title.addEventListener("focus", () => {
-      if (!isNpc) return;
-      clearTimeout(title._vursPlayHoverTimer);
-      title._vursPlayHoverTimer = setTimeout(() => {
-        void openPlayRegenerationTooltip(section, actor, title);
-      }, 1000);
+      if (isNpc) void togglePlayRegenerationTooltip(section, actor, title);
     });
-    title.addEventListener("blur", () => {
+    title.addEventListener("click", event => {
       if (!isNpc) return;
-      clearTimeout(title._vursPlayHoverTimer);
-      closePlayRegenerationTooltip(title);
+      event.preventDefault();
+      void togglePlayRegenerationTooltip(section, actor, title);
     });
     const modifiers = document.createElement("button");
     modifiers.type = "button";
@@ -247,21 +232,6 @@ export function renderVursPlayResources(root, actor) {
   }
 }
 
-function closePlayRegenerationTooltip(button) {
-  if (!button) return;
-  clearTimeout(button._vursPlayHoverTimer);
-  if (button._vursPlayModifiersTooltip && button._vursPlayModifiersTooltipOpen) {
-    button._vursPlayModifiersTooltip.close();
-    button._vursPlayModifiersTooltipOpen = false;
-  }
-  button.setAttribute("aria-expanded", "false");
-}
-
-async function openPlayRegenerationTooltip(section, actor, button) {
-  if (button._vursPlayModifiersTooltip && button._vursPlayModifiersTooltipOpen) return;
-  await buildPlayRegenerationTooltip(section, actor, button);
-}
-
 async function togglePlayRegenerationTooltip(section, actor, button) {
   const existing = button._vursPlayModifiersTooltip;
   if (existing && button._vursPlayModifiersTooltipOpen) {
@@ -276,10 +246,6 @@ async function togglePlayRegenerationTooltip(section, actor, button) {
     button.setAttribute("aria-expanded", "true");
     return;
   }
-  return buildPlayRegenerationTooltip(section, actor, button);
-}
-
-async function buildPlayRegenerationTooltip(section, actor, button) {
   const resources = foundry.utils.getProperty(actor, PLAY_RESOURCES_PATH) ?? {};
   const rows = [];
   for (const definition of PLAY_RESOURCE_DEFINITIONS) {
@@ -299,12 +265,6 @@ async function buildPlayRegenerationTooltip(section, actor, button) {
   if (!content) return;
   content.classList.add("vurs-play-modifiers-tooltip");
   section.append(content);
-  if (button.matches("h2")) {
-    content.addEventListener("mouseleave", event => {
-      if (event.relatedTarget instanceof Node && button.contains(event.relatedTarget)) return;
-      closePlayRegenerationTooltip(button);
-    });
-  }
   button.dataset.tooltipContent = `#${content.id}`;
   const closeOnOutsideClick = event => {
     if (event.target instanceof Node && !button.contains(event.target) && !content.contains(event.target)) {

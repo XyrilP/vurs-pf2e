@@ -142,7 +142,12 @@ Hooks.on("renderApplicationV2", (app, element, context, options) => {
       app?.options?.actor, context?.actor, options?.actor]
       .find(candidate => candidate?.isOfType?.("character") || candidate?.isOfType?.("npc") || ["character", "npc"].includes(candidate?.type)) ??
       game.actors?.contents?.find(candidate => candidate.apps?.[app?.id] === app);
-    renderVursPlayResources(root, actor);
+    // Only inject Play Resources into an actual character/NPC sheet. ApplicationV2
+    // also renders dialogs and utility windows; a loose actor association is not enough.
+    const isActorSheet = Boolean(
+      app?.actor && (app.actor.isOfType?.("character") || app.actor.isOfType?.("npc") || ["character", "npc"].includes(app.actor.type))
+    ) && Boolean(root?.matches?.(".application.sheet, .sheet") || root?.querySelector?.(".sheet-header, .character, .npc, [data-actor-id]"));
+    if (isActorSheet) renderVursPlayResources(root, actor);
     if (VURS_MAIN_ATTRIBUTE_ENABLED) addMainAttributeChoice(app, root, context, options);
     reorderAttributeBuilderColumns(root, actor);
     reorderCharacterSheetAttributes(root, actor);
