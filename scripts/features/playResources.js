@@ -101,9 +101,9 @@ export function renderVursPlayResources(root, actor) {
     style.id = "vurs-npc-play-resources-compact-style";
     style.textContent = `
       .vurs-play-resources.vurs-play-resources-npc { margin-block: .35rem; padding: .35rem; }
-      .vurs-play-resources.vurs-play-resources-npc > header { margin-bottom: .25rem; gap: .25rem; }
-      .vurs-play-resources.vurs-play-resources-npc > header h2 { font-size: .9rem; margin: 0; }
-      .vurs-play-resources.vurs-play-resources-npc .vurs-play-header-controls { gap: .2rem; }
+      .vurs-play-resources.vurs-play-resources-npc > header { display: flex; align-items: center; margin-bottom: .25rem; gap: .25rem; }
+      .vurs-play-resources.vurs-play-resources-npc > header h2 { font-size: .9rem; margin: 0; cursor: help; }
+      .vurs-play-resources.vurs-play-resources-npc .vurs-play-header-controls { display: flex; gap: .2rem; margin-left: auto; }
       .vurs-play-resources.vurs-play-resources-npc .vurs-play-header-controls button { font-size: .7rem; padding: .1rem .25rem; min-height: 1.4rem; }
       .vurs-play-resources.vurs-play-resources-npc > ol { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: .2rem .35rem; margin: 0; padding: 0; list-style: none; }
       .vurs-play-resources.vurs-play-resources-npc > ol > li { min-width: 0; margin: 0; padding: .15rem 0; gap: .2rem; }
@@ -116,9 +116,7 @@ export function renderVursPlayResources(root, actor) {
       .vurs-play-resources.vurs-play-resources-npc .vurs-play-resource-segments { min-width: 0; }
       .vurs-play-resources.vurs-play-resources-npc .vurs-play-header-controls { align-items: center; margin-left: auto; }
       .vurs-play-resources.vurs-play-resources-npc .vurs-play-apply { font-size: .62rem; line-height: 1.1; padding: .08rem .2rem; min-height: 1.15rem; }
-      .vurs-play-resources.vurs-play-resources-npc .vurs-play-modifiers { display: none; font-size: .68rem; padding: .08rem .2rem; min-height: 1.25rem; }
-      .vurs-play-resources.vurs-play-resources-npc:hover .vurs-play-modifiers,
-      .vurs-play-resources.vurs-play-resources-npc:focus-within .vurs-play-modifiers { display: inline-flex; }
+      .vurs-play-resources.vurs-play-resources-npc .vurs-play-modifiers-tooltip { z-index: 20; }
     `;
     document.head.append(style);
   }
@@ -151,6 +149,9 @@ export function renderVursPlayResources(root, actor) {
     const header = document.createElement("header");
     const title = document.createElement("h2");
     title.textContent = "Play";
+    title.tabIndex = 0;
+    title.setAttribute("role", "button");
+    title.setAttribute("aria-label", "Play resource modifiers; hover or focus to show modifiers");
     const apply = document.createElement("button");
     apply.type = "button";
     apply.className = "vurs-play-apply vurs-play-reset";
@@ -171,19 +172,20 @@ export function renderVursPlayResources(root, actor) {
         renderVursPlayResources(root, actor);
       }
     });
-    const modifiers = document.createElement("button");
-    modifiers.type = "button";
-    modifiers.className = "vurs-play-modifiers";
-    modifiers.classList.add("hover");
-    modifiers.textContent = "Modifiers";
-    modifiers.title = "Show Play regeneration modifiers";
-    modifiers.addEventListener("click", event => {
+    title.addEventListener("mouseenter", () => {
+      if (isNpc) void togglePlayRegenerationTooltip(section, actor, title);
+    });
+    title.addEventListener("focus", () => {
+      if (isNpc) void togglePlayRegenerationTooltip(section, actor, title);
+    });
+    title.addEventListener("click", event => {
+      if (!isNpc) return;
       event.preventDefault();
-      void togglePlayRegenerationTooltip(section, actor, modifiers);
+      void togglePlayRegenerationTooltip(section, actor, title);
     });
     const controls = document.createElement("span");
     controls.className = "vurs-play-header-controls";
-    controls.append(apply, modifiers);
+    controls.append(apply);
     header.append(title, controls);
     section.append(header, document.createElement("ol"));
   }
@@ -202,13 +204,11 @@ export function renderVursPlayResources(root, actor) {
     // NPC Play stays above the Initiative section.
     if (initiativeBlock) sidebar.insertBefore(section, initiativeBlock);
     else if (!section.isConnected) sidebar.append(section);
-  } else if (initiativeHeader) {
-    // On PC sheets, keep Play directly after the Initiative heading and before
-    // its roller/content, rather than before the whole Initiative section.
-    const next = initiativeHeader.nextElementSibling;
-    if (next !== section) sidebar.insertBefore(section, next);
   } else if (initiativeBlock) {
-    sidebar.insertBefore(section, initiativeBlock);
+    // Keep Play completely outside the Initiative section on PC sheets.
+    // Place it immediately before the Initiative heading/block, never between
+    // the heading and its roller or inside its content container.
+    if (section !== initiativeBlock.previousElementSibling) sidebar.insertBefore(section, initiativeBlock);
   } else if (!section.isConnected) sidebar.append(section);
 }
 
