@@ -260,15 +260,24 @@ Hooks.on("renderCheckModifiersDialog", (app, html) => {
 	app.options.height = "auto";
 	requestAnimationFrame(() => expandCheckDialog(form, app, root));
 	
+	
 	choices.addEventListener("click", event => {
 		const button = event.target.closest("button[data-buildup]");
 		if (!button) return;
+		
 		for (const choice of choices.querySelectorAll("button[data-buildup]")) {
 			const selected = choice === button;
 			choice.setAttribute("aria-pressed", String(selected));
 			choice.classList.toggle("active", selected);
 		}
+		
+		// Save Buildup immediately instead of relying only on form submission.
+		const state = app.context.__vursCheckState;
+		if (state) {
+			state.buildup = Number(button.dataset.buildup);
+		}
 	});
+	
 	form.addEventListener("change", updateBuildupDisplay);
 	form.addEventListener("click", event => {
 		if (event.target.closest("[data-roll-twice]")) requestAnimationFrame(updateBuildupDisplay);
