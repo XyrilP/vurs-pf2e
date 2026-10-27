@@ -207,27 +207,31 @@ Hooks.on("preUpdateItem", (item, changes) => {
 	changes.flags.vurs["-=playCost"] = null;
 });
 Hooks.on("renderApplication", (app, html) => applyActorSheetPresentation(app, html));
+
 Hooks.on("updateActor", (actor, changes, options = {}) => {
-	if (options.vursPlayResourceOnly || !isSupportedVursActor(actor)) return;
+	// Play-resource changes are persisted Actor updates. Foundry broadcasts
+	// them to other clients, so the GM and other clients must refresh too.
+	if (!isSupportedVursActor(actor)) return;
 	
 	for (const app of Object.values(actor.apps ?? {})) {
 		const root = app?.element instanceof HTMLElement
 		? app.element
 		: app?.element?.[0];
 		
-		if (!root) continue;
-		
-		// Refresh only when this application already contains Play Resources.
-		if (!root.querySelector(".vurs-play-resources, [data-vurs-play-resources]")) {
-			continue;
+		// Refresh only applications already identified as VURS actor sheets.
+		if (
+			root?.querySelector?.(
+				".vurs-play-resources, [data-vurs-play-resources]"
+			)
+			) {
+			requestAnimationFrame(() => {
+				renderVursPlayResources(root, actor);
+				addVursMaxHpReductionControl(root, actor);
+			});
 		}
-		
-		requestAnimationFrame(() => {
-			renderVursPlayResources(root, actor);
-			addVursMaxHpReductionControl(root, actor);
-		});
 	}
 });
+
 Hooks.on("renderChatMessage", (message, html) => {
 	const root = html instanceof HTMLElement ? html : html?.[0];
 	const actor = message?.speaker?.actor ? game.actors?.get(message.speaker.actor)
