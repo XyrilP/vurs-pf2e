@@ -173,15 +173,30 @@ export function renderVursPlayResources(root, actor) {
       }
     });
     title.addEventListener("mouseenter", () => {
-      if (isNpc) void togglePlayRegenerationTooltip(section, actor, title);
+      if (!isNpc) return;
+      clearTimeout(title._vursPlayHoverTimer);
+      title._vursPlayHoverTimer = setTimeout(() => {
+        void openPlayRegenerationTooltip(section, actor, title);
+      }, 1000);
+    });
+    title.addEventListener("mouseleave", event => {
+      if (!isNpc) return;
+      clearTimeout(title._vursPlayHoverTimer);
+      const tooltip = section.querySelector(".vurs-play-modifiers-tooltip");
+      if (tooltip && event.relatedTarget instanceof Node && tooltip.contains(event.relatedTarget)) return;
+      closePlayRegenerationTooltip(title);
     });
     title.addEventListener("focus", () => {
-      if (isNpc) void togglePlayRegenerationTooltip(section, actor, title);
-    });
-    title.addEventListener("click", event => {
       if (!isNpc) return;
-      event.preventDefault();
-      void togglePlayRegenerationTooltip(section, actor, title);
+      clearTimeout(title._vursPlayHoverTimer);
+      title._vursPlayHoverTimer = setTimeout(() => {
+        void openPlayRegenerationTooltip(section, actor, title);
+      }, 1000);
+    });
+    title.addEventListener("blur", () => {
+      if (!isNpc) return;
+      clearTimeout(title._vursPlayHoverTimer);
+      closePlayRegenerationTooltip(title);
     });
     const modifiers = document.createElement("button");
     modifiers.type = "button";
@@ -232,6 +247,21 @@ export function renderVursPlayResources(root, actor) {
   }
 }
 
+function closePlayRegenerationTooltip(button) {
+  if (!button) return;
+  clearTimeout(button._vursPlayHoverTimer);
+  if (button._vursPlayModifiersTooltip && button._vursPlayModifiersTooltipOpen) {
+    button._vursPlayModifiersTooltip.close();
+    button._vursPlayModifiersTooltipOpen = false;
+  }
+  button.setAttribute("aria-expanded", "false");
+}
+
+async function openPlayRegenerationTooltip(section, actor, button) {
+  if (button._vursPlayModifiersTooltip && button._vursPlayModifiersTooltipOpen) return;
+  await buildPlayRegenerationTooltip(section, actor, button);
+}
+
 async function togglePlayRegenerationTooltip(section, actor, button) {
   const existing = button._vursPlayModifiersTooltip;
   if (existing && button._vursPlayModifiersTooltipOpen) {
@@ -246,6 +276,10 @@ async function togglePlayRegenerationTooltip(section, actor, button) {
     button.setAttribute("aria-expanded", "true");
     return;
   }
+  return buildPlayRegenerationTooltip(section, actor, button);
+}
+
+async function buildPlayRegenerationTooltip(section, actor, button) {
   const resources = foundry.utils.getProperty(actor, PLAY_RESOURCES_PATH) ?? {};
   const rows = [];
   for (const definition of PLAY_RESOURCE_DEFINITIONS) {
@@ -265,6 +299,12 @@ async function togglePlayRegenerationTooltip(section, actor, button) {
   if (!content) return;
   content.classList.add("vurs-play-modifiers-tooltip");
   section.append(content);
+  if (button.matches("h2")) {
+    content.addEventListener("mouseleave", event => {
+      if (event.relatedTarget instanceof Node && button.contains(event.relatedTarget)) return;
+      closePlayRegenerationTooltip(button);
+    });
+  }
   button.dataset.tooltipContent = `#${content.id}`;
   const closeOnOutsideClick = event => {
     if (event.target instanceof Node && !button.contains(event.target) && !content.contains(event.target)) {
@@ -354,11 +394,11 @@ function getPlayResourceEntries(actor) {
     // maximum, regardless of whether it regenerates. Regeneration filtering
     // belongs only in the Play Modifiers tooltip.
     if (max <= 0) return [];
+    // New resources start full by default. Style Rank and Karma Points are
+    // intentionally passive/empty until the user sets them. Agnostic NPC AP
+    // and Reactions therefore start at their maximums (minimum 3 AP, 1 Reaction).
     const initialValue = resource.value === undefined || resource.value === null || resource.value === ""
-      ? (["budgetPoints", "magicPoints"].includes(definition.key) ||
-          (actorUsesAgnosticVurs(actor) && (definition.key === "actionPoints" || definition.key === "reactions"))
-          ? max
-          : 0)
+      ? (["styleRank", "karmaPoints"].includes(definition.key) ? 0 : max)
       : finiteResourceNumber(resource.value);
     const value = Math.clamp(initialValue, 0, max);
     const label = definition.key === "actionPoints" && !actorUsesVursSystem(actor)
