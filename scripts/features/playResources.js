@@ -91,6 +91,32 @@ export function renderVursPlayResources(root, actor) {
     return;
   }
   renderStyleRankOverlay(root, actor);
+  const isNpc = actor?.isOfType?.("npc") || actor?.type === "npc";
+
+  // NPC sidebars are narrower than the player sheet's sidebar. Use the same
+  // resource controls, but a compact two-column presentation to preserve room
+  // for the rest of the NPC sheet.
+  if (isNpc && !document.getElementById("vurs-npc-play-resources-compact-style")) {
+    const style = document.createElement("style");
+    style.id = "vurs-npc-play-resources-compact-style";
+    style.textContent = `
+      .vurs-play-resources.vurs-play-resources-npc { margin-block: .35rem; padding: .35rem; }
+      .vurs-play-resources.vurs-play-resources-npc > header { margin-bottom: .25rem; gap: .25rem; }
+      .vurs-play-resources.vurs-play-resources-npc > header h2 { font-size: .9rem; margin: 0; }
+      .vurs-play-resources.vurs-play-resources-npc .vurs-play-header-controls { gap: .2rem; }
+      .vurs-play-resources.vurs-play-resources-npc .vurs-play-header-controls button { font-size: .7rem; padding: .1rem .25rem; min-height: 1.4rem; }
+      .vurs-play-resources.vurs-play-resources-npc > ol { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: .2rem .35rem; margin: 0; padding: 0; list-style: none; }
+      .vurs-play-resources.vurs-play-resources-npc > ol > li { min-width: 0; margin: 0; padding: .15rem 0; gap: .2rem; }
+      .vurs-play-resources.vurs-play-resources-npc .vurs-play-resource-control { width: 1.55rem; height: 1.55rem; min-width: 1.55rem; padding: 0; }
+      .vurs-play-resources.vurs-play-resources-npc .vurs-play-resource-control img { width: 1.4rem; height: 1.4rem; }
+      .vurs-play-resources.vurs-play-resources-npc .vurs-play-resource-edit-values,
+      .vurs-play-resources.vurs-play-resources-npc .vurs-play-resource-maximum,
+      .vurs-play-resources.vurs-play-resources-npc .value { font-size: .72rem; white-space: nowrap; }
+      .vurs-play-resources.vurs-play-resources-npc .vurs-play-resource-frame { min-width: 0; gap: .15rem; }
+      .vurs-play-resources.vurs-play-resources-npc .vurs-play-resource-segments { min-width: 0; }
+    `;
+    document.head.append(style);
+  }
 
   let section = sidebar.querySelector(":scope > .vurs-play-resources");
   const hasDefaultPlayResources = getFullVursDefaultMax(actor, "reactions") > 0 ||
@@ -157,21 +183,17 @@ export function renderVursPlayResources(root, actor) {
     section.append(header, document.createElement("ol"));
   }
 
+  if (isNpc) section.classList.add("vurs-play-resources-npc");
+  else section.classList.remove("vurs-play-resources-npc");
   const list = section.querySelector("ol");
   list.replaceChildren(...entries.map(resource => createPlayResourceRow(resource, actor)));
+
   const headers = [...sidebar.querySelectorAll(":scope > header")];
-  const resourceLabels = new Set([
-    normalizeLabel("Resources"),
-    normalizeLabel(game.i18n.localize("PF2E.Actor.Resources"))
-  ]);
-  const perceptionLabels = new Set([
-    normalizeLabel("Perception"),
-    normalizeLabel(game.i18n.localize("PF2E.PerceptionHeader"))
-  ]);
-  const resourceHeader = headers.find(header => resourceLabels.has(normalizeLabel(header.querySelector("h2")?.textContent)));
-  const perceptionHeader = headers.find(header => perceptionLabels.has(normalizeLabel(header.querySelector("h2")?.textContent)));
-  const anchor = resourceHeader ?? perceptionHeader;
-  if (anchor) sidebar.insertBefore(section, anchor);
+  const initiativeLabels = new Set(["initiative", normalizeLabel(game.i18n.localize("PF2E.Initiative"))]);
+  const initiativeHeader = headers.find(header => initiativeLabels.has(normalizeLabel(header.querySelector("h2")?.textContent)));
+  const initiativeBlock = initiativeHeader
+    ?? sidebar.querySelector(":scope > .initiative, :scope > [data-tab='initiative'], :scope > section.initiative, :scope > .npc-initiative");
+  if (initiativeBlock) sidebar.insertBefore(section, initiativeBlock);
   else if (!section.isConnected) sidebar.append(section);
 }
 
@@ -297,7 +319,10 @@ function getPlayResourceEntries(actor) {
     // maximum, regardless of whether it regenerates. Regeneration filtering
     // belongs only in the Play Modifiers tooltip.
     if (max <= 0) return [];
-    const value = Math.clamp(finiteResourceNumber(resource.value), 0, max);
+    const initialValue = resource.value === undefined || resource.value === null || resource.value === ""
+      ? (["budgetPoints", "magicPoints"].includes(definition.key) ? max : 0)
+      : finiteResourceNumber(resource.value);
+    const value = Math.clamp(initialValue, 0, max);
     const label = definition.key === "actionPoints" && !actorUsesVursSystem(actor)
       ? "Actions"
       : definition.label;
@@ -819,7 +844,8 @@ function addPlayResourceControlHandlers(control, actor, resource) {
 
 async function adjustPlayResource(actor, resource, amount, control) {
   const pending = getPendingPlayResourceUpdates(control);
-  const current = finiteResourceNumber(pending[`${resource.key}.value`] ?? foundry.utils.getProperty(actor, `${PLAY_RESOURCES_PATH}.${resource.key}.value`));
+  const storedValue = foundry.utils.getProperty(actor, `${PLAY_RESOURCES_PATH}.${resource.key}.value`);
+  const current = finiteResourceNumber(pending[`${resource.key}.value`] ?? (storedValue === undefined || storedValue === null || storedValue === "" ? resource.value : storedValue));
   const pendingReduction = pending[`${resource.key}.maxReduction`];
   const max = pendingReduction === undefined ? resource.max : Math.max(0, resource.baseMax - finiteResourceNumber(pendingReduction));
   const next = Math.clamp(current + amount, 0, max);
