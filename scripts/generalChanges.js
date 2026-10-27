@@ -1106,6 +1106,21 @@ function addMainAttributeChoice(app, element, context = {}, renderOptions = {}) 
 		const isSelected = ability === selected;
 		button.textContent = game.i18n.localize("PF2E.Actor.Character.AttributeBuilder.Boost");
 		button.classList.toggle("selected", isSelected);
+		button.classList.toggle("boosted", isSelected);
+		button.classList.toggle("active", isSelected);
+		button.setAttribute("aria-pressed", String(isSelected));
+		
+		if (isSelected) {
+			button.style.backgroundColor = "var(--color-border-highlight, #c9a227)";
+			button.style.borderColor = "var(--color-border-highlight, #c9a227)";
+			button.style.color = "#fff";
+			button.style.boxShadow = "0 0 0 2px var(--color-border-highlight, #c9a227)";
+			} else {
+			button.style.removeProperty("background-color");
+			button.style.removeProperty("border-color");
+			button.style.removeProperty("color");
+			button.style.removeProperty("box-shadow");
+		}
 		button.setAttribute("aria-pressed", String(isSelected));
 		button.setAttribute("aria-label", `Main ${VURS_ABILITY_LABELS[ability]} boost`);
 		button.disabled = false;
