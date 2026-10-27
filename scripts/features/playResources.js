@@ -183,15 +183,26 @@ export function renderVursPlayResources(root, actor) {
       event.preventDefault();
       void togglePlayRegenerationTooltip(section, actor, title);
     });
+    const modifiers = document.createElement("button");
+    modifiers.type = "button";
+    modifiers.className = "vurs-play-modifiers";
+    modifiers.textContent = "Modifiers";
+    modifiers.title = "Show Play regeneration modifiers";
+    modifiers.addEventListener("click", event => {
+      event.preventDefault();
+      void togglePlayRegenerationTooltip(section, actor, modifiers);
+    });
     const controls = document.createElement("span");
     controls.className = "vurs-play-header-controls";
-    controls.append(apply);
+    controls.append(apply, modifiers);
     header.append(title, controls);
     section.append(header, document.createElement("ol"));
   }
 
   if (isNpc) section.classList.add("vurs-play-resources-npc");
   else section.classList.remove("vurs-play-resources-npc");
+  const modifiersButton = section.querySelector(".vurs-play-modifiers");
+  if (modifiersButton) modifiersButton.hidden = isNpc;
   const list = section.querySelector("ol");
   list.replaceChildren(...entries.map(resource => createPlayResourceRow(resource, actor)));
 
@@ -204,12 +215,21 @@ export function renderVursPlayResources(root, actor) {
     // NPC Play stays above the Initiative section.
     if (initiativeBlock) sidebar.insertBefore(section, initiativeBlock);
     else if (!section.isConnected) sidebar.append(section);
-  } else if (initiativeBlock) {
-    // Keep Play completely outside the Initiative section on PC sheets.
-    // Place it immediately before the Initiative heading/block, never between
-    // the heading and its roller or inside its content container.
-    if (section !== initiativeBlock.previousElementSibling) sidebar.insertBefore(section, initiativeBlock);
-  } else if (!section.isConnected) sidebar.append(section);
+  } else {
+    // On PCs, put Play after the Armor Class section, fully outside Initiative.
+    const armorLabels = new Set(["armor class", "armorclass", "ac"]);
+    const armorHeader = headers.find(header => armorLabels.has(normalizeLabel(header.querySelector("h2")?.textContent)));
+    const armorBlock = armorHeader
+      ?? sidebar.querySelector(":scope > .armor-class, :scope > .armorClass, :scope > [data-section='armor-class'], :scope > section.armor");
+    if (armorBlock) {
+      const nextBlock = armorBlock.nextElementSibling;
+      if (nextBlock !== section) sidebar.insertBefore(section, nextBlock);
+    } else if (initiativeBlock) {
+      // Fallback when this system version has no distinct Armor Class block.
+      const initiativeEnd = initiativeBlock.nextElementSibling;
+      if (initiativeEnd !== section) sidebar.insertBefore(section, initiativeEnd);
+    } else if (!section.isConnected) sidebar.append(section);
+  }
 }
 
 async function togglePlayRegenerationTooltip(section, actor, button) {
@@ -945,6 +965,41 @@ async function savePlayResourceFlags(actor, updates, control) {
       icon.src = preloaded?.src ?? `${RESOURCE_ICON_BASE}${iconFile}`;
       const control = icon.closest("button");
       if (control) control.setAttribute("aria-label", `${resource.label}: ${formatResourceNumber(resource.value)} of ${formatResourceNumber(resource.max)}. Left click to increase; right click to decrease.`);
+    }
+    // Reflect staged BP/MP values in the segment icons before Apply is clicked.
+    if (resourceKey === "budgetPoints") {
+      const bar = row.querySelector(".vurs-budget-points-bar");
+      if (bar) {
+        bar.setAttribute("aria-valuemax", String(resource.max));
+        bar.setAttribute("aria-valuenow", String(resource.value));
+        bar.querySelectorAll(".coin").forEach((coin, index) => {
+          coin.classList.toggle("is-filled", index < resource.value);
+          coin.classList.toggle("is-empty", index >= resource.value);
+        });
+      }
+    } else if (resourceKey === "magicPoints") {
+      const bar = row.querySelector(".vurs-play-resource-segments");
+      if (bar) {
+        bar.setAttribute("aria-valuemax", String(resource.max));
+        bar.setAttribute("aria-valuenow", String(resource.value));
+        if (isNpcActor(actor)) {
+          const star = bar.querySelector(".vurs-mp-star");
+          if (star) {
+            star.classList.toggle("is-filled", resource.value > 0);
+            star.classList.toggle("is-empty", resource.value <= 0);
+            star.classList.toggle("fa-solid", resource.value > 0);
+            star.classList.toggle("fa-regular", resource.value <= 0);
+          }
+        } else {
+          bar.querySelectorAll(".vurs-mp-star").forEach((star, index) => {
+            const filled = index < resource.value;
+            star.classList.toggle("is-filled", filled);
+            star.classList.toggle("is-empty", !filled);
+            star.classList.toggle("fa-solid", filled);
+            star.classList.toggle("fa-regular", !filled);
+          });
+        }
+      }
     }
     const valueDisplay = row.querySelector(":scope > .value");
     if (valueDisplay) valueDisplay.textContent = `${formatResourceNumber(resource.value)} / ${formatResourceNumber(resource.max)}`;
