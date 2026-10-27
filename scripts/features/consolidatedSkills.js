@@ -15,12 +15,12 @@ const MIRRORED_STATISTIC_SKILLS = Object.freeze({
   "perception-skill": { statistic: "perception", type: "perception" }
 });
 const SKILL_ATTRIBUTE_GROUPS = Object.freeze([
-  { attribute: "str", label: "PF2E.AbilityStr", color: "#e74c3c" },
-  { attribute: "dex", label: "PF2E.AbilityDex", color: "#2ecc71" },
-  { attribute: "con", label: "PF2E.AbilityCon", color: "#f1c40f" },
-  { attribute: "int", label: "PF2E.AbilityInt", color: "#3498db" },
-  { attribute: "cha", label: "PF2E.AbilityCha", color: "#9b59b6" },
-  { attribute: "wis", label: "PF2E.AbilityWis", color: "#00bcd4" }
+  { attribute: "str", label: "Strength", color: "#e74c3c" },
+  { attribute: "dex", label: "Agility", color: "#2ecc71" },
+  { attribute: "con", label: "Wealth", color: "#f1c40f" },
+  { attribute: "int", label: "Intelligence", color: "#3498db" },
+  { attribute: "cha", label: "Void", color: "#9b59b6" },
+  { attribute: "wis", label: "Spirit", color: "#00bcd4" }
 ]);
 const DEFAULT_SKILL_ATTRIBUTE_GROUPS = Object.freeze([
   { attribute: "str", label: "PF2E.AbilityStr", color: "#e74c3c" },
