@@ -1,5 +1,5 @@
 import { installActorDamageActionContext, installDicelessPatches } from "./features/diceless.js";
-import { appendVursPlayCostIcons } from "./features/playCostIcons.js";
+import { appendVursPlayCostIcons, createVursPlayCostElement } from "./features/playCostIcons.js";
 import { renderVursPlayResources } from "./features/playResources.js";
 import { applyFullVursSkillAttributes, applyVursHitPoints } from "./features/modes/fullVurs.js";
 import { applyAgnosticVursSkillAttributes } from "./features/modes/agnosticVurs.js";
@@ -394,26 +394,15 @@ function replaceVursPlayCostToken(description, playCost) {
 	while (walker.nextNode()) nodes.push(walker.currentNode);
 	for (const node of nodes) {
 		if (!node.nodeValue.includes("VURS.PlayCost")) continue;
-		const parts = node.nodeValue.split("VURS.PlayCost");
+		const tokens = [...node.nodeValue.matchAll(/VURS\.PlayCost(Top|Bottom)?/g)];
 		const fragment = document.createDocumentFragment();
-		parts.forEach((part, index) => {
-			if (part) fragment.append(document.createTextNode(part));
-			if (index >= parts.length - 1) return;
-			const inline = document.createElement("span");
-			inline.className = "vurs-play-cost-description vurs-play-cost-inline";
-			const label = document.createElement("strong");
-			label.textContent = "Play Cost";
-			inline.append(label);
-			playCost.split(";").map(entry => entry.trim()).filter(Boolean).forEach((entry, entryIndex) => {
-				if (entryIndex) inline.append(document.createTextNode("; "));
-				const icons = document.createElement("span");
-				icons.className = "vurs-play-cost-description-icons";
-				icons.title = entry;
-				appendVursPlayCostIcons(icons, entry);
-				inline.append(icons);
-			});
-			fragment.append(inline);
-		});
+		let offset = 0;
+		for (const token of tokens) {
+			fragment.append(document.createTextNode(node.nodeValue.slice(offset, token.index)));
+			fragment.append(createVursPlayCostElement(playCost, token[1]?.toLowerCase() ?? "inline"));
+			offset = token.index + token[0].length;
+		}
+		fragment.append(document.createTextNode(node.nodeValue.slice(offset)));
 		node.replaceWith(fragment);
 	}
 }

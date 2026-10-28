@@ -1,5 +1,5 @@
 import { actorHasDicelessFlag, actorUsesDicelessRolls, getSystemMode, isFullVursMode } from "./systemModes.js";
-import { appendVursPlayCostIcons } from "./playCostIcons.js";
+import { createVursPlayCostElement } from "./playCostIcons.js";
 
 const MODULE_ID = "vurs-pf2e";
 const VURS_DIE_RESULT = Symbol("vurs-pf2e.fixedDieResult");
@@ -180,7 +180,7 @@ Hooks.on("renderCheckModifiersDialog", (app, html) => {
 	button.type = "button";
 	button.className = "vurs-buildup-choice";
 	const cost = document.createElement("span");
-	cost.className = "vurs-buildup-cost vurs-play-cost-inline";
+	cost.className = "vurs-buildup-cost";
 	group.append(label, button, cost);
 	const updateBuildupDisplay = () => {
 		const state = app.context.__vursCheckState;
@@ -190,16 +190,10 @@ Hooks.on("renderCheckModifiersDialog", (app, html) => {
 		button.textContent = String(base);
 		button.setAttribute("aria-label", `Buildup level ${level} of 3`);
 		button.title = "Left-click or scroll up to increase; right-click or scroll down to decrease";
-		label.textContent = level === 0 ? "No Buildup" : `Buildup +${modifier}`;
+		label.textContent = level === 0 ? "Buildup" : `Buildup +${modifier}`;
+		label.classList.toggle("off", level === 0);
 		cost.replaceChildren();
-		if (level > 0) {
-			const costLabel = document.createElement("strong");
-			costLabel.textContent = "Play Cost";
-			const costIcons = document.createElement("span");
-			costIcons.className = "vurs-play-cost-description-icons";
-			appendVursPlayCostIcons(costIcons, `+${buildupCosts[level]}`);
-			cost.append(costLabel, costIcons);
-		}
+		if (level > 0) cost.append(createVursPlayCostElement(`+${buildupCosts[level]}`, "top"));
 	};
 	updateBuildupDisplay();
 	placeBuildupSelector(form, group);

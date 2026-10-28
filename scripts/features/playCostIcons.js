@@ -1,5 +1,23 @@
 const RESOURCE_ICON_BASE = "modules/vurs-pf2e/assets/custom-icons/resource-icons/";
 
+export function createVursPlayCostElement(playCost, placement = "inline") {
+    const element = document.createElement("span");
+    element.className = `vurs-play-cost-description vurs-play-cost-inline${placement === "inline" ? "" : ` vurs-play-cost-${placement}`}`;
+    const label = document.createElement("strong");
+    label.textContent = "Play Cost";
+    const iconRow = document.createElement("span");
+    iconRow.className = "vurs-play-cost-description-icons";
+    playCost.split(";").map(entry => entry.trim()).filter(Boolean).forEach((entry, index) => {
+        if (index) iconRow.append(document.createTextNode("; "));
+        const icons = document.createElement("span");
+        icons.title = entry;
+        appendVursPlayCostIcons(icons, entry);
+        iconRow.append(icons);
+    });
+    element.append(label, iconRow);
+    return element;
+}
+
 export function appendVursPlayCostIcons(container, playCost) {
     if (!container.title) container.title = playCost;
     const entries = playCost.split(/\s*(;|,|\+|\band\b|\bor\b|\bcombined\b)\s*/i).filter(Boolean);

@@ -445,6 +445,11 @@
   min-width: 0;
 }
 
+.check-modifiers-content .vurs-buildup-label.off {
+  opacity: 0.5;
+  text-decoration: line-through;
+}
+
 .check-modifiers-content .vurs-buildup-choice {
   align-items: center;
   block-size: 2.2rem;
@@ -732,6 +737,18 @@
   display: inline-flex !important;
   gap: 0.05rem;
   vertical-align: middle;
+}
+
+.vurs-play-cost-top {
+  align-items: center;
+  flex-direction: column;
+  gap: 0.1rem;
+}
+
+.vurs-play-cost-bottom {
+  align-items: center;
+  flex-direction: column-reverse;
+  gap: 0.1rem;
 }
 
 .vurs-play-cost-inline-separator {
