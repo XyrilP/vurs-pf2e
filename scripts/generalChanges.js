@@ -41,6 +41,15 @@ const VURS_SPECIAL_IWR_RULE_PATCH = Symbol("vurs-pf2e.specialIwrRulePatch");
 const VURS_PLAY_COST_REFRESH_PATCH = Symbol("vurs-pf2e.playCostRefreshPatch");
 const registeredIwrDamageTargets = new Set();
 const VURS_MAIN_ATTRIBUTE_ENABLED = true;
+
+function normalizeVursPlayCost(value) {
+	if (typeof value !== "string" && typeof value !== "number") return "";
+	return String(value)
+		.split(";")
+		.map(entry => entry.trim())
+		.filter(Boolean)
+		.join("; ");
+}
 const VURS_ABILITY_KEYS = ["str", "dex", "con", "int", "wis", "cha"];
 const VURS_ABILITY_LABELS = {
 	str: "Strength",
@@ -195,11 +204,7 @@ Hooks.on("preUpdateItem", (item, changes) => {
 	const nestedValue = hasNestedPlayCost ? changes.flags.vurs.playCost : undefined;
 	const value = flatValue !== undefined ? flatValue : nestedValue;
 	if (value === undefined) return;
-	const normalizedValue = String(value ?? "")
-		.split(";")
-		.map(entry => entry.trim())
-		.filter(Boolean)
-		.join("; ");
+	const normalizedValue = normalizeVursPlayCost(value);
 	if (normalizedValue) {
 		if (hasFlatPlayCost) changes["flags.vurs.playCost"] = normalizedValue;
 		else changes.flags.vurs.playCost = normalizedValue;
@@ -244,7 +249,7 @@ Hooks.on("renderChatMessage", (message, html) => {
 	if (root && actor) replaceVursPlayResourceTokens(root, actor);
 	const originUuid = message?.flags?.pf2e?.origin?.uuid ?? message?.flags?.pf2e?.origin?.itemUuid;
 	const originItem = message?.item ?? (originUuid ? fromUuidSync(originUuid) : null);
-	const playCost = originItem && String(foundry.utils.getProperty(originItem, "flags.vurs.playCost") ?? "").trim();
+	const playCost = normalizeVursPlayCost(foundry.utils.getProperty(originItem, "flags.vurs.playCost"));
 	if (root && playCost) replaceVursPlayCostToken(root, playCost);
 	const button = root?.querySelector('button[data-action="revertDamage"]');
 	if (!button || button.dataset.vursReductionUndo) return;
@@ -309,7 +314,7 @@ function applyActorSheetPresentation(app, element) {
 function replaceVursPlayCostTokensOnActorSheet(root, actor) {
 	for (const itemElement of root.querySelectorAll(".item[data-item-id], [data-item-id]")) {
 		const item = actor?.items?.get(itemElement.dataset.itemId);
-		const playCost = item && String(foundry.utils.getProperty(item, "flags.vurs.playCost") ?? "").trim();
+		const playCost = normalizeVursPlayCost(foundry.utils.getProperty(item, "flags.vurs.playCost"));
 		if (!playCost) continue;
 		replaceVursPlayCostToken(itemElement, playCost);
 	}
@@ -320,7 +325,7 @@ function addVursAbilityCostField(app, element) {
 	const item = app?.item ?? app?.object;
 	if (!item || !["action", "feat"].includes(item.type)) return;
 	const root = element instanceof HTMLElement ? element : element?.[0];
-	const currentPlayCost = String(foundry.utils.getProperty(item, "flags.vurs.playCost") ?? "");
+	const currentPlayCost = normalizeVursPlayCost(foundry.utils.getProperty(item, "flags.vurs.playCost"));
 	const playCost = resolveVursPlayCostRolls(currentPlayCost, item.actor ?? item.parent?.actor)
 		.split("; ")
 		.map(entry => entry.trim())
@@ -964,11 +969,7 @@ function installVursPlayCostRefreshPatch() {
 		}
 		if (!refreshedItem || !sourceItem) return refreshedItem;
 
-		const playCost = String(foundry.utils.getProperty(sourceItem, "flags.vurs.playCost") ?? "")
-			.split(";")
-			.map(entry => entry.trim())
-			.filter(Boolean)
-			.join("; ");
+		const playCost = normalizeVursPlayCost(foundry.utils.getProperty(sourceItem, "flags.vurs.playCost"));
 		const update = playCost
 			? { "flags.vurs.playCost": playCost }
 			: { "flags.vurs.-=playCost": null };
