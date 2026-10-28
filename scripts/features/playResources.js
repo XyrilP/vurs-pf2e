@@ -11,6 +11,8 @@ const STYLE_RANK_PHRASES = Object.freeze({
 	5: ["Stylish!!!!!", "Show Time!!!!!", "Sweet!!!!!", "Slammin' Beat!!!!!", "Smokin'!!!!!", "Savage!!!!!"]
 });
 const styleRankPhraseCache = new Map();
+const playResourceRenderRequests = new WeakMap();
+const playResourceRenderSignatures = new WeakMap();
 const PLAY_RESOURCE_DEFINITIONS = Object.freeze([
 	{ key: "staminaPoints", label: "Stamina Points", icon: true },
 	{ key: "actionPoints", label: "Action Points", icon: true },
@@ -71,7 +73,61 @@ Hooks.on("updateCombat", (combat, changes) => {
 	if (combatant?.actor) void regenerateActorAtTurnStart(combatant.actor);
 });
 
+function getPlayResourceRenderSignature(actor) {
+	const skills = actor?.system?.skills ?? {};
+	const skillVisibility = Object.fromEntries(
+		["athletics", "mobility", "strategy", "coolness", "soul", "acquisition", "arcana", "occultism", "religion", "nature"]
+			.map(slug => [slug, skills[slug]?.visible === true])
+	);
+	const resources = foundry.utils.getProperty(actor, PLAY_RESOURCES_PATH) ?? {};
+	const resourceState = Object.fromEntries(PLAY_RESOURCE_DEFINITIONS.map(({ key }) => {
+		const resource = resources[key] ?? {};
+		return [key, {
+			value: resource.value,
+			max: resource.max,
+			maxReduction: resource.maxReduction,
+			fields: MAGIC_POINT_CONTRIBUTION_FIELDS.map(field => resource[field])
+		}];
+	}));
+	return JSON.stringify({
+		mode: getSystemModeForPlayResource(actor),
+		skillVisibility,
+		resourceState
+	});
+}
+
 export async function renderVursPlayResources(root, actor) {
+	if (!(root instanceof HTMLElement)) return;
+	const signature = getPlayResourceRenderSignature(actor);
+	const active = playResourceRenderRequests.get(root);
+	if (active) {
+		if (signature !== active.signature) {
+			active.pending = true;
+			active.signature = signature;
+			active.actor = actor;
+		}
+		await active.promise;
+		return;
+	}
+	const state = { pending: false, signature, actor, promise: null };
+	state.promise = (async () => {
+		do {
+			state.pending = false;
+			if (state.signature !== playResourceRenderSignatures.get(root)) {
+				await renderVursPlayResourcesNow(root, state.actor);
+				playResourceRenderSignatures.set(root, state.signature);
+			}
+		} while (state.pending);
+	})();
+	playResourceRenderRequests.set(root, state);
+	try {
+		await state.promise;
+	} finally {
+		playResourceRenderRequests.delete(root);
+	}
+}
+
+async function renderVursPlayResourcesNow(root, actor) {
 	preloadResourceIcons();
 	// Play Resources are shared by character and NPC actors. Keep this check
 	// independent of the character-only sheet enhancements in generalChanges.
@@ -125,7 +181,9 @@ export async function renderVursPlayResources(root, actor) {
 		document.head.append(style);
 	}
 
-	let section = sidebar.querySelector(":scope > .vurs-play-resources");
+	const existingSections = [...sidebar.querySelectorAll(":scope > .vurs-play-resources")];
+	let section = existingSections.shift() ?? null;
+	for (const duplicate of existingSections) duplicate.remove();
 	const hasDefaultPlayResources = getFullVursDefaultMax(actor, "reactions") > 0 ||
 		getFullVursDefaultMax(actor, "actionPoints") > 0;
 	if (!actorUsesVursSystem(actor) && !hasDefaultPlayResources) {
@@ -156,7 +214,7 @@ export async function renderVursPlayResources(root, actor) {
 		title.textContent = "Play";
 		title.tabIndex = 0;
 		title.setAttribute("role", "button");
-		title.setAttribute("aria-label", "Play resource modifiers; hover or focus to show modifiers");
+		title.setAttribute("aria-label", "Play resource modifiers; hover for half a second to show modifiers");
 		const apply = document.createElement("button");
 		apply.type = "button";
 		apply.className = "vurs-play-apply vurs-play-reset";
@@ -177,17 +235,25 @@ export async function renderVursPlayResources(root, actor) {
 				renderVursPlayResources(root, actor);
 			}
 		});
-		title.addEventListener("mouseenter", () => {
-			if (isNpc) void togglePlayRegenerationTooltip(section, actor, title);
-		});
-		title.addEventListener("focus", () => {
-			if (isNpc) void togglePlayRegenerationTooltip(section, actor, title);
-		});
-		title.addEventListener("click", event => {
-			if (!isNpc) return;
-			event.preventDefault();
-			void togglePlayRegenerationTooltip(section, actor, title);
-		});
+		if (isNpc) {
+			title.addEventListener("mouseenter", () => {
+				title._vursPlayModifiersHovering = true;
+				window.clearTimeout(title._vursPlayModifiersHoverTimer);
+				const hoverToken = (title._vursPlayModifiersHoverToken ?? 0) + 1;
+				title._vursPlayModifiersHoverToken = hoverToken;
+				title._vursPlayModifiersHoverTimer = window.setTimeout(() => {
+					if (title._vursPlayModifiersHoverToken === hoverToken && title.matches(":hover")) {
+						void togglePlayRegenerationTooltip(section, actor, title);
+					}
+				}, 500);
+			});
+			title.addEventListener("mouseleave", () => {
+				title._vursPlayModifiersHovering = false;
+				window.clearTimeout(title._vursPlayModifiersHoverTimer);
+				title._vursPlayModifiersHoverToken = (title._vursPlayModifiersHoverToken ?? 0) + 1;
+				closePlayRegenerationTooltip(title);
+			});
+		}
 		const modifiers = document.createElement("button");
 		modifiers.type = "button";
 		modifiers.className = "vurs-play-modifiers";
@@ -259,7 +325,7 @@ async function togglePlayRegenerationTooltip(section, actor, button) {
 			? resources[definition.key]
 			: {};
 		const regeneration = getPlayResourceRegeneration(actor, definition.key, resource);
-		if (regeneration) rows.push({ label: `${getPlayResourceShortLabel(actor, definition.key)} Regen`, modifier: regeneration });
+		if (regeneration) rows.push({ label: `${getPlayResourceShortLabel(actor, definition.key)} Recovery`, modifier: regeneration });
 	}
 	const tooltipId = `${section.closest("form")?.id ?? "vurs-play"}-play-modifiers`;
 	const rendered = await foundry.applications.handlebars.renderTemplate(
@@ -268,6 +334,10 @@ async function togglePlayRegenerationTooltip(section, actor, button) {
 	);
 	const content = document.createRange().createContextualFragment(rendered).firstElementChild;
 	if (!content) return;
+	if (button._vursPlayModifiersHovering === false) {
+		content.remove();
+		return;
+	}
 	content.classList.add("vurs-play-modifiers-tooltip");
 	section.append(content);
 	button.dataset.tooltipContent = `#${content.id}`;
@@ -289,12 +359,29 @@ async function togglePlayRegenerationTooltip(section, actor, button) {
 		trigger: "custom",
 		triggerClose: { originClick: true, mouseleave: false },
 		functionReady: () => document.addEventListener("click", closeOnOutsideClick, true),
-		functionAfter: () => document.removeEventListener("click", closeOnOutsideClick, true)
+		functionAfter: () => {
+			button._vursPlayModifiersTooltipOpen = false;
+			button.setAttribute("aria-expanded", "false");
+			content.remove();
+			document.removeEventListener("click", closeOnOutsideClick, true);
+		}
 	}).tooltipster("instance");
 	button._vursPlayModifiersTooltip = instance;
 	button._vursPlayModifiersTooltipOpen = true;
 	instance.open();
 	button.setAttribute("aria-expanded", "true");
+}
+
+function closePlayRegenerationTooltip(button) {
+	const existing = button._vursPlayModifiersTooltip;
+	if (!existing) return;
+	button._vursPlayModifiersTooltipOpen = false;
+	button.setAttribute("aria-expanded", "false");
+	try {
+		existing.close();
+	} catch (error) {
+		console.warn("vurs-pf2e | Failed to close the Play modifier panel", error);
+	}
 }
 
 function collectHealingSources(actor) {
@@ -352,11 +439,12 @@ function getPlayResourceEntries(actor) {
 		const defaultMaxValue = finiteResourceNumber(defaultMax);
 		const storedMaxValue = finiteResourceNumber(resource.max);
 		const hasDerivedMax = defaultMax !== undefined && defaultMax !== null && defaultMax !== "" && Number.isFinite(Number(defaultMax));
-		const storedActionMaximum = definition.key === "actionPoints"
+		const storedDerivedMaximum = (definition.key === "actionPoints"
+			|| (isNpcActor(actor) && definition.key === "tacticPoints"))
 			&& resource.max !== undefined
 			&& resource.max !== null
 			&& resource.max !== "";
-		let baseMax = storedActionMaximum
+		let baseMax = storedDerivedMaximum
 			? storedMaxValue
 			: (hasDerivedMax ? defaultMaxValue : storedMaxValue);
 		const maxReductionValue = resource.maxReduction === undefined || resource.maxReduction === null || resource.maxReduction === ""
@@ -378,7 +466,7 @@ function getPlayResourceEntries(actor) {
 			if (resource.maxReduction !== undefined && resource.maxReduction !== null && resource.maxReduction !== "") {
 				return Math.max(0, baseMax - maxReductionValue);
 			}
-			if (definition.key === "actionPoints" && hasDerivedMax) return Math.max(0, baseMax);
+			if ((definition.key === "actionPoints" || (isNpcActor(actor) && definition.key === "tacticPoints")) && hasDerivedMax) return Math.max(0, baseMax);
 			if (definition.key === "magicPoints" && hasDerivedMax) return Math.max(0, baseMax);
 			if (storedMaxValue > 0 && (!hasDerivedMax || storedMaxValue !== baseMax)) {
 				return storedMaxValue;
@@ -560,7 +648,7 @@ function getFullVursDefaultMax(actor, resourceKey) {
 				Math.max(0, Math.min(attributeModifier("str"), rank)));
 		case "tacticPoints":
 			return calculateNpcSkillResource(skillRank("strategy"), rank =>
-				Math.max(0, Math.min(attributeModifier("int"), rank)));
+				Math.max(0, Math.min(attributeModifier("int"), rank) - (agnostic ? 1 : 0)));
 		case "styleRank":
 			return calculateNpcSkillResource(skillRank("coolness"), rank =>
 				Math.min(attributeModifier("cha"), rank) > 0 ? 5 : 0);
@@ -970,6 +1058,7 @@ function addResourceWheelEditing(input, getMaximum) {
 	let pendingDelta = 0;
 	let frameScheduled = false;
 	input.addEventListener("wheel", event => {
+		if (document.activeElement !== input) return;
 		event.preventDefault();
 		if (input.disabled || input.dataset.updating) return;
 
@@ -1372,6 +1461,12 @@ async function ensurePlayResourceMaxDefaults(actor) {
 				? finiteResourceNumber(defaultMax)
 				: finiteResourceNumber(resource.max);
 			effectiveMax = Math.max(0, outsideMaximum - maxReduction);
+		} else if (isNpcActor(actor) && definition.key === "tacticPoints" && hasDefaultMax) {
+			const maxReduction = finiteResourceNumber(resource.maxReduction);
+			effectiveMax = Math.max(0, finiteResourceNumber(defaultMax) - maxReduction);
+			if (finiteResourceNumber(resource.max) !== finiteResourceNumber(defaultMax)) {
+				updates[`${PLAY_RESOURCES_PATH}.tacticPoints.max`] = finiteResourceNumber(defaultMax);
+			}
 		} else if (resource.max === undefined || resource.max === null || resource.max === "") {
 			updates[`${PLAY_RESOURCES_PATH}.${definition.key}.max`] = finiteResourceNumber(defaultMax);
 		}
@@ -1379,7 +1474,9 @@ async function ensurePlayResourceMaxDefaults(actor) {
 			updates[`${PLAY_RESOURCES_PATH}.${definition.key}.value`] = Math.max(0, effectiveMax);
 		}
 	}
-	if (Object.keys(updates).length) await actor.update(updates, { render: false });
+	if (Object.keys(updates).length) {
+		await actor.update(updates, { render: false, vursPlayResourceOnly: true });
+	}
 }
 
 function getCurrentPlayResourceControl(section, resourceKey) {

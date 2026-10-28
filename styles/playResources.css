@@ -99,7 +99,16 @@
   padding: 0;
   position: relative;
   outline: none !important;
+  text-shadow: none;
   width: 100%;
+}
+
+.actor.sheet.character .sidebar>.vurs-play-resources .vurs-play-resource-control:focus,
+.actor.sheet.character .sidebar>.vurs-play-resources .vurs-play-resource-control:focus-visible,
+.actor.sheet.character .sidebar>.vurs-play-resources .vurs-play-resource-control:active {
+  border: 0 !important;
+  box-shadow: none !important;
+  outline: none !important;
 }
 
 .actor.sheet.character .sidebar>.vurs-play-resources .vurs-play-resource-control::before,
@@ -180,6 +189,7 @@
   object-fit: contain;
   outline: none !important;
   position: absolute;
+  text-shadow: none;
   width: 100%;
 }
 
