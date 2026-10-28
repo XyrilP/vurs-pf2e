@@ -186,7 +186,8 @@ Hooks.on("renderCheckModifiersDialog", (app, html) => {
 		const state = app.context.__vursCheckState;
 		const level = Math.max(0, buildupValues.indexOf(state?.buildup ?? 0));
 		const modifier = buildupValues[level];
-		button.textContent = String(8 + modifier);
+		const base = getAdjustedVursBase(8 + modifier, getVursCheckEffect(app.context));
+		button.textContent = String(base);
 		button.setAttribute("aria-label", `Buildup level ${level} of 3`);
 		button.title = "Left-click or scroll up to increase; right-click or scroll down to decrease";
 		label.textContent = level === 0 ? "No Buildup" : `Buildup +${modifier}`;
@@ -194,11 +195,10 @@ Hooks.on("renderCheckModifiersDialog", (app, html) => {
 		if (level > 0) {
 			const costLabel = document.createElement("strong");
 			costLabel.textContent = "Play Cost";
-			const costPrefix = document.createTextNode("+");
 			const costIcons = document.createElement("span");
 			costIcons.className = "vurs-play-cost-description-icons";
-			appendVursPlayCostIcons(costIcons, buildupCosts[level]);
-			cost.append(costLabel, costPrefix, costIcons);
+			appendVursPlayCostIcons(costIcons, `+${buildupCosts[level]}`);
+			cost.append(costLabel, costIcons);
 		}
 	};
 	updateBuildupDisplay();

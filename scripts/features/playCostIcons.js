@@ -2,7 +2,7 @@ const RESOURCE_ICON_BASE = "modules/vurs-pf2e/assets/custom-icons/resource-icons
 
 export function appendVursPlayCostIcons(container, playCost) {
     if (!container.title) container.title = playCost;
-    const entries = playCost.split(/\s*(;|,|\band\b|\bor\b|\bcombined\b)\s*/i).filter(Boolean);
+    const entries = playCost.split(/\s*(;|,|\+|\band\b|\bor\b|\bcombined\b)\s*/i).filter(Boolean);
     let lastAmount = 1;
     let lastOperator = null;
     for (const entry of entries) {
@@ -11,7 +11,7 @@ export function appendVursPlayCostIcons(container, playCost) {
             lastOperator = operator;
             const separator = document.createElement("span");
             separator.className = "vurs-play-cost-inline-separator";
-            separator.textContent = operator === "or" || operator === "," ? "/" : operator === "and" ? " + " : operator === "combined" ? " combined " : "; ";
+            separator.textContent = operator === "+" ? "+" : operator === "or" || operator === "," ? "/" : operator === "and" ? " + " : operator === "combined" ? " combined " : "; ";
             container.append(separator);
             continue;
         }
