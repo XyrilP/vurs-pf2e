@@ -345,6 +345,7 @@ function getPlayResourceEntries(actor) {
 	const resources = foundry.utils.getProperty(actor, PLAY_RESOURCES_PATH) ?? {};
 	return PLAY_RESOURCE_DEFINITIONS.flatMap(definition => {
 		if (definition.key === "reactions" && actorUsesVursSystem(actor) && !actorUsesAgnosticVurs(actor)) return [];
+		if (!isNpcPlayResourceVisible(actor, definition.key)) return [];
 		const resource = resources[definition.key] ?? {};
 		if (typeof resource !== "object") return [];
 		const defaultMax = getFullVursDefaultMax(actor, definition.key);
@@ -365,7 +366,7 @@ function getPlayResourceEntries(actor) {
 			? finiteResourceNumber(resource.maxExtra)
 			: 0;
 		const magicContribution = definition.key === "magicPoints"
-			? getStoredMagicPointContributionTotal(resource)
+			? getActiveMagicPointContributionTotal(actor, resource)
 			: 0;
 		const maxTotal = definition.key === "magicPoints"
 			? storedMaxValue + magicContribution + maxExtra
@@ -501,11 +502,32 @@ async function resetEncounterPlayResources(combat) {
 	}
 }
 
+function isNpcPlayResourceVisible(actor, resourceKey) {
+	if (!isNpcActor(actor)) return true;
+	const associatedSkills = {
+		staminaPoints: "athletics",
+		actionPoints: "mobility",
+		tacticPoints: "strategy",
+		styleRank: "coolness",
+		karmaPoints: "soul",
+		budgetPoints: "acquisition"
+	};
+	const skillSlug = associatedSkills[resourceKey];
+	if (!skillSlug) return true;
+	return actor.system?.skills?.[skillSlug]?.visible === true;
+}
+
 function getFullVursDefaultMax(actor, resourceKey) {
 	const agnostic = actorUsesAgnosticVurs(actor);
 	if (!actorUsesVursSystem(actor) && !agnostic && getSystemModeForPlayResource(actor) !== "default") return undefined;
-	// Agnostic actors use the same NPC-derived resource formulas, including
-	// Agnostic minimums, regardless of whether they are characters or NPCs.
+	// Agnostic PCs keep their classic AP / Reaction defaults. Agnostic NPCs
+	// use the NPC-derived VURS resource formulas below.
+	if (agnostic && !isNpcActor(actor)) {
+		if (resourceKey === "actionPoints") return 3;
+		if (resourceKey === "reactions") return 1;
+		if (resourceKey === "magicPoints") return 0;
+		return undefined;
+	}
 	if (agnostic && resourceKey === "reactions") return 1;
 	if (getSystemModeForPlayResource(actor) === "default") {
 		if (game.settings.get("vurs-pf2e", DEFAULT_ACTION_POINTS_SETTING) !== true) return undefined;
@@ -515,30 +537,48 @@ function getFullVursDefaultMax(actor, resourceKey) {
 	}
 	const system = actor.system;
 	const attributeModifier = slug => finiteResourceNumber(system?.abilities?.[slug]?.mod);
-	// NPC and Agnostic skill modifiers use PF2e's level-scaled modifier
-	// representation; only ordinary VURS characters use proficiency ranks.
-	const skillRank = slug => isNpcActor(actor) || agnostic
-		? Math.floor(finiteResourceNumber(system?.skills?.[slug]?.mod) / 7)
-		: finiteResourceNumber(system?.skills?.[slug]?.rank);
+	// NPC skill modifiers use PF2e's level-scaled modifier representation;
+	// character skill resources continue to use proficiency ranks.
+	const usesNpcSkillModifiers = isNpcActor(actor);
+	const skillRank = slug => {
+		const skill = system?.skills?.[slug];
+		if (isNpcActor(actor) && skill?.visible !== true) return undefined;
+		if (usesNpcSkillModifiers) {
+			return skill ? Math.floor(finiteResourceNumber(skill.mod) / 7) : undefined;
+		}
+		return finiteResourceNumber(skill?.rank);
+	};
 
 	switch (resourceKey) {
-		case "actionPoints":
-			return Math.max(agnostic ? 3 : 2, 2 + Math.min(attributeModifier("dex"), skillRank("mobility")));
+		case "actionPoints": {
+			const mobilityRank = skillRank("mobility");
+			return mobilityRank === undefined ? undefined
+				: Math.max(agnostic ? 3 : 2, 2 + Math.min(attributeModifier("dex"), mobilityRank));
+		}
 		case "staminaPoints":
-			return Math.max(0, Math.min(attributeModifier("str"), skillRank("athletics")));
+			return calculateNpcSkillResource(skillRank("athletics"), rank =>
+				Math.max(0, Math.min(attributeModifier("str"), rank)));
 		case "tacticPoints":
-			return Math.max(0, Math.min(attributeModifier("int"), skillRank("strategy")));
+			return calculateNpcSkillResource(skillRank("strategy"), rank =>
+				Math.max(0, Math.min(attributeModifier("int"), rank)));
 		case "styleRank":
-			return Math.min(attributeModifier("cha"), skillRank("coolness")) > 0 ? 5 : 0;
+			return calculateNpcSkillResource(skillRank("coolness"), rank =>
+				Math.min(attributeModifier("cha"), rank) > 0 ? 5 : 0);
 		case "karmaPoints":
-			return Math.max(0, Math.min(attributeModifier("wis"), skillRank("soul")));
+			return calculateNpcSkillResource(skillRank("soul"), rank =>
+				Math.max(0, Math.min(attributeModifier("wis"), rank)));
 		case "budgetPoints":
-			return Math.max(0, 5 + finiteResourceNumber(system?.abilities?.con?.mod) + 2 * skillRank("acquisition"));
+			return calculateNpcSkillResource(skillRank("acquisition"), rank =>
+				Math.max(0, 5 + finiteResourceNumber(system?.abilities?.con?.mod) + 2 * rank));
 		case "magicPoints":
 			return finiteResourceNumber(foundry.utils.getProperty(actor, `${PLAY_RESOURCES_PATH}.magicPoints.max`));
 		default:
 			return undefined;
 	}
+}
+
+function calculateNpcSkillResource(rank, calculate) {
+	return rank === undefined ? undefined : calculate(rank);
 }
 
 function isNpcActor(actor) {
@@ -738,9 +778,15 @@ function getMagicPointContributions(actor) {
 	const abilities = actor.system?.abilities ?? {};
 	const skills = actor.system?.skills ?? {};
 	const modifier = slug => finiteResourceNumber(abilities[slug]?.mod);
-	const rank = slug => isNpcActor(actor)
-		? Math.floor(finiteResourceNumber(skills[slug]?.mod) / 7)
-		: finiteResourceNumber(skills[slug]?.rank);
+	const usesNpcSkillModifiers = isNpcActor(actor);
+	const rank = slug => {
+		const skill = skills[slug];
+		if (isNpcActor(actor) && skill?.visible !== true) return undefined;
+		if (usesNpcSkillModifiers) {
+			return skill ? Math.floor(finiteResourceNumber(skill.mod) / 7) : undefined;
+		}
+		return finiteResourceNumber(skill?.rank);
+	};
 	const localize = (key, fallback) => {
 		const label = game.i18n.localize(key);
 		return label && label !== key ? label : fallback;
@@ -757,36 +803,60 @@ function getMagicPointContributions(actor) {
 			icon: "fa-heart",
 			value: 0
 		},
-		{
-			field: "maxArcane",
-			label: `${abilityLabel("PF2E.AbilityInt", "Intelligence", "Intelligence")} (${localize("PF2E.TraitArcane", "Arcane")})`,
-			color: "#3498db",
-			value: 2 * Math.min(modifier("int"), rank("arcana"))
-		},
-		{
-			field: "maxOccult",
-			label: `${abilityLabel("PF2E.AbilityCha", "Void", "Charisma")} (${localize("PF2E.TraitOccult", "Occult")})`,
-			color: "#9b59b6",
-			value: Math.min(modifier("cha"), rank("occultism"))
-		},
-		{
-			field: "maxDivine",
-			label: `${abilityLabel("PF2E.AbilityWis", "Spirit", "Wisdom")} (${localize("PF2E.TraitDivine", "Divine")})`,
-			color: "#00bcd4",
-			value: Math.min(modifier("wis"), rank("religion"))
-		},
-		{
-			field: "maxPrimal",
-			label: `${abilityLabel("PF2E.AbilityWis", "Spirit", "Wisdom")} (${localize("PF2E.TraitPrimal", "Primal")})`,
-			color: "#2ecc71",
-			value: Math.min(modifier("wis"), rank("nature"))
-		}
+		...((() => {
+			const skillRank = rank("arcana");
+			if (isNpcActor(actor) && skillRank === undefined) return [];
+			return [{
+				field: "maxArcane",
+				label: `${abilityLabel("PF2E.AbilityInt", "Intelligence", "Intelligence")} (${localize("PF2E.TraitArcane", "Arcane")})`,
+				color: "#3498db",
+				value: actorUsesAgnosticVurs(actor) && !isNpcActor(actor)
+					? 0
+					: 2 * Math.min(modifier("int"), skillRank ?? 0)
+			}];
+		})()),
+		...((() => {
+			const skillRank = rank("occultism");
+			if (isNpcActor(actor) && skillRank === undefined) return [];
+			return [{
+				field: "maxOccult",
+				label: `${abilityLabel("PF2E.AbilityCha", "Void", "Charisma")} (${localize("PF2E.TraitOccult", "Occult")})`,
+				color: "#9b59b6",
+				value: actorUsesAgnosticVurs(actor) && !isNpcActor(actor)
+					? 0
+					: Math.min(modifier("cha"), skillRank ?? 0)
+			}];
+		})()),
+		...((() => {
+			const skillRank = rank("religion");
+			if (isNpcActor(actor) && skillRank === undefined) return [];
+			return [{
+				field: "maxDivine",
+				label: `${abilityLabel("PF2E.AbilityWis", "Spirit", "Wisdom")} (${localize("PF2E.TraitDivine", "Divine")})`,
+				color: "#00bcd4",
+				value: actorUsesAgnosticVurs(actor) && !isNpcActor(actor)
+					? 0
+					: Math.min(modifier("wis"), skillRank ?? 0)
+			}];
+		})()),
+		...((() => {
+			const skillRank = rank("nature");
+			if (isNpcActor(actor) && skillRank === undefined) return [];
+			return [{
+				field: "maxPrimal",
+				label: `${abilityLabel("PF2E.AbilityWis", "Spirit", "Wisdom")} (${localize("PF2E.TraitPrimal", "Primal")})`,
+				color: "#2ecc71",
+				value: actorUsesAgnosticVurs(actor) && !isNpcActor(actor)
+					? 0
+					: Math.min(modifier("wis"), skillRank ?? 0)
+			}];
+		})())
 	];
 }
 
-function getStoredMagicPointContributionTotal(resource) {
-	return MAGIC_POINT_CONTRIBUTION_FIELDS
-		.reduce((total, field) => total + finiteResourceNumber(resource[field]), 0);
+function getActiveMagicPointContributionTotal(actor, resource) {
+	return getMagicPointContributions(actor)
+		.reduce((total, contribution) => total + finiteResourceNumber(resource[contribution.field]), 0);
 }
 
 function getMagicPointMechanicalMaximum(actor, resource) {
