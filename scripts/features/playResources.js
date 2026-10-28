@@ -442,7 +442,7 @@ async function resetPlayResources(root, actor, button) {
 	button.classList.remove("has-pending-changes");
 	button.disabled = true;
 	try {
-		await resetOneActorPlayResources(actor, { refillBudgetAndMagic: true });
+		await resetOneActorPlayResources(actor, { refillBudgetAndMagic: true, suppressUpdateRefresh: true });
 		renderVursPlayResources(root, actor);
 	} catch (error) {
 		console.error("vurs-pf2e | Failed to reset Play resources", error);
@@ -451,7 +451,7 @@ async function resetPlayResources(root, actor, button) {
 	}
 }
 
-async function resetOneActorPlayResources(actor, { refillBudgetAndMagic = false } = {}) {
+async function resetOneActorPlayResources(actor, { refillBudgetAndMagic = false, suppressUpdateRefresh = false } = {}) {
 	if (!actor) return;
 	const resources = foundry.utils.getProperty(actor, PLAY_RESOURCES_PATH) ?? {};
 	const updates = {};
@@ -483,7 +483,10 @@ async function resetOneActorPlayResources(actor, { refillBudgetAndMagic = false 
 		}
 	}
 
-	await actor.update(updates, { render: false });
+	await actor.update(updates, {
+		render: false,
+		...(suppressUpdateRefresh ? { vursPlayResourceOnly: true } : {})
+	});
 }
 
 async function resetEncounterPlayResources(combat) {
@@ -1133,8 +1136,8 @@ async function savePlayResourceFlags(actor, updates, control) {
 		const icon = row.querySelector(".vurs-play-resource-control img");
 		if (icon) {
 			const iconFile = getResourceIcon(resource).replace(/\.webp$/i, ".svg");
-			const preloaded = preloadedResourceIcons.get(iconFile);
-			icon.src = preloaded?.src ?? `${RESOURCE_ICON_BASE}${iconFile}`;
+			const iconSource = preloadedResourceIcons.get(iconFile)?.src ?? `${RESOURCE_ICON_BASE}${iconFile}`;
+			if (icon.getAttribute("src") !== iconSource) icon.src = iconSource;
 			const control = icon.closest("button");
 			if (control) control.setAttribute("aria-label", `${resource.label}: ${formatResourceNumber(resource.value)} of ${formatResourceNumber(resource.max)}. Left click to increase; right click to decrease; Ctrl+left-click to increase maximum; Ctrl+right-click to decrease maximum.`);
 		}
@@ -1237,7 +1240,9 @@ async function applyPlayResourceChanges(root, actor, section, button) {
 			vursPlayResourceOnly: true
 		});
 		delete section._vursPendingUpdates;
-		renderVursPlayResources(root, actor);
+		// Apply already updates the staged row in-place. Rebuilding the complete
+		// resource panel here duplicates the actor update refresh and causes a
+		// visible full-section stutter.
 	} catch (error) {
 		console.error("vurs-pf2e | Failed to apply Play resource changes", error);
 		button.disabled = false;
