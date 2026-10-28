@@ -868,6 +868,22 @@ function getMagicPointPageSegments(actor, resource, page) {
 	return segments.slice(start, start + MAGIC_POINTS_PER_ROW);
 }
 
+function createMagicPointSegmentElements(actor, resource, page) {
+	const pageSegments = getMagicPointPageSegments(actor, resource, page);
+	const elements = [];
+	for (const segmentData of pageSegments) {
+		for (let index = 0; index < Math.max(0, Math.floor(segmentData.size)); index += 1) {
+			const star = document.createElement("i");
+			const filled = segmentData.start + index < resource.value;
+			star.className = `${filled ? "fa-solid" : "fa-regular"} ${segmentData.icon ?? "fa-star"} vurs-mp-star ${filled ? "is-filled" : "is-empty"}`;
+			star.style.setProperty("--segment-color", segmentData.color);
+			star.title = segmentData.label ?? resource.label;
+			elements.push(star);
+		}
+	}
+	return { elements, pageSize: pageSegments.length };
+}
+
 function addResourceWheelEditing(input, getMaximum) {
 	// Keep the wheel handler itself extremely cheap. Browsers can deliver many
 	// wheel events per frame; stage only the latest value once per animation frame.
@@ -1108,13 +1124,19 @@ async function savePlayResourceFlags(actor, updates, control) {
 			const control = icon.closest("button");
 			if (control) control.setAttribute("aria-label", `${resource.label}: ${formatResourceNumber(resource.value)} of ${formatResourceNumber(resource.max)}. Left click to increase; right click to decrease; Ctrl+left-click to increase maximum; Ctrl+right-click to decrease maximum.`);
 		}
-		// Reflect staged BP/MP values in the segment icons before Apply is clicked.
+		// Reflect staged BP/MP values without recreating all segment nodes.
+		// Rebuild only when maximum or contribution structure actually changes.
+		const valueOnlyUpdate = Object.keys(updates).length === 1
+			&& updates[`${resourceKey}.value`] !== undefined;
 		if (resourceKey === "budgetPoints") {
 			const bar = row.querySelector(".vurs-budget-points-bar");
 			if (bar) {
 				bar.setAttribute("aria-valuemax", String(resource.max));
 				bar.setAttribute("aria-valuenow", String(resource.value));
-				bar.replaceChildren(createBudgetCoinStacks(resource, actor));
+				const coinCount = Math.min(200, Math.max(0, Math.ceil(resource.max)));
+				if (!valueOnlyUpdate && bar.querySelectorAll(".coin").length !== coinCount) {
+					bar.replaceChildren(createBudgetCoinStacks(resource, actor));
+				}
 				bar.querySelectorAll(".coin").forEach((coin, index) => {
 					coin.classList.toggle("is-filled", index < resource.value);
 					coin.classList.toggle("is-empty", index >= resource.value);
@@ -1134,18 +1156,18 @@ async function savePlayResourceFlags(actor, updates, control) {
 						star.classList.toggle("fa-regular", resource.value <= 0);
 					}
 				} else {
-					bar.replaceChildren();
-					const pageSegments = getMagicPointPageSegments(actor, resource, row._vursMagicPointPage ?? 0);
-					bar.style.setProperty("--mp-star-count", String(Math.max(1, pageSegments.length)));
-					for (const segmentData of pageSegments) {
-						for (let index = 0; index < Math.max(0, Math.floor(segmentData.size)); index += 1) {
-							const star = document.createElement("i");
-							const filled = segmentData.start + index < resource.value;
-							star.className = `${filled ? "fa-solid" : "fa-regular"} ${segmentData.icon ?? "fa-star"} vurs-mp-star ${filled ? "is-filled" : "is-empty"}`;
-							star.style.setProperty("--segment-color", segmentData.color);
-							star.title = segmentData.label ?? resource.label;
-							bar.append(star);
-						}
+					if (!valueOnlyUpdate) {
+						const segmentElements = createMagicPointSegmentElements(actor, resource, row._vursMagicPointPage ?? 0);
+						bar.replaceChildren(...segmentElements.elements);
+						bar.style.setProperty("--mp-star-count", String(segmentElements.pageSize));
+					}
+					const currentStars = bar.querySelectorAll(".vurs-mp-star");
+					for (const [index, star] of currentStars.entries()) {
+						const filled = index < resource.value;
+						star.classList.toggle("is-filled", filled);
+						star.classList.toggle("is-empty", !filled);
+						star.classList.toggle("fa-solid", filled);
+						star.classList.toggle("fa-regular", !filled);
 					}
 				}
 			}

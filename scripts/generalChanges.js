@@ -218,9 +218,13 @@ Hooks.on("preUpdateItem", (item, changes) => {
 });
 Hooks.on("renderApplication", (app, html) => applyActorSheetPresentation(app, html));
 
+const scheduledPlayResourceRefreshes = new WeakMap();
+
 Hooks.on("updateActor", (actor, changes, options = {}) => {
-	// Play-resource changes are persisted Actor updates. Foundry broadcasts
-	// them to other clients, so the GM and other clients must refresh too.
+	// Play-resource sheets render themselves after Apply. Skipping this local
+	// persistence notification avoids a duplicate full sheet refresh; remote
+	// clients still receive the update without this module-specific option.
+	if (options.vursPlayResourceOnly) return;
 	if (!isSupportedVursActor(actor)) return;
 
 	for (const app of Object.values(actor.apps ?? {})) {
@@ -234,7 +238,11 @@ Hooks.on("updateActor", (actor, changes, options = {}) => {
 				".vurs-play-resources, [data-vurs-play-resources]"
 			)
 		) {
+			if (scheduledPlayResourceRefreshes.has(root)) continue;
+			scheduledPlayResourceRefreshes.set(root, true);
 			requestAnimationFrame(() => {
+				scheduledPlayResourceRefreshes.delete(root);
+				if (!root.isConnected) return;
 				renderVursPlayResources(root, actor);
 				addVursMaxHpReductionControl(root, actor);
 			});
