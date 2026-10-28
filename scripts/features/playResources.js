@@ -85,14 +85,14 @@ export function renderVursPlayResources(root, actor) {
 		"aside"
 	];
 	const sidebar = (root.matches?.(sidebarSelectors.join(",")) ? root : null)
-    ?? sidebarSelectors.map(selector => root.querySelector(selector)).find(Boolean);
+		?? sidebarSelectors.map(selector => root.querySelector(selector)).find(Boolean);
 	if (!sidebar) {
 		console.warn("vurs-pf2e | Could not find a left sidebar for Play Resources; leaving the NPC sheet unchanged.");
 		return;
 	}
 	renderStyleRankOverlay(root, actor);
 	const isNpc = actor?.isOfType?.("npc") || actor?.type === "npc";
-	
+
 	// NPC sidebars are narrower than the player sheet's sidebar. Use the same
 	// resource controls, but a compact two-column presentation to preserve room
 	// for the rest of the NPC sheet.
@@ -120,29 +120,30 @@ export function renderVursPlayResources(root, actor) {
 		`;
 		document.head.append(style);
 	}
-	
+
 	let section = sidebar.querySelector(":scope > .vurs-play-resources");
 	const hasDefaultPlayResources = getFullVursDefaultMax(actor, "reactions") > 0 ||
-    getFullVursDefaultMax(actor, "actionPoints") > 0;
+		getFullVursDefaultMax(actor, "actionPoints") > 0;
 	if (!actorUsesVursSystem(actor) && !hasDefaultPlayResources) {
 		section?.remove();
 		return;
 	}
-	
+
+	void ensurePlayResourceMaxDefaults(actor);
 	const entries = getPlayResourceEntries(actor);
-	
+
 	if (!entries.length) {
 		section?.remove();
 		return;
 	}
-	
+
 	if (!document.getElementById("vurs-play-pending-glow")) {
 		const style = document.createElement("style");
 		style.id = "vurs-play-pending-glow";
 		style.textContent = "@keyframes vurs-play-pending-glow { 0%, 100% { opacity: .35; } 50% { opacity: 1; } } .vurs-play-apply.has-pending-changes { position: relative; isolation: isolate; } .vurs-play-apply.has-pending-changes::after { content: \"\"; position: absolute; inset: -2px; border-radius: inherit; box-shadow: 0 0 9px 2px rgba(255, 190, 70, .8); opacity: .35; pointer-events: none; z-index: -1; animation: vurs-play-pending-glow 1.5s ease-in-out infinite; } @media (prefers-reduced-motion: reduce) { .vurs-play-apply.has-pending-changes::after { animation: none; opacity: .75; } }";
 		document.head.append(style);
 	}
-	
+
 	if (!section) {
 		section = document.createElement("section");
 		section.className = "vurs-play-resources";
@@ -198,33 +199,33 @@ export function renderVursPlayResources(root, actor) {
 		header.append(title, controls);
 		section.append(header, document.createElement("ol"));
 	}
-	
+
 	if (isNpc) section.classList.add("vurs-play-resources-npc");
 	else section.classList.remove("vurs-play-resources-npc");
 	const modifiersButton = section.querySelector(".vurs-play-modifiers");
 	if (modifiersButton) modifiersButton.hidden = isNpc;
 	const list = section.querySelector("ol");
 	list.replaceChildren(...entries.map(resource => createPlayResourceRow(resource, actor)));
-	
+
 	const headers = [...sidebar.querySelectorAll(":scope > header")];
 	const initiativeLabels = new Set(["initiative", normalizeLabel(game.i18n.localize("PF2E.Initiative"))]);
 	const initiativeHeader = headers.find(header => initiativeLabels.has(normalizeLabel(header.querySelector("h2")?.textContent)));
 	const initiativeBlock = initiativeHeader
-    ?? sidebar.querySelector(":scope > .initiative, :scope > [data-tab='initiative'], :scope > section.initiative, :scope > .npc-initiative");
+		?? sidebar.querySelector(":scope > .initiative, :scope > [data-tab='initiative'], :scope > section.initiative, :scope > .npc-initiative");
 	if (isNpc) {
 		// NPC Play stays above the Initiative section.
 		if (initiativeBlock) sidebar.insertBefore(section, initiativeBlock);
 		else if (!section.isConnected) sidebar.append(section);
-		} else {
+	} else {
 		// On PCs, put Play after the Armor Class section, fully outside Initiative.
 		const armorLabels = new Set(["armor class", "armorclass", "ac"]);
 		const armorHeader = headers.find(header => armorLabels.has(normalizeLabel(header.querySelector("h2")?.textContent)));
 		const armorBlock = armorHeader
-		?? sidebar.querySelector(":scope > .armor-class, :scope > .armorClass, :scope > [data-section='armor-class'], :scope > section.armor");
+			?? sidebar.querySelector(":scope > .armor-class, :scope > .armorClass, :scope > [data-section='armor-class'], :scope > section.armor");
 		if (armorBlock) {
 			const nextBlock = armorBlock.nextElementSibling;
 			if (nextBlock !== section) sidebar.insertBefore(section, nextBlock);
-			} else if (initiativeBlock) {
+		} else if (initiativeBlock) {
 			// Fallback when this system version has no distinct Armor Class block.
 			const initiativeEnd = initiativeBlock.nextElementSibling;
 			if (initiativeEnd !== section) sidebar.insertBefore(section, initiativeEnd);
@@ -251,8 +252,8 @@ async function togglePlayRegenerationTooltip(section, actor, button) {
 	for (const definition of PLAY_RESOURCE_DEFINITIONS) {
 		if (definition.key === "reactions" && actorUsesVursSystem(actor) && !actorUsesAgnosticVurs(actor)) continue;
 		const resource = resources[definition.key] && typeof resources[definition.key] === "object"
-		? resources[definition.key]
-		: {};
+			? resources[definition.key]
+			: {};
 		const regeneration = getPlayResourceRegeneration(actor, definition.key, resource);
 		if (regeneration) rows.push({ label: `${getPlayResourceShortLabel(actor, definition.key)} Regen`, modifier: regeneration });
 	}
@@ -343,30 +344,41 @@ function getPlayResourceEntries(actor) {
 		const resource = resources[definition.key] ?? {};
 		if (typeof resource !== "object") return [];
 		const defaultMax = getFullVursDefaultMax(actor, definition.key);
-		// Full VURS defaults are derived from current stats and ranks, so an old
-		// stored max must not freeze them when the actor improves.
-		
-		const baseMax = finiteResourceNumber(defaultMax ?? resource.max);
-		const maxReduction = definition.hasMaxReduction ? finiteResourceNumber(resource.maxReduction) : 0;
-		const max = Math.max(0, baseMax - maxReduction);
-		
+		const defaultMaxValue = finiteResourceNumber(defaultMax);
+		const storedMaxValue = finiteResourceNumber(resource.max);
+		const hasDerivedMax = defaultMax !== undefined && defaultMax !== null && defaultMax !== "" && Number.isFinite(Number(defaultMax));
+		const baseMax = hasDerivedMax ? defaultMaxValue : storedMaxValue;
+		const maxReductionValue = resource.maxReduction === undefined || resource.maxReduction === null || resource.maxReduction === ""
+			? 0
+			: finiteResourceNumber(resource.maxReduction);
+		const max = (() => {
+			if (resource.maxReduction !== undefined && resource.maxReduction !== null && resource.maxReduction !== "") {
+				return Math.max(0, baseMax - maxReductionValue);
+			}
+			if (storedMaxValue > 0 && (!hasDerivedMax || storedMaxValue !== baseMax)) {
+				return storedMaxValue;
+			}
+			return Math.max(0, baseMax);
+		})();
+		const maxReduction = maxReductionValue;
+
 		// BP and MP remain visible when maxReduction reduces their maximum to zero.
 		// Other resources retain the existing behavior.
 		// Hide resources with no base maximum unless a valid base maximum
 		// was reduced to zero by maxReduction.
 		if (baseMax <= 0) return [];
 		if (max <= 0 && !(definition.hasMaxReduction && maxReduction > 0)) return [];
-		
+
 		// New resources start full by default. Style Rank and Karma Points are
 		// intentionally passive/empty until the user sets them. Agnostic NPC AP
 		// and Reactions therefore start at their maximums (minimum 3 AP, 1 Reaction).
 		const initialValue = resource.value === undefined || resource.value === null || resource.value === ""
-		? (["styleRank", "karmaPoints"].includes(definition.key) ? 0 : max)
-		: finiteResourceNumber(resource.value);
+			? (["styleRank", "karmaPoints"].includes(definition.key) ? 0 : max)
+			: finiteResourceNumber(resource.value);
 		const value = Math.clamp(initialValue, 0, max);
 		const label = definition.key === "actionPoints" && !actorUsesVursSystem(actor)
-		? "Actions"
-		: definition.label;
+			? "Actions"
+			: definition.label;
 		return [{ ...definition, label, value, max, baseMax, maxReduction }];
 	});
 }
@@ -378,7 +390,7 @@ async function resetPlayResources(root, actor, button) {
 		defaultYes: false
 	});
 	if (!confirmed) return;
-	
+
 	const section = button.closest(".vurs-play-resources");
 	if (section?._vursPendingUpdates) delete section._vursPendingUpdates;
 	button.textContent = "Apply";
@@ -387,9 +399,9 @@ async function resetPlayResources(root, actor, button) {
 	try {
 		await resetOneActorPlayResources(actor);
 		renderVursPlayResources(root, actor);
-		} catch (error) {
+	} catch (error) {
 		console.error("vurs-pf2e | Failed to reset Play resources", error);
-		} finally {
+	} finally {
 		button.disabled = false;
 	}
 }
@@ -398,11 +410,15 @@ async function resetOneActorPlayResources(actor) {
 	if (!actor) return;
 	const resources = foundry.utils.getProperty(actor, PLAY_RESOURCES_PATH) ?? {};
 	const updates = {};
+
 	for (const resourceKey of ["actionPoints", "staminaPoints", "tacticPoints", "reactions"]) {
 		const resource = resources[resourceKey] ?? {};
-		const baseMax = finiteResourceNumber(getFullVursDefaultMax(actor, resourceKey) ?? resource.max);
+
+		const defaultMax = finiteResourceNumber(getFullVursDefaultMax(actor, resourceKey));
+		const baseMax = Number.isFinite(defaultMax) && defaultMax > 0 ? defaultMax : finiteResourceNumber(resource.max);
 		updates[`${PLAY_RESOURCES_PATH}.${resourceKey}.value`] = Math.max(0, baseMax);
 	}
+
 	updates[`${PLAY_RESOURCES_PATH}.styleRank.value`] = 0;
 	updates[`${PLAY_RESOURCES_PATH}.karmaPoints.value`] = 0;
 	await actor.update(updates, { render: false });
@@ -414,7 +430,7 @@ async function resetEncounterPlayResources(combat) {
 		if (!actorUsesVursSystem(actor)) continue;
 		try {
 			await resetOneActorPlayResources(actor);
-			} catch (error) {
+		} catch (error) {
 			console.error(`vurs-pf2e | Failed to reset Play resources for ${actor.name} at encounter transition`, error);
 		}
 	}
@@ -449,26 +465,26 @@ function getFullVursDefaultMax(actor, resourceKey) {
 	// NPC skill modifiers use PF2e's level-scaled modifier representation in
 	// this module's NPC resource formulas; characters continue to use ranks.
 	const skillRank = slug => isNpcActor(actor)
-    ? Math.floor(finiteResourceNumber(system?.skills?.[slug]?.mod) / 7)
-    : finiteResourceNumber(system?.skills?.[slug]?.rank);
-	
+		? Math.floor(finiteResourceNumber(system?.skills?.[slug]?.mod) / 7)
+		: finiteResourceNumber(system?.skills?.[slug]?.rank);
+
 	switch (resourceKey) {
 		case "actionPoints":
-		return Math.max(agnosticNpc ? 3 : 2, 2 + Math.min(attributeModifier("dex"), skillRank("mobility")));
+			return Math.max(agnosticNpc ? 3 : 2, 2 + Math.min(attributeModifier("dex"), skillRank("mobility")));
 		case "staminaPoints":
-		return Math.max(0, Math.min(attributeModifier("str"), skillRank("athletics")));
+			return Math.max(0, Math.min(attributeModifier("str"), skillRank("athletics")));
 		case "tacticPoints":
-		return Math.max(0, Math.min(attributeModifier("int"), skillRank("strategy")));
+			return Math.max(0, Math.min(attributeModifier("int"), skillRank("strategy")));
 		case "styleRank":
-		return Math.min(attributeModifier("cha"), skillRank("coolness")) > 0 ? 5 : 0;
+			return Math.min(attributeModifier("cha"), skillRank("coolness")) > 0 ? 5 : 0;
 		case "karmaPoints":
-		return Math.max(0, Math.min(attributeModifier("wis"), skillRank("soul")));
+			return Math.max(0, Math.min(attributeModifier("wis"), skillRank("soul")));
 		case "budgetPoints":
-		return Math.max(0, 5 + finiteResourceNumber(system?.abilities?.con?.mod) + 2 * skillRank("acquisition"));
+			return Math.max(0, 5 + finiteResourceNumber(system?.abilities?.con?.mod) + 2 * skillRank("acquisition"));
 		case "magicPoints":
-		return getMagicPointContributions(actor).reduce((total, contribution) => total + contribution.value, 0);
+			return getMagicPointContributions(actor).reduce((total, contribution) => total + contribution.value, 0);
 		default:
-		return undefined;
+			return undefined;
 	}
 }
 
@@ -494,7 +510,7 @@ async function regenerateActorAtTurnStart(actor) {
 		const current = finiteResourceNumber(resource.value);
 		updates[`${PLAY_RESOURCES_PATH}.${definition.key}.value`] = Math.clamp(current + regeneration, 0, entry.max);
 	}
-	
+
 	const hp = actor.system?.attributes?.hp;
 	const hpRegeneration = finiteResourceNumber(foundry.utils.getProperty(actor, "flags.vurs.hp.regeneration"));
 	if (hp && hpRegeneration) {
@@ -532,14 +548,14 @@ function createPlayResourceRow(resource, actor) {
 	if (resource.key === "magicPoints") row.classList.add("magic-points");
 	if (resource.key === "budgetPoints") {
 		row.style.setProperty("--vurs-resource-frame", resourceFrameDataUrl("#f1c40f"));
-		} else if (resource.key === "magicPoints") {
+	} else if (resource.key === "magicPoints") {
 		row.style.setProperty("--vurs-resource-frame", resourceFrameDataUrl("#3498db"));
 	}
-	
+
 	const value = document.createElement("span");
 	value.className = "value";
 	value.textContent = `${formatResourceNumber(resource.value)} / ${formatResourceNumber(resource.max)}`;
-	
+
 	if (resource.icon) {
 		const control = document.createElement("button");
 		control.type = "button";
@@ -565,7 +581,7 @@ function createPlayResourceRow(resource, actor) {
 			void adjustPlayResource(actor, resource, -1, control);
 		});
 		row.append(control);
-		
+
 		// All icon resources get the same direct-edit field as BP/MP, so a value
 		// can be entered in one operation instead of clicking repeatedly.
 		const editFields = document.createElement("span");
@@ -577,7 +593,7 @@ function createPlayResourceRow(resource, actor) {
 		maximum.setAttribute("aria-label", `${resource.label} maximum`);
 		editFields.append(currentValue, " / ", maximum);
 		row.append(editFields);
-		} else if (resource.key === "budgetPoints") {
+	} else if (resource.key === "budgetPoints") {
 		const frame = document.createElement("div");
 		frame.className = "vurs-play-resource-frame";
 		const label = document.createElement("span");
@@ -600,7 +616,7 @@ function createPlayResourceRow(resource, actor) {
 		fields.append(...createEditableResourceFields(resource, actor));
 		frame.append(bar, fields);
 		row.append(frame);
-		} else if (resource.key === "magicPoints") {
+	} else if (resource.key === "magicPoints") {
 		const frame = document.createElement("div");
 		frame.className = "vurs-play-resource-frame";
 		const label = document.createElement("span");
@@ -608,7 +624,7 @@ function createPlayResourceRow(resource, actor) {
 		label.textContent = "MP";
 		label.title = resource.label;
 		frame.append(label);
-		
+
 		const bar = document.createElement("div");
 		bar.className = "vurs-play-resource-segments";
 		bar.setAttribute("role", "meter");
@@ -627,7 +643,7 @@ function createPlayResourceRow(resource, actor) {
 			star.style.setProperty("--segment-color", "#f1c40f");
 			star.title = resource.label;
 			bar.append(star);
-			} else {
+		} else {
 			for (const segmentData of getMagicPointSegments(actor, resource)) {
 				for (let index = 0; index < Math.max(0, Math.floor(segmentData.size)); index += 1) {
 					const star = document.createElement("i");
@@ -645,20 +661,20 @@ function createPlayResourceRow(resource, actor) {
 		frame.append(bar, fields);
 		row.append(frame);
 	}
-	
+
 	if (resource.hasMaxReduction && resource.maxReduction !== 0 && resource.key !== "budgetPoints") {
 		const reduction = document.createElement("span");
 		reduction.className = "vurs-play-resource-max-reduction";
 		if (resource.maxReduction < 0) reduction.classList.add("is-increase");
 		const adjustment = resource.maxReduction > 0
-		? `-${formatResourceNumber(resource.maxReduction)}`
-		: `+${formatResourceNumber(Math.abs(resource.maxReduction))}`;
+			? `-${formatResourceNumber(resource.maxReduction)}`
+			: `+${formatResourceNumber(Math.abs(resource.maxReduction))}`;
 		reduction.textContent = adjustment;
 		reduction.setAttribute("aria-label", `Maximum reduced by ${formatResourceNumber(resource.maxReduction)}`);
 		reduction.title = `Maximum reduced by ${formatResourceNumber(resource.maxReduction)}`;
 		value.append(" ", reduction);
 	}
-	
+
 	if (resource.segmented && resource.key !== "magicPoints") {
 		const bar = document.createElement("div");
 		bar.className = "vurs-play-resource-segments";
@@ -678,7 +694,7 @@ function createPlayResourceRow(resource, actor) {
 		}
 		row.append(bar);
 	}
-	
+
 	return row;
 }
 
@@ -687,8 +703,8 @@ function getMagicPointContributions(actor) {
 	const skills = actor.system?.skills ?? {};
 	const modifier = slug => finiteResourceNumber(abilities[slug]?.mod);
 	const rank = slug => isNpcActor(actor)
-    ? Math.floor(finiteResourceNumber(skills[slug]?.mod) / 7)
-    : finiteResourceNumber(skills[slug]?.rank);
+		? Math.floor(finiteResourceNumber(skills[slug]?.mod) / 7)
+		: finiteResourceNumber(skills[slug]?.rank);
 	const localize = (key, fallback) => {
 		const label = game.i18n.localize(key);
 		return label && label !== key ? label : fallback;
@@ -726,7 +742,7 @@ function getMagicPointSegments(actor, resource) {
 	const segments = [];
 	let remaining = remainingMaximum;
 	let start = 0;
-	
+
 	for (const contribution of getMagicPointContributions(actor)) {
 		const capacity = Math.min(remaining, Math.max(0, contribution.value));
 		let contributionRemaining = capacity;
@@ -739,7 +755,7 @@ function getMagicPointSegments(actor, resource) {
 		remaining -= capacity;
 		if (remaining <= 0 || segments.length >= 200) break;
 	}
-	
+
 	// If the editable maximum exceeds the formula, retain the extra capacity
 	// with the yellow overflow color instead of leaving a gap in the bar.
 	while (remaining > 0 && segments.length < 200) {
@@ -748,7 +764,7 @@ function getMagicPointSegments(actor, resource) {
 		start += size;
 		remaining -= size;
 	}
-	
+
 	if (!segments.length) segments.push({ start: 0, size: 0, color: "#f1c40f", label: "Magic Points" });
 	return segments;
 }
@@ -761,7 +777,7 @@ function addResourceWheelEditing(input, getMaximum) {
 	input.addEventListener("wheel", event => {
 		event.preventDefault();
 		if (input.disabled || input.dataset.updating) return;
-		
+
 		// Normalize trackpads and mouse wheels while preserving multi-notch input.
 		const delta = Math.sign(event.deltaY) * Math.max(1, Math.round(Math.abs(event.deltaY) / 100));
 		pendingDelta += -delta;
@@ -823,7 +839,7 @@ function createEditableResourceFields(resource, actor) {
 		void savePlayResourceValue(actor, resource.key, next, currentValue);
 	});
 	addResourceWheelEditing(currentValue, () => resource.max);
-	
+
 	const maximum = document.createElement("input");
 	maximum.className = "vurs-play-resource-edit";
 	maximum.type = "number";
@@ -841,7 +857,7 @@ function createEditableResourceFields(resource, actor) {
 		void savePlayResourceFlag(actor, `${resource.key}.maxReduction`, maxReduction, maximum);
 	});
 	addResourceWheelEditing(maximum, () => Number.POSITIVE_INFINITY);
-	
+
 	const maximumDisplay = document.createElement("span");
 	maximumDisplay.className = "vurs-play-resource-maximum";
 	maximumDisplay.append(maximum);
@@ -850,12 +866,12 @@ function createEditableResourceFields(resource, actor) {
 		delta.className = "vurs-play-resource-max-reduction-delta";
 		if (resource.maxReduction < 0) delta.classList.add("is-increase");
 		delta.textContent = resource.maxReduction > 0
-		? `-${formatResourceNumber(resource.maxReduction)}`
-		: `+${formatResourceNumber(Math.abs(resource.maxReduction))}`;
+			? `-${formatResourceNumber(resource.maxReduction)}`
+			: `+${formatResourceNumber(Math.abs(resource.maxReduction))}`;
 		delta.title = `Maximum adjustment: ${delta.textContent}`;
 		maximumDisplay.append(delta);
 	}
-	
+
 	return [currentValue, " / ", maximumDisplay];
 }
 
@@ -932,7 +948,7 @@ async function savePlayResourceFlags(actor, updates, control) {
 	const row = control?.closest?.("li.vurs-play-resource");
 	const section = row?.closest?.(".vurs-play-resources");
 	if (!section || !row) return;
-	
+
 	// Queue edits locally; nothing is persisted until Apply is clicked.
 	const pending = section._vursPendingUpdates ?? (section._vursPendingUpdates = {});
 	Object.assign(pending, updates);
@@ -985,7 +1001,7 @@ async function savePlayResourceFlags(actor, updates, control) {
 					coin.classList.toggle("is-empty", index >= resource.value);
 				});
 			}
-			} else if (resourceKey === "magicPoints") {
+		} else if (resourceKey === "magicPoints") {
 			const bar = row.querySelector(".vurs-play-resource-segments");
 			if (bar) {
 				bar.setAttribute("aria-valuemax", String(resource.max));
@@ -998,7 +1014,7 @@ async function savePlayResourceFlags(actor, updates, control) {
 						star.classList.toggle("fa-solid", resource.value > 0);
 						star.classList.toggle("fa-regular", resource.value <= 0);
 					}
-					} else {
+				} else {
 					bar.querySelectorAll(".vurs-mp-star").forEach((star, index) => {
 						const filled = index < resource.value;
 						star.classList.toggle("is-filled", filled);
@@ -1038,10 +1054,10 @@ async function applyPlayResourceChanges(root, actor, section, button) {
 		});
 		delete section._vursPendingUpdates;
 		renderVursPlayResources(root, actor);
-		} catch (error) {
+	} catch (error) {
 		console.error("vurs-pf2e | Failed to apply Play resource changes", error);
 		button.disabled = false;
-		} finally {
+	} finally {
 		if (section.isConnected) {
 			const currentApply = section.querySelector(".vurs-play-apply");
 			if (currentApply) {
@@ -1051,6 +1067,23 @@ async function applyPlayResourceChanges(root, actor, section, button) {
 			}
 		}
 	}
+}
+
+async function ensurePlayResourceMaxDefaults(actor) {
+	if (!actor) return;
+	const updates = {};
+	for (const definition of PLAY_RESOURCE_DEFINITIONS) {
+		const resource = foundry.utils.getProperty(actor, `${PLAY_RESOURCES_PATH}.${definition.key}`) ?? {};
+		if (typeof resource !== "object") continue;
+		const defaultMax = getFullVursDefaultMax(actor, definition.key);
+		if (resource.max === undefined || resource.max === null || resource.max === "") {
+			updates[`${PLAY_RESOURCES_PATH}.${definition.key}.max`] = finiteResourceNumber(defaultMax);
+		}
+		if ((resource.value === undefined || resource.value === null || resource.value === "") && Number.isFinite(finiteResourceNumber(defaultMax))) {
+			updates[`${PLAY_RESOURCES_PATH}.${definition.key}.value`] = Math.max(0, finiteResourceNumber(defaultMax));
+		}
+	}
+	if (Object.keys(updates).length) await actor.update(updates, { render: false });
 }
 
 function getCurrentPlayResourceControl(section, resourceKey) {
@@ -1077,14 +1110,14 @@ function refreshPlayResourceRow(control, actor, pendingUpdates = null, pending =
 	const row = control?.closest?.("li.vurs-play-resource");
 	const section = row?.closest?.(".vurs-play-resources");
 	if (!row || !section || !row.isConnected) return;
-	
+
 	const resourceKey = row.dataset.resource;
 	const resource = getPlayResourceEntries(actor).find(entry => entry.key === resourceKey);
 	if (!resource) {
 		row.remove();
 		return;
 	}
-	
+
 	// Apply the pending value to the UI before awaiting Foundry's actor update.
 	// This is a display-only optimistic update; actor data is still persisted by
 	// actor.update() and the row is reconciled from saved data afterward.
@@ -1100,7 +1133,7 @@ function refreshPlayResourceRow(control, actor, pendingUpdates = null, pending =
 			}
 		}
 	}
-	
+
 	const replacement = createPlayResourceRow(resource, actor);
 	if (pending) {
 		const replacementControl = replacement.querySelector(".vurs-play-resource-control, input");
@@ -1164,8 +1197,8 @@ function finiteResourceNumber(value) {
 
 function renderStyleRankOverlay(root, actor, rankOverride = undefined) {
 	const sheet = root.matches(".actor.sheet.character")
-    ? root
-    : root.closest(".actor.sheet.character") ?? root.querySelector(".actor.sheet.character");
+		? root
+		: root.closest(".actor.sheet.character") ?? root.querySelector(".actor.sheet.character");
 	if (!sheet) return;
 	const host = sheet.querySelector(".window-content, .application-content") ?? sheet;
 	host.classList.add("vurs-style-rank-host");
@@ -1182,7 +1215,7 @@ function renderStyleRankOverlay(root, actor, rankOverride = undefined) {
 		styleRankPhraseCache.delete(actor.uuid ?? actor.id ?? "actor");
 		return;
 	}
-	
+
 	const overlay = existing ?? document.createElement("aside");
 	overlay.className = `vurs-style-rank-overlay rank-${rank}${rank === 5 ? " rank-s" : ""}`;
 	const rankCode = [null, "1D", "2C", "3B", "4A", "5S"][rank];

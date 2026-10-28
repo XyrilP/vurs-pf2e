@@ -155,14 +155,14 @@ Hooks.on("renderApplicationV2", (app, element, context, options) => {
 			context?.actor,
 			options?.actor
 		].find(candidate => isSupportedVursActor(candidate)) ??
-		game.actors?.contents?.find(
-			candidate =>
-			candidate.apps?.[app?.id] === app &&
-			isSupportedVursActor(candidate)
-		);
-		
+			game.actors?.contents?.find(
+				candidate =>
+					candidate.apps?.[app?.id] === app &&
+					isSupportedVursActor(candidate)
+			);
+
 		// Do not render Play Resources in the generic ApplicationV2 hook.
-		
+
 		if (VURS_MAIN_ATTRIBUTE_ENABLED) {
 			addMainAttributeChoice(app, root, context, options);
 		}
@@ -186,17 +186,19 @@ Hooks.on("renderActorSheet", (app, html) => {
 });
 Hooks.on("renderItemSheet", (app, html) => addVursAbilityCostField(app, html));
 Hooks.on("preUpdateItem", (item, changes) => {
-	const flatValue = changes?.["flags.vurs.playCost"];
-	const nestedValue = changes?.flags?.vurs?.playCost;
-	const value = flatValue ?? nestedValue;
+	const hasFlatPlayCost = Object.hasOwn(changes ?? {}, "flags.vurs.playCost");
+	const hasNestedPlayCost = !!changes?.flags?.vurs && Object.hasOwn(changes.flags.vurs, "playCost");
+	const flatValue = hasFlatPlayCost ? changes["flags.vurs.playCost"] : undefined;
+	const nestedValue = hasNestedPlayCost ? changes.flags.vurs.playCost : undefined;
+	const value = flatValue !== undefined ? flatValue : nestedValue;
 	if (value === undefined) return;
 	const normalizedValue = String(value ?? "")
-    .split(";")
-    .map(entry => entry.trim())
-    .filter(Boolean)
-    .join("; ");
+		.split(";")
+		.map(entry => entry.trim())
+		.filter(Boolean)
+		.join("; ");
 	if (normalizedValue) {
-		if (flatValue !== undefined) changes["flags.vurs.playCost"] = normalizedValue;
+		if (hasFlatPlayCost) changes["flags.vurs.playCost"] = normalizedValue;
 		else changes.flags.vurs.playCost = normalizedValue;
 		return;
 	}
@@ -206,24 +208,43 @@ Hooks.on("preUpdateItem", (item, changes) => {
 	changes.flags.vurs ??= {};
 	changes.flags.vurs["-=playCost"] = null;
 });
+Hooks.on("updateItem", (item, changes, options, userId) => {
+	const parentItem = item?.parentUuid ? fromUuidSync(item.parentUuid) : null;
+	if (!parentItem || parentItem === item) return;
+	const hasPlayCostChange = !!changes && (
+		Object.hasOwn(changes, "flags.vurs.playCost") ||
+		(!!changes?.flags?.vurs && Object.hasOwn(changes.flags.vurs, "playCost"))
+	);
+	const playCost = hasPlayCostChange
+		? foundry.utils.getProperty(changes, "flags.vurs.playCost")
+		: foundry.utils.getProperty(item, "flags.vurs.playCost");
+	if (playCost === undefined) return;
+	const targetValue = String(playCost ?? "").split(";").map(entry => entry.trim()).filter(Boolean).join("; ");
+	const currentValue = String(foundry.utils.getProperty(parentItem, "flags.vurs.playCost") ?? "");
+	if (targetValue === currentValue) return;
+	const update = targetValue
+		? { "flags.vurs.playCost": targetValue }
+		: { "flags.vurs.-=playCost": null };
+	void parentItem.update(update, { render: false });
+});
 Hooks.on("renderApplication", (app, html) => applyActorSheetPresentation(app, html));
 
 Hooks.on("updateActor", (actor, changes, options = {}) => {
 	// Play-resource changes are persisted Actor updates. Foundry broadcasts
 	// them to other clients, so the GM and other clients must refresh too.
 	if (!isSupportedVursActor(actor)) return;
-	
+
 	for (const app of Object.values(actor.apps ?? {})) {
 		const root = app?.element instanceof HTMLElement
-		? app.element
-		: app?.element?.[0];
-		
+			? app.element
+			: app?.element?.[0];
+
 		// Refresh only applications already identified as VURS actor sheets.
 		if (
 			root?.querySelector?.(
 				".vurs-play-resources, [data-vurs-play-resources]"
 			)
-			) {
+		) {
 			requestAnimationFrame(() => {
 				renderVursPlayResources(root, actor);
 				addVursMaxHpReductionControl(root, actor);
@@ -235,7 +256,7 @@ Hooks.on("updateActor", (actor, changes, options = {}) => {
 Hooks.on("renderChatMessage", (message, html) => {
 	const root = html instanceof HTMLElement ? html : html?.[0];
 	const actor = message?.speaker?.actor ? game.actors?.get(message.speaker.actor)
-    : message?.actor ?? null;
+		: message?.actor ?? null;
 	if (root && actor) replaceVursPlayResourceTokens(root, actor);
 	const originUuid = message?.flags?.pf2e?.origin?.uuid ?? message?.flags?.pf2e?.origin?.itemUuid;
 	const originItem = message?.item ?? (originUuid ? fromUuidSync(originUuid) : null);
@@ -253,13 +274,13 @@ Hooks.on("renderChatMessage", (message, html) => {
 		const actor = fromUuidSync(appliedDamage.uuid);
 		if (!actor) return;
 		const targetReduction = Number.isFinite(Number(appliedDamage.vursNegativeHp?.reduction))
-		? Number(appliedDamage.vursNegativeHp.reduction)
-		: getVursMaxHpReduction(actor) + Number(reductionUpdate.value || 0);
+			? Number(appliedDamage.vursNegativeHp.reduction)
+			: getVursMaxHpReduction(actor) + Number(reductionUpdate.value || 0);
 		// PF2e handles this action through a delegated asynchronous click handler.
 		// Reassert the pre-damage reduction after that handler finishes, including
 		// cases where its Actor.undoDamage update omits custom flag paths.
 		setTimeout(() => actor.update({ "flags.vurs.hp.maxReduction": targetReduction }, { render: true })
-		.catch(error => console.error(`${MODULE_ID} | Failed to restore HP reduction after damage revert`, error)), 150);
+			.catch(error => console.error(`${MODULE_ID} | Failed to restore HP reduction after damage revert`, error)), 150);
 	});
 });
 if (VURS_MAIN_ATTRIBUTE_ENABLED) {
@@ -314,66 +335,84 @@ function replaceVursPlayCostTokensOnActorSheet(root, actor) {
 function addVursAbilityCostField(app, element) {
 	const item = app?.item ?? app?.object;
 	if (!item || !["action", "feat"].includes(item.type)) return;
+	const parentItem = item.parentUuid ? fromUuidSync(item.parentUuid) : null;
+	if (parentItem && parentItem !== item) {
+		const parentValue = foundry.utils.getProperty(parentItem, "flags.vurs.playCost");
+		if (parentValue !== undefined && parentValue !== foundry.utils.getProperty(item, "flags.vurs.playCost")) {
+			item.flags ??= {};
+			item.flags.vurs ??= {};
+			item.flags.vurs.playCost = parentValue;
+		}
+	}
+	const sourceItem = item.parentUuid ? (parentItem ?? item) : item;
 	const root = element instanceof HTMLElement ? element : element?.[0];
-	const playCost = resolveVursPlayCostRolls(String(foundry.utils.getProperty(item, "flags.vurs.playCost") ?? ""), item.actor ?? item.parent?.actor)
-    .split("; ")
-    .map(entry => entry.trim())
-    .filter(Boolean)
-    .join("; ");
+	const currentPlayCost = String(foundry.utils.getProperty(sourceItem, "flags.vurs.playCost") ?? "");
+	const playCost = resolveVursPlayCostRolls(currentPlayCost, item.actor ?? item.parent?.actor)
+		.split("; ")
+		.map(entry => entry.trim())
+		.filter(Boolean)
+		.join("; ");
 	const description = root?.querySelector(".tab.description .editor-content, .tab.description");
 	if (description && !description.contains(document.activeElement)) {
 		if (playCost) replaceVursPlayCostToken(description, playCost);
 		replaceVursPlayResourceTokens(description, item.actor ?? item.parent?.actor);
 	}
-	if (playCost) {
-		const details = root?.querySelector(".sheet-header .details");
-		const existingGlyph = root?.querySelector(".sheet-header .action-glyph, .sheet-header .action-cost");
-		if (details && !details.querySelector(".vurs-play-cost-glyph") && !root?.querySelector(".sheet-header .vurs-play-cost-glyph")) {
-			const glyph = document.createElement("div");
-			glyph.className = "vurs-play-cost-glyph";
-			playCost.split("; ").map(entry => entry.trim()).filter(Boolean).forEach((entry, index) => {
-				if (index) {
-					const separator = document.createElement("div");
-					separator.className = "vurs-play-cost-separator";
-					separator.textContent = "; ";
-					glyph.append(separator);
-				}
-				const group = document.createElement("div");
-				group.className = "vurs-play-cost-glyph-group";
-				group.title = entry;
-				appendVursPlayCostIcons(group, entry);
-				glyph.append(group);
-			});
-			glyph.title = playCost;
-			if (existingGlyph) existingGlyph.replaceWith(glyph);
-			else details.insertBefore(glyph, details.querySelector(".level") ?? null);
-		}
+	const details = root?.querySelector(".sheet-header .details");
+	const existingGlyph = root?.querySelector(".sheet-header .action-glyph, .sheet-header .action-cost, .sheet-header .vurs-play-cost-glyph");
+	if (details) {
+		const staleGlyph = details.querySelector(".vurs-play-cost-glyph");
+		if (!playCost && staleGlyph) staleGlyph.remove();
+	}
+	if (playCost && details && !details.querySelector(".vurs-play-cost-glyph") && !root?.querySelector(".sheet-header .vurs-play-cost-glyph")) {
+		const glyph = document.createElement("div");
+		glyph.className = "vurs-play-cost-glyph";
+		playCost.split("; ").map(entry => entry.trim()).filter(Boolean).forEach((entry, index) => {
+			if (index) {
+				const separator = document.createElement("div");
+				separator.className = "vurs-play-cost-separator";
+				separator.textContent = "; ";
+				glyph.append(separator);
+			}
+			const group = document.createElement("div");
+			group.className = "vurs-play-cost-glyph-group";
+			group.title = entry;
+			appendVursPlayCostIcons(group, entry);
+			glyph.append(group);
+		});
+		glyph.title = playCost;
+		if (existingGlyph && !existingGlyph.classList.contains("vurs-play-cost-glyph")) existingGlyph.replaceWith(glyph);
+		else details.insertBefore(glyph, details.querySelector(".level") ?? null);
 	}
 	const basics = root?.querySelector(".tab.details fieldset.basics, .tab.details, .tab[data-tab='details']");
-	if (!basics || basics.querySelector("[data-vurs-cost-field]")) return;
-	
-	const group = document.createElement("div");
-	group.className = "form-group";
-	group.dataset.vursCostField = "true";
-	const label = document.createElement("label");
-	label.textContent = "Play Cost";
-	label.htmlFor = `${app.id ?? item.id}-vurs-cost`;
-	const fields = document.createElement("div");
-	fields.className = "form-fields";
-	const input = document.createElement("input");
-	input.type = "text";
-	input.id = label.htmlFor;
-	input.name = "flags.vurs.playCost";
-	input.value = foundry.utils.getProperty(item, "flags.vurs.playCost") ?? "";
-	input.placeholder = "1 AP; 1 AP and SP; 1 AP, TP or Reaction";
-	fields.append(input);
-	group.append(label, fields);
-	const actionGroup = [...basics.querySelectorAll(".form-group")].find(group =>
-		/actions/i.test(group.querySelector("label")?.textContent ?? "") ||
-		group.querySelector('select[name$="actionType"], select[name$="actionType.value"], input[name$="actionType"]')
-	);
-	if (actionGroup) actionGroup.insertAdjacentElement("afterend", group);
-	else basics.append(group);
+	if (!basics) return;
+	let group = basics.querySelector("[data-vurs-cost-field]");
+	if (!group) {
+		group = document.createElement("div");
+		group.className = "form-group";
+		group.dataset.vursCostField = "true";
+		const label = document.createElement("label");
+		label.textContent = "Play Cost";
+		label.htmlFor = `${app.id ?? item.id}-vurs-cost`;
+		const fields = document.createElement("div");
+		fields.className = "form-fields";
+		const input = document.createElement("input");
+		input.type = "text";
+		input.id = label.htmlFor;
+		input.name = "flags.vurs.playCost";
+		input.value = currentPlayCost;
+		input.placeholder = "1 AP; 1 AP and SP; 1 AP, TP or Reaction";
+		fields.append(input);
+		group.append(label, fields);
+		const actionGroup = [...basics.querySelectorAll(".form-group")].find(candidate =>
+			/actions/i.test(candidate.querySelector("label")?.textContent ?? "") ||
+			candidate.querySelector('select[name$="actionType"], select[name$="actionType.value"], input[name$="actionType"]')
+		);
+		if (actionGroup) actionGroup.insertAdjacentElement("afterend", group);
+		else basics.append(group);
+	} else {
+		const input = group.querySelector("input[name='flags.vurs.playCost']");
+		if (input) input.value = currentPlayCost;
+	}
 }
 
 function replaceVursPlayCostToken(description, playCost) {
@@ -418,7 +457,7 @@ function replaceVursPlayResourceTokens(description, actor) {
 	};
 	for (const node of nodes) {
 		const resolvedText = node.nodeValue.replace(/VURS\.PlayResource\.\[\[(.+?)\]\](AP|SP|TP|BP|MP|KP|SR)/gi,
-		(match, formula, resource) => `VURS.PlayResource.${resolveVursPlayCostRolls(`[[${formula}]]`, actor)}${resource}`);
+			(match, formula, resource) => `VURS.PlayResource.${resolveVursPlayCostRolls(`[[${formula}]]`, actor)}${resource}`);
 		if (resolvedText !== node.nodeValue) node.nodeValue = resolvedText;
 		const matches = [...node.nodeValue.matchAll(/VURS\.PlayResource\.((?:(\d+)|(One|Two|Three|Longer))?(AP|SP|TP|BP|MP|KP|SR|actionPoints|staminaPoints|tacticPoints|budgetPoints|magicPoints|karmaPoints|styleRank|reactions|reaction|free))/gi)];
 		if (!matches.length) continue;
@@ -462,7 +501,7 @@ function resolveVursPlayCostRolls(playCost, actor) {
 			const roll = RollClass.create(formula, rollData);
 			roll.evaluate({ async: false });
 			return String(Number.isFinite(roll.total) ? roll.total : 0);
-			} catch (error) {
+		} catch (error) {
 			console.warn(`${MODULE_ID} | Failed to evaluate Play Cost inline roll`, formula, error);
 			return match;
 		}
@@ -495,8 +534,8 @@ function appendVursPlayCostIcons(container, playCost) {
 			const stacks = document.createElement("span");
 			stacks.className = `vurs-play-cost-resource-stacks vurs-play-cost-${resource.toLowerCase()}-stacks`;
 			const iconTypes = resource === "MP"
-			? [...Array(Math.floor(amount / 5)).fill("mp-diamond-star-5"), ...Array(amount % 5).fill("mp-diamond-arm")]
-			: Array(amount).fill("coin");
+				? [...Array(Math.floor(amount / 5)).fill("mp-diamond-star-5"), ...Array(amount % 5).fill("mp-diamond-arm")]
+				: Array(amount).fill("coin");
 			const iconCount = iconTypes.length;
 			const stackSize = resource === "BP" ? 5 : 2;
 			for (let offset = 0; offset < iconCount; offset += stackSize) {
@@ -551,8 +590,8 @@ function appendVursPlayCostIcons(container, playCost) {
 			continue;
 		}
 		const iconName = amount === 1 ? `One${resource}`
-		: amount === 2 ? `Two${resource}`
-        : amount === 3 ? `Three${resource}` : `Longer${resource}`;
+			: amount === 2 ? `Two${resource}`
+				: amount === 3 ? `Three${resource}` : `Longer${resource}`;
 		const icon = document.createElement("img");
 		icon.src = `modules/vurs-pf2e/assets/custom-icons/resource-icons/${iconName}.svg`;
 		icon.alt = entry;
@@ -569,7 +608,7 @@ function allowNegativeHpEntry(root, actor) {
 	const effectiveMax = Number(hp?.max);
 	const maximumNegative = Math.max(0, Number.isFinite(effectiveMax) ? effectiveMax : 0);
 	const isCurrentHpInput = target => target instanceof HTMLInputElement &&
-    target.matches('input[name$="attributes.hp.value"], input[data-property$="attributes.hp.value"], input[name$="hp.value"]');
+		target.matches('input[name$="attributes.hp.value"], input[data-property$="attributes.hp.value"], input[name$="hp.value"]');
 	if (!root.dataset.vursNegativeHpDelegation) {
 		root.dataset.vursNegativeHpDelegation = "true";
 		// Catch these events during capture at the sheet boundary, before PF2e's
@@ -629,7 +668,7 @@ function allowNegativeHpEntry(root, actor) {
 		}
 		return;
 	}
-	
+
 	// Some PF2e sheet layouts render current HP as text instead of an input.
 	// Make that value editable in place so entering a negative number reaches
 	// the actor update wrapper that converts the overflow into max HP loss.
@@ -653,7 +692,7 @@ function allowNegativeHpEntry(root, actor) {
 		if (valueElement) break;
 	}
 	if (!valueElement || valueElement.classList.contains("vurs-negative-hp-edit")) return;
-	
+
 	valueElement.classList.add("vurs-negative-hp-edit");
 	valueElement.contentEditable = "true";
 	valueElement.spellcheck = false;
@@ -690,7 +729,7 @@ function allowNegativeHpEntry(root, actor) {
 		try {
 			if (value < 0) await applyVursNegativeHp(actor, -value);
 			else await actor.update({ "system.attributes.hp.value": value });
-			} catch (error) {
+		} catch (error) {
 			console.error(`${MODULE_ID} | Failed to update current HP`, error);
 			ui.notifications?.error("Could not update current HP.");
 			valueElement.textContent = String(actor.system?.attributes?.hp?.value ?? 0);
@@ -700,7 +739,7 @@ function allowNegativeHpEntry(root, actor) {
 		if (event.key === "Enter") {
 			event.preventDefault();
 			valueElement.blur();
-			} else if (event.key === "Escape") {
+		} else if (event.key === "Escape") {
 			event.preventDefault();
 			cancelEdit = true;
 			valueElement.textContent = String(actor.system?.attributes?.hp?.value ?? 0);
@@ -726,7 +765,7 @@ function addVursMaxHpReductionControl(root, actor, retries = 4) {
 	if (!actorUsesVursSystem(actor) || root.querySelector(".vurs-max-hp-edit")) return;
 	const hp = actor.system?.attributes?.hp;
 	if (!Number.isFinite(hp?.max)) return;
-	
+
 	const maxHpLabels = new Set([
 		"MAX HP",
 		"MAXIMUM HP",
@@ -750,7 +789,7 @@ function addVursMaxHpReductionControl(root, actor, retries = 4) {
 		if (retries > 0 && root.isConnected) requestAnimationFrame(() => addVursMaxHpReductionControl(root, actor, retries - 1));
 		return;
 	}
-	
+
 	const currentAdjustment = getVursMaxHpReduction(actor);
 	const valueEditor = document.createElement("span");
 	valueEditor.className = "vurs-max-hp-edit";
@@ -771,13 +810,13 @@ function addVursMaxHpReductionControl(root, actor, retries = 4) {
 	indicator.textContent = formatAdjustment(currentAdjustment);
 	indicator.style.cssText = "position:absolute;top:auto;left:auto;right:-0.35em;bottom:-0.55em;display:block;width:2.2em;padding:0;color:inherit;background:transparent;border:0;border-radius:0;font:inherit;font-size:0.55em;line-height:1.3;text-align:right;white-space:nowrap;z-index:1;pointer-events:none;";
 	valueElement.append(indicator);
-	
+
 	const updateEditIndicator = value => {
 		const effectiveMax = Number(actor.system?.attributes?.hp?.max);
 		const preparedBaseMax = Number(actor.system?.attributes?.hp?.totalModifier);
 		const baseMax = Math.max(0, Number.isFinite(preparedBaseMax)
 			? preparedBaseMax
-		: (Number.isFinite(effectiveMax) ? effectiveMax : hp.max) + currentAdjustment);
+			: (Number.isFinite(effectiveMax) ? effectiveMax : hp.max) + currentAdjustment);
 		const desiredMax = Math.max(0, Number.isFinite(value) ? Math.trunc(value) : effectiveMax || hp.max);
 		const adjustment = baseMax - desiredMax;
 		indicator.textContent = formatAdjustment(adjustment);
@@ -785,11 +824,11 @@ function addVursMaxHpReductionControl(root, actor, retries = 4) {
 		indicator.style.color = adjustment > 0 ? "#ff3b3b" : "inherit";
 		indicator.style.webkitTextStroke = adjustment > 0 ? "0.6px #1a0d0d" : "0";
 		indicator.style.textShadow = adjustment > 0
-		? "-1px -1px 0 #1a0d0d, 1px -1px 0 #1a0d0d, -1px 1px 0 #1a0d0d, 1px 1px 0 #1a0d0d"
-		: "none";
+			? "-1px -1px 0 #1a0d0d, 1px -1px 0 #1a0d0d, -1px 1px 0 #1a0d0d, 1px 1px 0 #1a0d0d"
+			: "none";
 	};
 	updateEditIndicator(Number(hp.max));
-	
+
 	const showMaximum = () => {
 		const effectiveMax = Number(actor.system?.attributes?.hp?.max);
 		if (Number.isFinite(effectiveMax)) {
@@ -840,7 +879,7 @@ function addVursMaxHpReductionControl(root, actor, retries = 4) {
 		const preparedBaseMax = Number(actor.system?.attributes?.hp?.totalModifier);
 		const baseMax = Math.max(0, Number.isFinite(preparedBaseMax)
 			? preparedBaseMax
-		: (Number.isFinite(effectiveMax) ? effectiveMax : hp.max) + previousAdjustment);
+			: (Number.isFinite(effectiveMax) ? effectiveMax : hp.max) + previousAdjustment);
 		const enteredMaximum = Number(valueEditor.textContent.trim());
 		const desiredMax = Math.max(0, Number.isFinite(enteredMaximum) ? Math.trunc(enteredMaximum) : effectiveMax || hp.max);
 		const adjustment = baseMax - desiredMax;
@@ -851,7 +890,7 @@ function addVursMaxHpReductionControl(root, actor, retries = 4) {
 		updateEditIndicator(desiredMax);
 		try {
 			await actor.update({ "flags.vurs.hp.maxReduction": adjustment });
-			} catch (error) {
+		} catch (error) {
 			console.error(`${MODULE_ID} | Failed to update VURS maximum HP`, error);
 			ui.notifications?.error("Could not update maximum HP.");
 			showMaximum();
@@ -863,7 +902,7 @@ function addVursMaxHpReductionControl(root, actor, retries = 4) {
 		if (event.key === "Enter") {
 			event.preventDefault();
 			valueEditor.blur();
-			} else if (event.key === "Escape") {
+		} else if (event.key === "Escape") {
 			event.preventDefault();
 			cancelEdit = true;
 			showMaximum();
@@ -908,7 +947,7 @@ function applyActorAbilityLabels(element, actor) {
 	const useVursLabels = actorUsesVursSystem(actor);
 	const restoreDefaultLabels = !useVursLabels && isAnyVursMode();
 	if (!restoreDefaultLabels && !(useVursLabels && getSystemMode() === "default")) return;
-	
+
 	const replacements = new Map();
 	const shortLabels = { str: "Str", dex: "Agi", con: "Wea", int: "Int", wis: "Spi", cha: "Voi" };
 	const standardShortLabels = { str: "Str", dex: "Dex", con: "Con", int: "Int", wis: "Wis", cha: "Cha" };
@@ -916,20 +955,20 @@ function applyActorAbilityLabels(element, actor) {
 	for (const [ability, vursLabel] of Object.entries(VURS_ABILITY_LABELS)) {
 		const original = game.i18n.localize(`PF2E.Ability${ability[0].toUpperCase()}${ability.slice(1)}`);
 		const current = original && original !== `PF2E.Ability${ability[0].toUpperCase()}${ability.slice(1)}`
-		? original
-		: standardLabels[ability];
+			? original
+			: standardLabels[ability];
 		const label = useVursLabels ? vursLabel : standardLabels[ability];
 		replacements.set(useVursLabels ? current : vursLabel, label);
 		replacements.set(useVursLabels ? standardLabels[ability] : vursLabel, label);
 		const shortOriginal = game.i18n.localize(`PF2E.AbilityId.${ability}`);
 		const currentShort = shortOriginal && shortOriginal !== `PF2E.AbilityId.${ability}`
-		? shortOriginal
-		: standardShortLabels[ability];
+			? shortOriginal
+			: standardShortLabels[ability];
 		const shortLabel = useVursLabels ? shortLabels[ability] : standardShortLabels[ability];
 		replacements.set(useVursLabels ? currentShort : shortLabels[ability], shortLabel);
 		replacements.set(useVursLabels ? standardShortLabels[ability] : shortLabels[ability], shortLabel);
 	}
-	
+
 	const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
 	const textNodes = [];
 	while (walker.nextNode()) textNodes.push(walker.currentNode);
@@ -939,7 +978,7 @@ function applyActorAbilityLabels(element, actor) {
 		const text = replaceAbilityLabelText(node.nodeValue, replacements);
 		if (text !== node.nodeValue) node.nodeValue = text;
 	}
-	
+
 	// Skill modifier breakdowns are stored in tooltip attributes rather than
 	// text nodes, so translate those too (for example, a Deception breakdown
 	// that names Charisma as its key ability).
@@ -1034,24 +1073,24 @@ function addMainAttributeChoice(app, element, context = {}, renderOptions = {}) 
 		rows.querySelector("[data-section='vurs-main']")?.remove();
 		return;
 	}
-	
+
 	let section = rows.querySelector("[data-section='vurs-main']");
 	if (!section) {
 		const classSection = [...rows.querySelectorAll(":scope > section[role='group']")]
-		.find(candidate => !candidate.hasAttribute("data-section"));
+			.find(candidate => !candidate.hasAttribute("data-section"));
 		if (!classSection) return;
-		
+
 		section = document.createElement("section");
 		section.className = "row svelte-8m1dup vurs-main-attribute-choice";
 		section.dataset.section = "vurs-main";
 		section.setAttribute("role", "group");
 		section.setAttribute("aria-label", "Main attribute boost");
-		
+
 		const heading = document.createElement("div");
 		heading.className = "row-heading svelte-8m1dup";
 		heading.innerHTML = '<div class="label svelte-8m1dup"><div class="title svelte-8m1dup">Main</div><div class="description svelte-8m1dup"></div></div>';
 		section.append(heading);
-		
+
 		const choices = document.createElement("div");
 		choices.className = "attributes svelte-8m1dup";
 		const exampleButton = rows.querySelector("button.attribute-button.boost");
@@ -1068,27 +1107,27 @@ function addMainAttributeChoice(app, element, context = {}, renderOptions = {}) 
 			button.addEventListener("click", async (event) => {
 				event.preventDefault();
 				event.stopPropagation();
-				
+
 				const targetActor = findActor();
-				
+
 				if (!targetActor?.isOfType?.("character")) {
 					ui.notifications?.warn(
 						"Could not find the character for this Attribute Boost builder."
 					);
 					return;
 				}
-				
+
 				try {
 					const nextMainAttribute =
-					getMainAttribute(targetActor) === ability ? null : ability;
-					
+						getMainAttribute(targetActor) === ability ? null : ability;
+
 					await targetActor.update({
 						"flags.vurs.mainAttribute": nextMainAttribute
 					});
-					
+
 					targetActor.sheet?.render(false);
 					app?.render?.({ force: true });
-					} catch (error) {
+				} catch (error) {
 					console.error("VURS | Failed to set Main Attribute", error);
 					ui.notifications?.error("Failed to update the Main Attribute.");
 				}
@@ -1099,7 +1138,7 @@ function addMainAttributeChoice(app, element, context = {}, renderOptions = {}) 
 		section.append(choices);
 		classSection.after(section);
 	}
-	
+
 	// The row is a builder feature, so keep it visible even if PF2e doesn't
 	// expose its private actor reference in the render hook options.
 	const selected = actor?.isOfType?.("character") ? getMainAttribute(actor) : null;
@@ -1113,13 +1152,13 @@ function addMainAttributeChoice(app, element, context = {}, renderOptions = {}) 
 		button.classList.toggle("boosted", isSelected);
 		button.classList.toggle("active", isSelected);
 		button.setAttribute("aria-pressed", String(isSelected));
-		
+
 		if (isSelected) {
 			button.style.backgroundColor = "var(--color-border-highlight, #c9a227)";
 			button.style.borderColor = "var(--color-border-highlight, #c9a227)";
 			button.style.color = "#fff";
 			button.style.boxShadow = "0 0 0 2px var(--color-border-highlight, #c9a227)";
-			} else {
+		} else {
 			button.style.removeProperty("background-color");
 			button.style.removeProperty("border-color");
 			button.style.removeProperty("color");
@@ -1135,7 +1174,7 @@ function installMainAttributeObserver() {
 	if (!VURS_MAIN_ATTRIBUTE_ENABLED || !document.body || document.body.__vursMainAttributeObserver) return;
 	const attach = () => {
 		const app = foundry.applications?.instances?.get?.("attribute-builder") ??
-		game.actors?.contents?.map(actor => actor.apps?.["attribute-builder"]).find(Boolean);
+			game.actors?.contents?.map(actor => actor.apps?.["attribute-builder"]).find(Boolean);
 		for (const rows of document.querySelectorAll(".attribute-rows")) {
 			if (rows.querySelector("[data-section='vurs-main']")) continue;
 			const root = rows.closest(".application") ?? rows.parentElement;
@@ -1191,7 +1230,7 @@ function registerVursCharacterPreparationWrappers(actorClass = CONFIG.PF2E?.Acto
 					"cha-based",
 					"saving-throw"
 				])];
-				data.rollOptions = [...new Set([...(data.rollOptions ?? []), "saving-throw", "saving-throw:perception"] )];
+				data.rollOptions = [...new Set([...(data.rollOptions ?? []), "saving-throw", "saving-throw:perception"])];
 				this.perception = new current.constructor(this, data, current.config);
 				this.system.perception = Object.assign(this.perception.getTraceData(), {
 					details: this.system.perception.details,
@@ -1229,12 +1268,12 @@ function registerVursCharacterPreparationWrappers(actorClass = CONFIG.PF2E?.Acto
 		},
 		update: async function (wrapped, changed, options = {}, ...args) {
 			const requestedHp = foundry.utils.getProperty(changed, "system.attributes.hp.value") ??
-			changed?.["system.attributes.hp.value"];
+				changed?.["system.attributes.hp.value"];
 			const repairUndoHp = options.damageUndo === true && options.vursDamageUndoRepair !== true &&
-			actorUsesVursSystem(this) && Number.isFinite(Number(requestedHp));
+				actorUsesVursSystem(this) && Number.isFinite(Number(requestedHp));
 			const result = await wrapped(changed, options, ...args);
 			if (!repairUndoHp) return result;
-			
+
 			// PF2e restores HP and the VURS max-HP reduction in one update. That
 			// update can clamp the restored HP against the old reduced maximum.
 			// Reapply the undo value after the reduction has been restored.
@@ -1264,8 +1303,8 @@ function registerVursCharacterPreparationWrappers(actorClass = CONFIG.PF2E?.Acto
 					true
 				);
 				if (actorUsesAgnosticVurs(this) || (!isFullVursMode() &&
-				(actorHasVursSystemFlag(this) || actorHasAgnosticSystemFlag(this)))) applyActorAbilityDataLabels(this);
-				} else if (isAnyVursMode()) {
+					(actorHasVursSystemFlag(this) || actorHasAgnosticSystemFlag(this)))) applyActorAbilityDataLabels(this);
+			} else if (isAnyVursMode()) {
 				applyDefaultActorAbilityDataLabels(this);
 			}
 			applyVursConsolidatedSkillAttributes(this);
@@ -1277,7 +1316,7 @@ function registerVursCharacterPreparationWrappers(actorClass = CONFIG.PF2E?.Acto
 				const changedHp = foundry.utils.getProperty(changed, "system.attributes.hp");
 				const reductionPath = "flags.vurs.hp.maxReduction";
 				const hasExplicitReduction = foundry.utils.getProperty(changed, reductionPath) !== undefined ||
-				foundry.utils.getProperty(changed, "flags.vurs.hp.maxReduction") !== undefined;
+					foundry.utils.getProperty(changed, "flags.vurs.hp.maxReduction") !== undefined;
 				const currentReduction = getVursMaxHpReduction(this);
 				const currentMax = Number(this.system?.attributes?.hp?.max);
 				// PF2e's damage-revert action restores the previous HP value. Since
@@ -1298,14 +1337,14 @@ function registerVursCharacterPreparationWrappers(actorClass = CONFIG.PF2E?.Acto
 					foundry.utils.setProperty(changed, reductionPath, Math.min(baseMax, currentAdjustment + overflow));
 					overflowApplied = true;
 				}
-				
+
 			}
 			return wrapped(changed, options, user, ...args);
 		},
 		applyDamage: async function (wrapped, params, ...args) {
 			const reductionPath = "flags.vurs.hp.maxReduction";
 			const persistedReduction = foundry.utils.getProperty(this, reductionPath) ??
-			foundry.utils.getProperty(this, `_source.${reductionPath}`);
+				foundry.utils.getProperty(this, `_source.${reductionPath}`);
 			// PF2e creates its damage-revert record from numeric values that existed
 			// before damage. Seed zero so the first VURS overflow update is included
 			// in that native undo record as well.
@@ -1317,7 +1356,7 @@ function registerVursCharacterPreparationWrappers(actorClass = CONFIG.PF2E?.Acto
 		calculateHealthDelta: function (wrapped, healthData, ...args) {
 			const result = wrapped(healthData, ...args);
 			if (!actorUsesVursSystem(this) || !healthData || healthData.delta <= 0 || healthData.hp?.max <= 0) return result;
-			
+
 			// PF2e applies damage to temporary HP, then stamina, then HP. Preserve
 			// that order and convert only the remaining damage below zero HP.
 			let remainingDamage = healthData.delta;
@@ -1328,7 +1367,7 @@ function registerVursCharacterPreparationWrappers(actorClass = CONFIG.PF2E?.Acto
 			}
 			const overflow = Math.max(0, remainingDamage - Math.max(healthData.hp.value || 0, 0));
 			if (overflow <= 0) return result;
-			
+
 			const currentAdjustment = getVursMaxHpReduction(this);
 			const baseMax = getVursBaseMaxHp(this);
 			const adjusted = Math.min(baseMax, currentAdjustment + overflow);
@@ -1341,7 +1380,7 @@ function registerVursCharacterPreparationWrappers(actorClass = CONFIG.PF2E?.Acto
 	for (const [method, wrapper] of Object.entries(wrappers)) {
 		if (!baseDamageMethods.has(method)) registerActorPreparationWrapper(actorClass, method, wrapper);
 	}
-	
+
 }
 
 function registerActorPreparationWrapper(actorClass, method, wrapper) {
@@ -1350,7 +1389,7 @@ function registerActorPreparationWrapper(actorClass, method, wrapper) {
 	const classKey = actorClass.name || "CharacterPF2e";
 	const key = `${classKey}:${method}`;
 	if (registeredActorWrappers.has(key)) return;
-	
+
 	// Register against PF2e's stable class path. A temporary window alias can
 	// resolve differently inside libWrapper and silently miss startup prep.
 	// PF2e exposes the concrete character document class before systemReady.
@@ -1358,8 +1397,8 @@ function registerActorPreparationWrapper(actorClass, method, wrapper) {
 	const actorType = Object.entries(actorClasses).find(([, documentClass]) => documentClass === actorClass)?.[0];
 	const isBaseActorClass = actorClass === CONFIG.Actor?.documentClass;
 	const target = actorType
-    ? `CONFIG.PF2E.Actor.documentClasses.${actorType}.prototype.${method}`
-    : isBaseActorClass ? `CONFIG.Actor.documentClass.prototype.${method}` : null;
+		? `CONFIG.PF2E.Actor.documentClasses.${actorType}.prototype.${method}`
+		: isBaseActorClass ? `CONFIG.Actor.documentClass.prototype.${method}` : null;
 	if (!target) {
 		console.warn(`${MODULE_ID} | Skipping ${classKey}.${method}: not a configured PF2e actor class`);
 		return;
@@ -1367,7 +1406,7 @@ function registerActorPreparationWrapper(actorClass, method, wrapper) {
 	try {
 		globalThis.libWrapper.register(MODULE_ID, target, wrapper, "WRAPPER");
 		registeredActorWrappers.add(key);
-		} catch (error) {
+	} catch (error) {
 		console.error(`${MODULE_ID} | Failed to register libWrapper for ${target}`, error);
 	}
 }
@@ -1375,12 +1414,12 @@ function registerActorPreparationWrapper(actorClass, method, wrapper) {
 function installVursUndoDamagePatch(actorClass) {
 	const prototype = actorClass?.prototype;
 	if (!prototype || typeof prototype.undoDamage !== "function" ||
-	Object.hasOwn(prototype, "__vursNegativeHpUndoPatch")) return;
-	
+		Object.hasOwn(prototype, "__vursNegativeHpUndoPatch")) return;
+
 	const originalUndoDamage = prototype.undoDamage;
 	prototype.undoDamage = async function (appliedDamage, ...args) {
 		if (this[VURS_UNDO_ACTIVE]) return originalUndoDamage.call(this, appliedDamage, ...args);
-		
+
 		const snapshot = appliedDamage?.vursNegativeHp;
 		const recordedUpdates = appliedDamage?.updates ?? [];
 		const hpPath = "system.attributes.hp.value";
@@ -1388,18 +1427,18 @@ function installVursUndoDamagePatch(actorClass) {
 		const hpUndo = recordedUpdates.find(update => update.path === hpPath);
 		const reductionUndo = recordedUpdates.find(update => update.path === reductionPath);
 		if (!snapshot && !reductionUndo) return originalUndoDamage.call(this, appliedDamage, ...args);
-		
+
 		const updates = foundry.utils.deepClone(recordedUpdates);
 		const otherUpdates = updates.filter(update => update.path !== hpPath && update.path !== reductionPath);
 		const currentReduction = getVursMaxHpReduction(this);
 		const targetReduction = snapshot
-		? Number(snapshot.reduction) || 0
-		: currentReduction + (Number(reductionUndo.value) || 0);
+			? Number(snapshot.reduction) || 0
+			: currentReduction + (Number(reductionUndo.value) || 0);
 		const currentHp = Number(this.system?.attributes?.hp?.value) || 0;
 		const targetHp = Math.max(0, snapshot
 			? Number(snapshot.hp) || 0
-		: currentHp + (Number(hpUndo?.value) || 0));
-		
+			: currentHp + (Number(hpUndo?.value) || 0));
+
 		// PF2e's undoDamage starts Actor.update without awaiting it. Capture that
 		// update, inject the saved reduction alongside HP, and await completion so
 		// its asynchronous write cannot overwrite the rollback.
@@ -1424,7 +1463,7 @@ function installVursUndoDamagePatch(actorClass) {
 				...getVursReductionUpdates(targetReduction)
 			}, { damageUndo: true, damageTaken: currentHp - targetHp, render: true });
 			return result;
-			} finally {
+		} finally {
 			if (updateDescriptor) Object.defineProperty(this, "update", updateDescriptor);
 			else delete this.update;
 			delete this[VURS_UNDO_ACTIVE];
@@ -1437,7 +1476,7 @@ function installVursDamagePatch() {
 	const actorClass = CONFIG.Actor?.documentClass;
 	const prototype = actorClass?.prototype;
 	if (!prototype || typeof prototype.applyDamage !== "function" || prototype.__vursNegativeHpDamagePatch) return;
-	
+
 	const originalApplyDamage = prototype.applyDamage;
 	prototype.applyDamage = async function (params, ...args) {
 		const reductionPath = "flags.vurs.hp.maxReduction";
@@ -1447,13 +1486,13 @@ function installVursDamagePatch() {
 		const originalCalculateHealthDelta = this.calculateHealthDelta;
 		const ownCalculateDescriptor = Object.getOwnPropertyDescriptor(this, "calculateHealthDelta");
 		let overflowToApply = 0;
-		
+
 		this.calculateHealthDelta = function (healthData, ...calculateArgs) {
 			const calculation = originalCalculateHealthDelta.call(this, healthData, ...calculateArgs);
 			if (!actorUsesVursHpRules(this) || !healthData || Number(healthData.delta) <= 0 || Number(healthData.hp?.max) <= 0) {
 				return calculation;
 			}
-			
+
 			let remainingDamage = Number(healthData.delta);
 			const fromTemporaryHp = Math.min(Math.max(Number(healthData.hp.temp) || 0, 0), remainingDamage);
 			remainingDamage -= fromTemporaryHp;
@@ -1475,15 +1514,15 @@ function installVursDamagePatch() {
 			}
 			return calculation;
 		};
-		
+
 		let result;
 		try {
 			result = await originalApplyDamage.call(this, params, ...args);
-			} finally {
+		} finally {
 			if (ownCalculateDescriptor) Object.defineProperty(this, "calculateHealthDelta", ownCalculateDescriptor);
 			else delete this.calculateHealthDelta;
 		}
-		
+
 		let nextReduction = getVursMaxHpReduction(this);
 		if (actorUsesVursHpRules(this) && overflowToApply > 0) {
 			const baseMaximum = getVursBaseMaxHp(this);
@@ -1496,18 +1535,18 @@ function installVursDamagePatch() {
 			}
 		}
 		if (!actorUsesVursHpRules(this) || nextReduction <= previousReduction) return result;
-		
+
 		const message = [...(game.messages?.contents ?? [])]
-		.filter(candidate => {
-			if (previousMessages.has(candidate.id) ||
-			foundry.utils.getProperty(candidate, "flags.pf2e.context.type") !== "damage-taken") return false;
-			// PF2e leaves appliedDamage null when no HP was actually changed (for
-			// example, an actor already at 0 HP). Match the recipient card by its
-			// speaker as a fallback so overkill is still reported there.
-			return foundry.utils.getProperty(candidate, "flags.pf2e.appliedDamage.uuid") === this.uuid ||
-			candidate.speaker?.actor === this.id;
-		})
-		.sort((left, right) => right.timestamp - left.timestamp)[0];
+			.filter(candidate => {
+				if (previousMessages.has(candidate.id) ||
+					foundry.utils.getProperty(candidate, "flags.pf2e.context.type") !== "damage-taken") return false;
+				// PF2e leaves appliedDamage null when no HP was actually changed (for
+				// example, an actor already at 0 HP). Match the recipient card by its
+				// speaker as a fallback so overkill is still reported there.
+				return foundry.utils.getProperty(candidate, "flags.pf2e.appliedDamage.uuid") === this.uuid ||
+					candidate.speaker?.actor === this.id;
+			})
+			.sort((left, right) => right.timestamp - left.timestamp)[0];
 		const appliedDamage = message && foundry.utils.getProperty(message, "flags.pf2e.appliedDamage");
 		if (message && appliedDamage && Array.isArray(appliedDamage.updates)) {
 			const updatedAppliedDamage = foundry.utils.deepClone(appliedDamage);
@@ -1515,7 +1554,7 @@ function installVursDamagePatch() {
 			const hpUpdate = updatedAppliedDamage.updates.find(update => update.path === "system.attributes.hp.value");
 			if (hpUpdate && hpUndoDelta === 0) {
 				updatedAppliedDamage.updates = updatedAppliedDamage.updates.filter(update => update !== hpUpdate);
-				} else if (hpUpdate) {
+			} else if (hpUpdate) {
 				hpUpdate.value = hpUndoDelta;
 			}
 			// PF2e's native undo handles HP. Keep this custom reduction out of its
@@ -1551,7 +1590,7 @@ function addSavingThrowRuleSupport(actor, slugs) {
 function addSavingThrowDomains(actor, slug) {
 	const current = actor.skills?.[slug];
 	if (!current?.data) return;
-	
+
 	// Rebuild the Statistic after extending its domains. Mutating the prepared
 	// statistic after construction only adds a roll option; PF2e has already
 	// extracted synthetics for its check selector by then.
@@ -1560,7 +1599,7 @@ function addSavingThrowDomains(actor, slug) {
 	data.check ??= {};
 	data.check.domains = [...new Set([...(data.check.domains ?? []), "saving-throw"])];
 	data.rollOptions = [...new Set([...(data.rollOptions ?? []), "saving-throw", `saving-throw:${slug}`])];
-	
+
 	const statistic = new current.constructor(actor, data, current.config);
 	actor.skills[slug] = statistic;
 	const systemData = actor.system.skills?.[slug];
@@ -1632,8 +1671,8 @@ function applyDefaultActorAbilityDataLabels(actor) {
 function applyMainAttributeStar(element, actor) {
 	const root = element instanceof HTMLElement ? element : element?.[0];
 	const selectedAttribute = VURS_MAIN_ATTRIBUTE_ENABLED && actorUsesMainAttribute(actor)
-    ? getMainAttribute(actor)
-    : null;
+		? getMainAttribute(actor)
+		: null;
 	for (const item of root?.querySelectorAll?.(".subsection.attributes li[data-attribute]") ?? []) {
 		const heading = item.querySelector(".abbreviation");
 		const label = heading?.querySelector(":scope > span");
@@ -1666,13 +1705,13 @@ function reorderAttributeBuilderColumns(element, actor) {
 	const root = element instanceof HTMLElement ? element : element?.[0];
 	const hasActorScopedVursBuilder = Boolean(root?.querySelector?.("[data-section='vurs-main']"));
 	if (!isAnyVursMode() && !actorHasVursSystemFlag(actor) &&
-	!actorHasAgnosticSystemFlag(actor) && !hasActorScopedVursBuilder) return;
+		!actorHasAgnosticSystemFlag(actor) && !hasActorScopedVursBuilder) return;
 	const rows = root?.querySelector?.(".attribute-rows");
 	if (!rows) return;
 	for (const columns of rows.querySelectorAll(".attributes")) {
 		const children = columns.matches(".summary-row .attributes")
-		? [...columns.querySelectorAll(":scope > .row-column")]
-		: [...columns.children];
+			? [...columns.querySelectorAll(":scope > .row-column")]
+			: [...columns.children];
 		if (children.length !== 6) continue;
 		// Keep the builder's Spirit and Void items on the same grid row while
 		// swapping their columns. Assigning only grid-column makes CSS Grid place
@@ -1688,8 +1727,8 @@ function reorderCharacterSheetAttributes(element, actor) {
 	if (!actorUsesVursSystem(actor)) return;
 	const root = element instanceof HTMLElement ? element : element?.[0];
 	const lists = root?.matches?.(".subsection.attributes ul")
-    ? [root]
-    : [...(root?.querySelectorAll?.(".subsection.attributes ul") ?? [])];
+		? [root]
+		: [...(root?.querySelectorAll?.(".subsection.attributes ul") ?? [])];
 	for (const list of lists) {
 		const order = ["str", "dex", "con", "int", "cha", "wis"];
 		const spirit = list.querySelector(':scope > li[data-attribute="wis"]');
@@ -1734,24 +1773,24 @@ async function migrateLegacyVursActorFlags() {
 		const updates = {};
 		const pendingUpdates = new Set();
 		const legacyFlags = foundry.utils.getProperty(actor, `_source.flags.${MODULE_ID}`) ??
-		foundry.utils.getProperty(actor, `flags.${MODULE_ID}`);
+			foundry.utils.getProperty(actor, `flags.${MODULE_ID}`);
 		if (!legacyFlags || typeof legacyFlags !== "object") continue;
-		
+
 		for (const { legacy, current } of migrations) {
 			const sourceValue = foundry.utils.getProperty(actor, `_source.${current}`);
 			const currentValue = sourceValue !== undefined ? sourceValue : foundry.utils.getProperty(actor, current);
 			const legacyValue = foundry.utils.getProperty(actor, `_source.flags.${MODULE_ID}.${legacy}`) ??
-			foundry.utils.getProperty(actor, `flags.${MODULE_ID}.${legacy}`);
+				foundry.utils.getProperty(actor, `flags.${MODULE_ID}.${legacy}`);
 			if (currentValue === undefined && legacyValue !== undefined && !pendingUpdates.has(current)) {
 				updates[current] = legacyValue;
 				pendingUpdates.add(current);
 			}
 		}
-		
+
 		const legacyTopLevelKeys = new Set(["mainAttribute", "MainAttribute", "hpReduction", "vursSystem", "agnosticSystem", "defaultSystem", "diceless"]);
 		const legacyHp = legacyFlags.hp;
 		const hpContainsOnlyLegacyValue = !legacyHp || (typeof legacyHp === "object" &&
-		Object.keys(legacyHp).every(key => key === "maxReduction"));
+			Object.keys(legacyHp).every(key => key === "maxReduction"));
 		const scopeContainsOnlyLegacyValues = Object.keys(legacyFlags).every(key =>
 			legacyTopLevelKeys.has(key) || (key === "hp" && hpContainsOnlyLegacyValue)
 		);
@@ -1759,7 +1798,7 @@ async function migrateLegacyVursActorFlags() {
 			// No other actor features use this module scope, so remove the stale
 			// scope itself after copying its values into flags.vurs.
 			updates[`flags.-=${MODULE_ID}`] = null;
-			} else {
+		} else {
 			// Preserve any unrelated module data and delete only migrated fields.
 			for (const key of legacyTopLevelKeys) {
 				if (Object.hasOwn(legacyFlags, key)) updates[`flags.${MODULE_ID}.-=${key}`] = null;
@@ -1770,7 +1809,7 @@ async function migrateLegacyVursActorFlags() {
 		}
 		try {
 			await actor.update(updates, { render: false });
-			} catch (error) {
+		} catch (error) {
 			console.error(`${MODULE_ID} | Failed to migrate legacy actor flags for ${actor.name}`, error);
 		}
 	}
@@ -1785,7 +1824,7 @@ function applyMainAttributeBoost(actor) {
 	if (!attribute || !ability || !Number.isFinite(ability.mod)) {
 		return;
 	}
-	
+
 	// Main is a dedicated full boost. Keep it independent from PF2e's partial
 	// boost accounting so it cannot leave the prepared modifier fractional.
 	ability.mod = Math.floor(Math.clamp(ability.mod + 1, -5, 10));
@@ -1801,24 +1840,24 @@ function installMainAttributeAttackModifier(actor) {
 	if (!VURS_MAIN_ATTRIBUTE_ENABLED || !actorUsesMainAttribute(actor)) return;
 	const modifiers = actor.synthetics?.modifiers;
 	if (!modifiers || Object.values(modifiers).some(entries => entries?.includes?.(actor[VURS_KEY_ATTACK_MODIFIER]))) return;
-	
+
 	const strikeAttackModifiers = (modifiers["strike-attack-roll"] ??= []);
 	const ModifierClass = game.pf2e?.Modifier;
 	if (typeof ModifierClass !== "function") return;
-	
+
 	const mainAttributeModifier = ({ resolvables } = {}) => {
 		if (!actorUsesMainAttribute(actor)) return null;
 		const weapon = resolvables?.weapon;
 		if (!weapon || weapon.actor?.uuid !== actor.uuid || !weapon.isOfType?.("weapon")) return null;
-		
+
 		// A Strike Rule Element can set the weapon's attribute directly. Honor it;
 		// otherwise use Main only when the actor has selected one.
 		const selectedAttribute = VURS_ABILITY_KEYS.includes(weapon.system?.attribute)
-		? weapon.system.attribute
-		: getMainAttribute(actor);
+			? weapon.system.attribute
+			: getMainAttribute(actor);
 		const modifier = actor.system.abilities?.[selectedAttribute]?.mod;
 		if (!VURS_ABILITY_KEYS.includes(selectedAttribute) || !Number.isFinite(modifier)) return null;
-		
+
 		return new ModifierClass({
 			slug: "vurs-main-attribute-attack",
 			label: VURS_ABILITY_LABELS[selectedAttribute],
@@ -1828,7 +1867,7 @@ function installMainAttributeAttackModifier(actor) {
 			force: true
 		});
 	};
-	
+
 	strikeAttackModifiers.push(mainAttributeModifier);
 	actor[VURS_KEY_ATTACK_MODIFIER] = mainAttributeModifier;
 }
@@ -1836,34 +1875,34 @@ function installMainAttributeAttackModifier(actor) {
 function installKeyAttributeDamageModifier(actor) {
 	const modifiers = actor.synthetics?.modifiers;
 	if (!modifiers || Object.values(modifiers).some(entries => entries?.includes?.(actor[VURS_KEY_DAMAGE_MODIFIER]))) return;
-	
+
 	const strikeDamageModifiers = (modifiers["strike-damage"] ??= []);
 	const ModifierClass = game.pf2e?.Modifier ??
-    actor.system.actions?.flatMap(action => action.modifiers ?? []).find(modifier => modifier?.constructor)?.constructor;
+		actor.system.actions?.flatMap(action => action.modifiers ?? []).find(modifier => modifier?.constructor)?.constructor;
 	if (typeof ModifierClass !== "function") return;
-	
+
 	const deferredModifier = ({ resolvables } = {}) => {
 		if (!actorUsesMainAttribute(actor)) return null;
 		const weapon = resolvables?.weapon;
 		if (!weapon || weapon.actor?.uuid !== actor.uuid || !weapon.isOfType?.("weapon")) return null;
-		
+
 		const selectedAttribute = VURS_ABILITY_KEYS.includes(weapon.system?.attribute)
-		? weapon.system.attribute
-		: getMainAttribute(actor);
+			? weapon.system.attribute
+			: getMainAttribute(actor);
 		const selectedValue = actor.system.abilities?.[selectedAttribute]?.mod;
 		const strengthValue = actor.system.abilities?.str?.mod;
 		if (!Number.isFinite(selectedValue) || !Number.isFinite(strengthValue)) return null;
-		
+
 		const traits = weapon.system.traits?.value ?? [];
 		const isStrengthBased = weapon.isMelee ||
-		traits.includes("propulsive") ||
-		(weapon.isThrown && !traits.includes("splash") && !["alchemical-bomb", "grenade"].includes(weapon.baseType));
+			traits.includes("propulsive") ||
+			(weapon.isThrown && !traits.includes("splash") && !["alchemical-bomb", "grenade"].includes(weapon.baseType));
 		const strengthComponent = isStrengthBased
-		? (strengthValue < 0 || !traits.includes("propulsive") ? strengthValue : Math.floor(strengthValue / 2))
-		: 0;
+			? (strengthValue < 0 || !traits.includes("propulsive") ? strengthValue : Math.floor(strengthValue / 2))
+			: 0;
 		const adjustment = selectedValue - strengthComponent;
 		if (adjustment === 0) return null;
-		
+
 		return new ModifierClass({
 			slug: "vurs-key-attribute-damage",
 			label: VURS_ABILITY_LABELS[selectedAttribute],
@@ -1871,7 +1910,7 @@ function installKeyAttributeDamageModifier(actor) {
 			type: "untyped"
 		});
 	};
-	
+
 	strikeDamageModifiers.push(deferredModifier);
 	actor[VURS_KEY_DAMAGE_MODIFIER] = deferredModifier;
 }
@@ -1888,20 +1927,20 @@ function registerCustomIwrTypes() {
 function installCustomDamageIwrPatch() {
 	registerCustomIwrTypes();
 	installSpecialIwrRuleElementPatch();
-	
+
 	const actorClasses = CONFIG.PF2E?.Actor?.documentClasses ?? {};
 	const candidates = new Set([
 		CONFIG.Actor?.documentClass,
 		...Object.values(actorClasses)
 	].filter(actorClass => typeof actorClass?.prototype?.applyDamage === "function"));
-	
+
 	for (const actorClass of candidates) {
 		const actorType = Object.entries(actorClasses).find(([, candidate]) => candidate === actorClass)?.[0];
 		const target = actorType
-		? `CONFIG.PF2E.Actor.documentClasses.${actorType}.prototype.applyDamage`
-		: actorClass === CONFIG.Actor?.documentClass ? "CONFIG.Actor.documentClass.prototype.applyDamage" : null;
+			? `CONFIG.PF2E.Actor.documentClasses.${actorType}.prototype.applyDamage`
+			: actorClass === CONFIG.Actor?.documentClass ? "CONFIG.Actor.documentClass.prototype.applyDamage" : null;
 		if (!target || registeredIwrDamageTargets.has(target)) continue;
-		
+
 		const wrapper = function (wrapped, ...args) {
 			const attributes = this.attributes;
 			for (const entry of [...(attributes?.immunities ?? []), ...(attributes?.resistances ?? [])]) {
@@ -1912,7 +1951,7 @@ function installCustomDamageIwrPatch() {
 		try {
 			if (globalThis.libWrapper?.register) {
 				globalThis.libWrapper.register(MODULE_ID, target, wrapper, "WRAPPER");
-				} else {
+			} else {
 				const prototype = actorClass.prototype;
 				const original = prototype.applyDamage;
 				prototype.applyDamage = function (...args) {
@@ -1924,7 +1963,7 @@ function installCustomDamageIwrPatch() {
 				};
 			}
 			registeredIwrDamageTargets.add(target);
-			} catch (error) {
+		} catch (error) {
 			console.error(`${MODULE_ID} | Failed to register IWR damage handling for ${target}`, error);
 		}
 	}
@@ -1950,15 +1989,15 @@ function installSpecialIwrRuleElementPatch() {
 				this.type = ["all-damage"];
 				this.definition = undefined;
 			}
-			
+
 			let result;
 			try {
 				result = original.apply(this, args);
-				} finally {
+			} finally {
 				this.type = originalType;
 				this.definition = originalDefinition;
 			}
-			
+
 			if (isSpecialRule) {
 				for (const entry of this.actor?.system?.attributes?.[attributeKey] ?? []) {
 					if (existingEntries.has(entry) || entry.type !== "all-damage") continue;
@@ -1987,11 +2026,11 @@ function installIwrTestPatch(entry) {
 		}
 		return originalTest.call(this, options);
 	};
-	
+
 	try {
 		Object.defineProperty(entry, "test", { configurable: true, value: patchedTest });
 		Object.defineProperty(entry, VURS_IWR_INSTANCE_TEST_PATCH, { value: true });
-		} catch {
+	} catch {
 		const prototype = Object.getPrototypeOf(entry);
 		if (!prototype || typeof prototype.test !== "function" || prototype[VURS_IWR_TEST_PATCH]) return;
 		const prototypeTest = prototype.test;
@@ -2017,7 +2056,7 @@ function hasPureDamageOption(options) {
 
 function hasSpecialDamageOption(options) {
 	const values = options instanceof Set ? [...options] : Array.isArray(options) ? options :
-    typeof options === "string" ? [options] : [];
+		typeof options === "string" ? [options] : [];
 	const hasDamageOption = values.includes("damage") || values.some(option =>
 		typeof option === "string" && (option.startsWith("damage:type:") || option.startsWith("damage:category:"))
 	);
