@@ -3,6 +3,7 @@ import { createVursPlayCostElement } from "./playCostIcons.js";
 
 const MODULE_ID = "vurs-pf2e";
 const VURS_DIE_RESULT = Symbol("vurs-pf2e.fixedDieResult");
+export const VURS_CRITICAL_MAXIMUM_DIE = Symbol("vurs-pf2e.criticalMaximumDie");
 const VURS_DAMAGE_ACTION_WRAPPED = Symbol("vurs-pf2e.damageActionContext");
 const VURS_INLINE_DAMAGE_CONTEXT_PATCH = Symbol("vurs-pf2e.inlineDamageActorContext");
 const activeVursCheckRolls = [];
@@ -326,6 +327,7 @@ function installVursAverageDamage() {
 	if (Die?.prototype && !Die.prototype.__vursResultInstalled) {
 		const originalDieRoll = Die.prototype._roll;
 		Die.prototype._roll = async function (...args) {
+			if (this[VURS_CRITICAL_MAXIMUM_DIE]) return Number(this.faces);
 			// The roll evaluator only stamps this temporary value for a VURS-mode
 			// roll or a roll belonging to an actor with the diceless flag.
 			if (Number.isFinite(this[VURS_DIE_RESULT])) {
@@ -396,9 +398,7 @@ function installVursAverageDamage() {
 					else {
 						const faces = Number(die.faces);
 						if (Number.isFinite(faces) && faces > 0) {
-							die[VURS_DIE_RESULT] = this.options.vursCriticalDamageApplied
-								? faces
-								: Math.ceil((faces + 1) / 2);
+							die[VURS_DIE_RESULT] = Math.ceil((faces + 1) / 2);
 						}
 					}
 				}

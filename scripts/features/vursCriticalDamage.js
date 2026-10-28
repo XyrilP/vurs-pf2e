@@ -1,4 +1,4 @@
-import { getDamageRollActorForVurs } from "./diceless.js";
+import { getDamageRollActorForVurs, VURS_CRITICAL_MAXIMUM_DIE } from "./diceless.js";
 import { actorUsesVursSystem, getActorSystemMode, getSystemMode } from "./systemModes.js";
 
 const MODULE_ID = "vurs-pf2e";
@@ -16,8 +16,7 @@ export function installVursCriticalDamage() {
     const Grouping = CONFIG.Dice.termTypes?.Grouping;
     const Die = foundry.dice.terms.Die;
     const NumericTerm = foundry.dice.terms.NumericTerm;
-    const DamageInstance = CONFIG.Dice.rolls.find(rollClass => rollClass.name === "DamageInstance");
-    if (!ArithmeticExpression || !Grouping || !DamageInstance) return;
+    if (!ArithmeticExpression || !Grouping) return;
 
     prototype.evaluate = async function (...args) {
         if (
@@ -27,7 +26,7 @@ export function installVursCriticalDamage() {
             usesVursCriticalDamage(this)
         ) {
             const preserveDoubleDice = this.options.critRule === "double-dice";
-            const successMaximums = preserveDoubleDice ? getSuccessDamageMaximums(this, DamageRoll) : null;
+            const successDamageTerms = preserveDoubleDice ? getSuccessDamageTerms(this, DamageRoll) : null;
             let changed = false;
             for (const instance of this.instances ?? []) {
                 instance.terms = instance.terms.map(term => {
@@ -36,19 +35,29 @@ export function installVursCriticalDamage() {
                         Grouping,
                         Die,
                         NumericTerm,
-                        DamageInstance,
                         preserveDoubleDice
                     });
                     if (transformed !== term) changed = true;
                     return transformed;
                 });
                 if (preserveDoubleDice) {
-                    const maximum = successMaximums?.get(`${instance.type}|${instance.persistent}`) ?? 0;
+                    const addedDamageTerms = successDamageTerms?.get(`${instance.type}|${instance.persistent}`) ?? [];
                     const baseTerm = instance.terms[0];
-                    if (maximum > 0 && baseTerm) {
-                        instance.terms = [createDamageSum(baseTerm, maximum, {}, { ArithmeticExpression, NumericTerm })];
+                    if (baseTerm && addedDamageTerms.length) {
+                        instance.terms = [addedDamageTerms.reduce(
+                            (total, addedTerm) => createDamageSum(total, cloneMaximumDamage(addedTerm, {
+                                ArithmeticExpression,
+                                Grouping,
+                                Die,
+                                NumericTerm
+                            }), { ArithmeticExpression }),
+                            baseTerm
+                        )];
                         changed = true;
                     }
+                }
+                for (const term of instance.terms) {
+                    activateCriticalMaximumDice(term, { ArithmeticExpression, Grouping, Die });
                 }
             }
             if (changed) this.options.vursCriticalDamageApplied = true;
@@ -65,24 +74,24 @@ function usesVursCriticalDamage(roll) {
     return mode === "default" && game.settings.get(MODULE_ID, DEFAULT_SETTING) === true;
 }
 
-function getSuccessDamageMaximums(criticalRoll, DamageRoll) {
+function getSuccessDamageTerms(criticalRoll, DamageRoll) {
     const formula = criticalRoll.options?.damage?.damage?.formula?.success;
     if (typeof formula !== "string") return null;
     try {
         const successRoll = new DamageRoll(formula);
-        return successRoll.instances.reduce((maximums, instance) => {
+        return successRoll.instances.reduce((damageTerms, instance) => {
             const key = `${instance.type}|${instance.persistent}`;
-            maximums.set(key, (maximums.get(key) ?? 0) + instance.maximumValue);
-            return maximums;
+            damageTerms.set(key, [...(damageTerms.get(key) ?? []), ...instance.terms]);
+            return damageTerms;
         }, new Map());
     } catch (error) {
-        console.warn(`${MODULE_ID} | Could not determine success damage maximum for a VURS critical`, error);
+        console.warn(`${MODULE_ID} | Could not determine success damage terms for a VURS critical`, error);
         return null;
     }
 }
 
 function replaceCriticalDoubling(term, classes) {
-    const { ArithmeticExpression, Grouping, Die, NumericTerm, DamageInstance, preserveDoubleDice } = classes;
+    const { ArithmeticExpression, Grouping, Die, NumericTerm, preserveDoubleDice } = classes;
     if (term instanceof ArithmeticExpression) {
         const [left, right] = term.operands;
         if (
@@ -92,10 +101,9 @@ function replaceCriticalDoubling(term, classes) {
             left.number === 2
         ) {
             const baseDamage = replaceCriticalDoubling(right, classes);
-            const maximum = DamageInstance.getValue(baseDamage, "maximum");
             const options = { ...term.options };
             delete options.crit;
-            return createDamageSum(baseDamage, maximum, options, classes);
+            return createDamageSum(baseDamage, cloneMaximumDamage(baseDamage, classes), { ...classes, options });
         }
 
         const operands = term.operands.map(operand => replaceCriticalDoubling(operand, classes));
@@ -136,26 +144,74 @@ function replaceCriticalDoubling(term, classes) {
         dieData.options = options;
         const normalDamage = Die.fromData(dieData);
         if (preserveDoubleDice) return normalDamage;
-        const maximum = DamageInstance.getValue(normalDamage, "maximum");
-        return createDamageSum(normalDamage, maximum, {}, classes);
+        return createDamageSum(normalDamage, cloneMaximumDamage(normalDamage, classes), classes);
     }
 
     return term;
 }
 
-function createDamageSum(rolledDamage, maximum, options, { ArithmeticExpression, NumericTerm }) {
-    if (!Number.isFinite(maximum) || maximum <= 0) return rolledDamage;
-    const maximumTerm = NumericTerm.fromData({ class: "NumericTerm", number: maximum });
+function createDamageSum(rolledDamage, addedDamage, { ArithmeticExpression, options = {} }) {
     return ArithmeticExpression.fromData({
         class: "ArithmeticExpression",
         operator: "+",
         operands: [
             resetTermEvaluation(rolledDamage.toJSON()),
-            resetTermEvaluation(maximumTerm.toJSON())
+            resetTermEvaluation(addedDamage.toJSON())
         ],
         options,
         evaluated: false
     });
+}
+
+function cloneMaximumDamage(term, classes) {
+    const { ArithmeticExpression, Grouping, Die } = classes;
+    if (Die && term instanceof Die) {
+        const data = resetTermEvaluation(term.toJSON());
+        data.options = { ...data.options, vursCriticalMaximumDie: true };
+        return Die.fromData(data);
+    }
+
+    if (term instanceof ArithmeticExpression) {
+        const data = resetTermEvaluation(term.toJSON());
+        const options = { ...data.options };
+        delete options.crit;
+        return ArithmeticExpression.fromData({
+            ...data,
+            options,
+            operands: term.operands.map(operand => cloneMaximumDamage(operand, classes).toJSON())
+        });
+    }
+
+    if (term instanceof Grouping) {
+        const data = resetTermEvaluation(term.toJSON());
+        const options = { ...data.options };
+        delete options.crit;
+        return Grouping.fromData({
+            ...data,
+            options,
+            term: cloneMaximumDamage(term.term, classes).toJSON()
+        });
+    }
+
+    return term.constructor.fromData(resetTermEvaluation(term.toJSON()));
+}
+
+function activateCriticalMaximumDice(term, { ArithmeticExpression, Grouping, Die }) {
+    if (Die && term instanceof Die) {
+        if (term.options.vursCriticalMaximumDie) {
+            delete term.options.vursCriticalMaximumDie;
+            term[VURS_CRITICAL_MAXIMUM_DIE] = true;
+        }
+        return;
+    }
+
+    if (term instanceof ArithmeticExpression) {
+        for (const operand of term.operands) {
+            activateCriticalMaximumDice(operand, { ArithmeticExpression, Grouping, Die });
+        }
+    } else if (term instanceof Grouping) {
+        activateCriticalMaximumDice(term.term, { ArithmeticExpression, Grouping, Die });
+    }
 }
 
 function resetTermEvaluation(termData) {
