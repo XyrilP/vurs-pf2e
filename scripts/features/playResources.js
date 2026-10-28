@@ -1222,6 +1222,13 @@ async function ensurePlayResourceMaxDefaults(actor) {
 	const updates = {};
 	for (const definition of PLAY_RESOURCE_DEFINITIONS) {
 		const resource = foundry.utils.getProperty(actor, `${PLAY_RESOURCES_PATH}.${definition.key}`) ?? {};
+		if (definition.key === "magicPoints") {
+			for (const field of ["max", "maxBlood", "maxArcane", "maxOccult", "maxDivine", "maxPrimal", "maxExtra", "maxReduction", "maxTotal", "value"]) {
+				if (resource[field] === undefined || resource[field] === null || resource[field] === "") {
+					updates[`${PLAY_RESOURCES_PATH}.magicPoints.${field}`] = 0;
+				}
+			}
+		}
 		if (typeof resource !== "object") continue;
 		const defaultMax = getFullVursDefaultMax(actor, definition.key);
 		const hasDefaultMax = defaultMax !== undefined && defaultMax !== null && defaultMax !== "" && Number.isFinite(Number(defaultMax));
