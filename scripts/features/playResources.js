@@ -351,7 +351,13 @@ function getPlayResourceEntries(actor) {
 		const defaultMaxValue = finiteResourceNumber(defaultMax);
 		const storedMaxValue = finiteResourceNumber(resource.max);
 		const hasDerivedMax = defaultMax !== undefined && defaultMax !== null && defaultMax !== "" && Number.isFinite(Number(defaultMax));
-		let baseMax = hasDerivedMax ? defaultMaxValue : storedMaxValue;
+		const storedActionMaximum = definition.key === "actionPoints"
+			&& resource.max !== undefined
+			&& resource.max !== null
+			&& resource.max !== "";
+		let baseMax = storedActionMaximum
+			? storedMaxValue
+			: (hasDerivedMax ? defaultMaxValue : storedMaxValue);
 		const maxReductionValue = resource.maxReduction === undefined || resource.maxReduction === null || resource.maxReduction === ""
 			? 0
 			: finiteResourceNumber(resource.maxReduction);
@@ -450,11 +456,21 @@ async function resetOneActorPlayResources(actor, { refillBudgetAndMagic = false 
 	const resources = foundry.utils.getProperty(actor, PLAY_RESOURCES_PATH) ?? {};
 	const updates = {};
 
-	for (const resourceKey of ["actionPoints", "staminaPoints", "tacticPoints", "reactions"]) {
+	for (const resourceKey of ["actionPoints", "staminaPoints", "tacticPoints", "reactions", "styleRank", "karmaPoints"]) {
+		if (resourceKey === "styleRank" || resourceKey === "karmaPoints") {
+			updates[`${PLAY_RESOURCES_PATH}.${resourceKey}.value`] = 0;
+			continue;
+		}
 		const resource = resources[resourceKey] ?? {};
 
 		const defaultMax = finiteResourceNumber(getFullVursDefaultMax(actor, resourceKey));
-		const baseMax = Number.isFinite(defaultMax) && defaultMax > 0 ? defaultMax : finiteResourceNumber(resource.max);
+		const hasStoredActionMaximum = resourceKey === "actionPoints"
+			&& resource.max !== undefined
+			&& resource.max !== null
+			&& resource.max !== "";
+		const baseMax = hasStoredActionMaximum
+			? finiteResourceNumber(resource.max)
+			: (Number.isFinite(defaultMax) && defaultMax > 0 ? defaultMax : finiteResourceNumber(resource.max));
 		const maxReduction = resourceKey === "actionPoints" ? finiteResourceNumber(resource.maxReduction) : 0;
 		updates[`${PLAY_RESOURCES_PATH}.${resourceKey}.value`] = Math.max(0, baseMax - maxReduction);
 	}
@@ -467,8 +483,6 @@ async function resetOneActorPlayResources(actor, { refillBudgetAndMagic = false 
 		}
 	}
 
-	updates[`${PLAY_RESOURCES_PATH}.styleRank.value`] = 0;
-	updates[`${PLAY_RESOURCES_PATH}.karmaPoints.value`] = 0;
 	await actor.update(updates, { render: false });
 }
 
@@ -1288,10 +1302,10 @@ async function ensurePlayResourceMaxDefaults(actor) {
 			const maxReduction = resource.maxReduction === undefined || resource.maxReduction === null || resource.maxReduction === ""
 				? 0
 				: finiteResourceNumber(resource.maxReduction);
-			effectiveMax = Math.max(0, finiteResourceNumber(defaultMax) - maxReduction);
-			if (finiteResourceNumber(resource.max) !== effectiveMax) {
-				updates[`${PLAY_RESOURCES_PATH}.${definition.key}.max`] = effectiveMax;
-			}
+			const outsideMaximum = resource.max === undefined || resource.max === null || resource.max === ""
+				? finiteResourceNumber(defaultMax)
+				: finiteResourceNumber(resource.max);
+			effectiveMax = Math.max(0, outsideMaximum - maxReduction);
 		} else if (resource.max === undefined || resource.max === null || resource.max === "") {
 			updates[`${PLAY_RESOURCES_PATH}.${definition.key}.max`] = finiteResourceNumber(defaultMax);
 		}
