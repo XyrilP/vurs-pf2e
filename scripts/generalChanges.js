@@ -1,4 +1,5 @@
 import { installActorDamageActionContext, installDicelessPatches } from "./features/diceless.js";
+import { installVursCriticalDamage } from "./features/vursCriticalDamage.js";
 import { appendVursPlayCostIcons, createVursPlayCostElement } from "./features/playCostIcons.js";
 import { renderVursPlayResources } from "./features/playResources.js";
 import { applyFullVursSkillAttributes, applyVursHitPoints } from "./features/modes/fullVurs.js";
@@ -930,6 +931,7 @@ function installKeyAttributeStrikes(reprepare = true) {
 
 function installSystemPatches() {
 	installDicelessPatches();
+	installVursCriticalDamage();
 	installVursPlayCostRefreshPatch();
 }
 

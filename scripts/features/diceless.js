@@ -26,6 +26,10 @@ function getDamageRollActor(roll) {
 	return findActorInRollContext(roll) ?? findActorInRollContext(options);
 }
 
+export function getDamageRollActorForVurs(roll) {
+	return getDamageRollActor(roll) ?? activeDamageActors.at(-1) ?? null;
+}
+
 function findActorInRollContext(value, seen = new WeakSet(), depth = 0) {
 	if (!value || typeof value !== "object" || depth > 5 || seen.has(value)) return null;
 	seen.add(value);
@@ -391,7 +395,11 @@ function installVursAverageDamage() {
 					if (isVursCheckRoll) die[VURS_DIE_RESULT] = fixedCheckBase;
 					else {
 						const faces = Number(die.faces);
-						if (Number.isFinite(faces) && faces > 0) die[VURS_DIE_RESULT] = Math.ceil((faces + 1) / 2);
+						if (Number.isFinite(faces) && faces > 0) {
+							die[VURS_DIE_RESULT] = this.options.vursCriticalDamageApplied
+								? faces
+								: Math.ceil((faces + 1) / 2);
+						}
 					}
 				}
 			}

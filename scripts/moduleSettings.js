@@ -6,6 +6,7 @@ const DEFAULT_ATTRIBUTE_MODIFIER_FRAMES_SETTING_KEY = "colorAttributeModifierFra
 const DEFAULT_VURS_SKILLS_SETTING_KEY = "includeVursSkillsInDefault";
 const DEFAULT_SAVE_SKILLS_SETTING_KEY = "addSaveSkillsInDefault";
 const DEFAULT_ACTION_POINTS_SETTING_KEY = "addActionPointsInDefault";
+const DEFAULT_VURS_CRITICAL_DAMAGE_SETTING_KEY = "vursCriticalDamageInDefault";
 
 function requestSettingsRefresh(settingName) {
   const confirm = globalThis.Dialog?.confirm;
@@ -103,6 +104,16 @@ function registerModuleSettings() {
     type: Boolean,
     default: false,
     onChange: () => requestSettingsRefresh("Actions in Default Mode")
+  });
+
+  if (!registered(DEFAULT_VURS_CRITICAL_DAMAGE_SETTING_KEY)) settings.register(MODULE_ID, DEFAULT_VURS_CRITICAL_DAMAGE_SETTING_KEY, {
+    name: "Use VURS Critical Damage in Default Mode",
+    hint: "On critical hits, add maximum damage to the damage roll in Default mode.",
+    scope: "world",
+    config: true,
+    type: Boolean,
+    default: false,
+    onChange: () => requestSettingsRefresh("VURS Critical Damage in Default Mode")
   });
 
 }
