@@ -418,13 +418,13 @@
   align-items: center;
   display: grid;
   gap: 0.65rem;
-  grid-template-columns: minmax(0, 1fr) auto;
+  grid-template-columns: max-content minmax(0, 1fr);
   margin: 0.5rem 0;
 }
 
 .check-modifiers-content .vurs-check-roll-footer>button[type="submit"] {
-  inline-size: max-content;
-  justify-self: end;
+  inline-size: 100%;
+  justify-self: stretch;
   margin: 0;
   max-inline-size: 100%;
 }
@@ -432,9 +432,11 @@
 .check-modifiers-content .vurs-buildup-selector {
   align-items: center;
   display: grid;
-  gap: 0.5rem;
-  grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
+  gap: 0.35rem;
+  grid-template-columns: max-content max-content max-content;
+  max-inline-size: 100%;
   min-width: 0;
+  width: max-content;
 }
 
 .check-modifiers-content .vurs-buildup-label {
@@ -445,10 +447,10 @@
 
 .check-modifiers-content .vurs-buildup-choice {
   align-items: center;
-  block-size: 2.6rem;
-  font-size: var(--font-size-16);
+  block-size: 2.2rem;
+  font-size: var(--font-size-14);
   font-weight: 700;
-  inline-size: 2.6rem;
+  inline-size: 2.2rem;
   justify-self: center;
   margin: 0;
   padding: 0;
@@ -457,9 +459,14 @@
 .check-modifiers-content .vurs-buildup-cost {
   align-items: center;
   display: inline-flex;
-  gap: 0.2rem;
-  justify-self: end;
+  gap: 0.25rem;
+  justify-self: start;
   min-width: 0;
+  white-space: nowrap;
+}
+
+.check-modifiers-content .vurs-buildup-cost strong {
+  font-weight: 700;
   white-space: nowrap;
 }
 

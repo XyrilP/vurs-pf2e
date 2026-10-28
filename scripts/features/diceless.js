@@ -189,9 +189,17 @@ Hooks.on("renderCheckModifiersDialog", (app, html) => {
 		button.textContent = String(8 + modifier);
 		button.setAttribute("aria-label", `Buildup level ${level} of 3`);
 		button.title = "Left-click or scroll up to increase; right-click or scroll down to decrease";
-		label.textContent = `Buildup ${modifier >= 0 ? "+" : ""}${modifier}`;
+		label.textContent = level === 0 ? "No Buildup" : `Buildup +${modifier}`;
 		cost.replaceChildren();
-		if (level > 0) appendVursPlayCostIcons(cost, buildupCosts[level]);
+		if (level > 0) {
+			const costLabel = document.createElement("strong");
+			costLabel.textContent = "Play Cost";
+			const costPrefix = document.createTextNode("+");
+			const costIcons = document.createElement("span");
+			costIcons.className = "vurs-play-cost-description-icons";
+			appendVursPlayCostIcons(costIcons, buildupCosts[level]);
+			cost.append(costLabel, costPrefix, costIcons);
+		}
 	};
 	updateBuildupDisplay();
 	placeBuildupSelector(form, group);
