@@ -2,6 +2,7 @@ import { actorUsesAgnosticVurs, actorUsesVursSystem } from "./systemModes.js";
 
 const PLAY_RESOURCES_PATH = "flags.vurs.playResources";
 const DEFAULT_ACTION_POINTS_SETTING = "addActionPointsInDefault";
+const MAGIC_POINTS_PER_ROW = 10;
 const STYLE_RANK_PHRASES = Object.freeze({
 	1: ["Dull!", "Don't worry!", "Dope!", "Do it!", "Deadly!", "Dirty!", "Dismal!"],
 	2: ["Cool!!", "Come on!!", "Crazy!!", "Carnage!!", "Cruel!!"],
@@ -19,6 +20,9 @@ const PLAY_RESOURCE_DEFINITIONS = Object.freeze([
 	{ key: "karmaPoints", label: "Karma Points", icon: true },
 	{ key: "budgetPoints", label: "Budget Points", hasMaxReduction: true },
 	{ key: "magicPoints", label: "Magic Points", hasMaxReduction: true, segmented: true }
+]);
+const MAGIC_POINT_CONTRIBUTION_FIELDS = Object.freeze([
+	"maxArcane", "maxOccult", "maxDivine", "maxPrimal"
 ]);
 
 const RESOURCE_ICON_BASE = "modules/vurs-pf2e/assets/custom-icons/resource-icons/";
@@ -355,6 +359,8 @@ function getPlayResourceEntries(actor) {
 			if (resource.maxReduction !== undefined && resource.maxReduction !== null && resource.maxReduction !== "") {
 				return Math.max(0, baseMax - maxReductionValue);
 			}
+			if (definition.key === "actionPoints" && hasDerivedMax) return Math.max(0, baseMax);
+			if (definition.key === "magicPoints" && hasDerivedMax) return Math.max(0, baseMax);
 			if (storedMaxValue > 0 && (!hasDerivedMax || storedMaxValue !== baseMax)) {
 				return storedMaxValue;
 			}
@@ -367,7 +373,7 @@ function getPlayResourceEntries(actor) {
 		// Hide resources with no base maximum unless a valid base maximum
 		// was reduced to zero by maxReduction.
 		if (baseMax <= 0) return [];
-		if (max <= 0 && !(definition.hasMaxReduction && maxReduction > 0)) return [];
+		if (max <= 0 && maxReduction <= 0) return [];
 
 		// New resources start full by default. Style Rank and Karma Points are
 		// intentionally passive/empty until the user sets them. Agnostic NPC AP
@@ -379,7 +385,19 @@ function getPlayResourceEntries(actor) {
 		const label = definition.key === "actionPoints" && !actorUsesVursSystem(actor)
 			? "Actions"
 			: definition.label;
-		return [{ ...definition, label, value, max, baseMax, maxReduction }];
+		const magicPointFields = definition.key === "magicPoints"
+			? Object.fromEntries(getMagicPointContributions(actor).map(contribution => [contribution.field, contribution.value]))
+			: {};
+		return [{
+			...definition,
+			...magicPointFields,
+			...(definition.key === "magicPoints" ? { maxExtra: finiteResourceNumber(resource.maxExtra) } : {}),
+			label,
+			value,
+			max,
+			baseMax,
+			maxReduction
+		}];
 	});
 }
 
@@ -397,7 +415,7 @@ async function resetPlayResources(root, actor, button) {
 	button.classList.remove("has-pending-changes");
 	button.disabled = true;
 	try {
-		await resetOneActorPlayResources(actor);
+		await resetOneActorPlayResources(actor, { refillBudgetAndMagic: true });
 		renderVursPlayResources(root, actor);
 	} catch (error) {
 		console.error("vurs-pf2e | Failed to reset Play resources", error);
@@ -406,7 +424,7 @@ async function resetPlayResources(root, actor, button) {
 	}
 }
 
-async function resetOneActorPlayResources(actor) {
+async function resetOneActorPlayResources(actor, { refillBudgetAndMagic = false } = {}) {
 	if (!actor) return;
 	const resources = foundry.utils.getProperty(actor, PLAY_RESOURCES_PATH) ?? {};
 	const updates = {};
@@ -416,7 +434,16 @@ async function resetOneActorPlayResources(actor) {
 
 		const defaultMax = finiteResourceNumber(getFullVursDefaultMax(actor, resourceKey));
 		const baseMax = Number.isFinite(defaultMax) && defaultMax > 0 ? defaultMax : finiteResourceNumber(resource.max);
-		updates[`${PLAY_RESOURCES_PATH}.${resourceKey}.value`] = Math.max(0, baseMax);
+		const maxReduction = resourceKey === "actionPoints" ? finiteResourceNumber(resource.maxReduction) : 0;
+		updates[`${PLAY_RESOURCES_PATH}.${resourceKey}.value`] = Math.max(0, baseMax - maxReduction);
+	}
+	if (refillBudgetAndMagic) {
+		const entries = getPlayResourceEntries(actor);
+		for (const resourceKey of ["budgetPoints", "magicPoints"]) {
+			const entry = entries.find(resource => resource.key === resourceKey);
+			const resourceMax = entry?.max ?? finiteResourceNumber(resources[resourceKey]?.max);
+			updates[`${PLAY_RESOURCES_PATH}.${resourceKey}.value`] = Math.max(0, finiteResourceNumber(resourceMax));
+		}
 	}
 
 	updates[`${PLAY_RESOURCES_PATH}.styleRank.value`] = 0;
@@ -443,13 +470,7 @@ function getFullVursDefaultMax(actor, resourceKey) {
 	// Agnostic PCs keep the classic 3 AP / 1 Reaction defaults. Agnostic NPCs
 	// get the full VURS resource set, while retaining Agnostic minimums.
 	if (agnostic && !agnosticNpc) {
-		if (resourceKey === "actionPoints") {
-			const storedMax = foundry.utils.getProperty(actor, `${PLAY_RESOURCES_PATH}.actionPoints.max`);
-			if (storedMax !== undefined && storedMax !== null && storedMax !== "" && Number.isFinite(Number(storedMax))) {
-				return Math.max(0, Number(storedMax));
-			}
-			return 3;
-		}
+		if (resourceKey === "actionPoints") return 3;
 		if (resourceKey === "reactions") return 1;
 		return undefined;
 	}
@@ -481,8 +502,11 @@ function getFullVursDefaultMax(actor, resourceKey) {
 			return Math.max(0, Math.min(attributeModifier("wis"), skillRank("soul")));
 		case "budgetPoints":
 			return Math.max(0, 5 + finiteResourceNumber(system?.abilities?.con?.mod) + 2 * skillRank("acquisition"));
-		case "magicPoints":
-			return getMagicPointContributions(actor).reduce((total, contribution) => total + contribution.value, 0);
+		case "magicPoints": {
+			const contributions = getMagicPointContributions(actor);
+			const maxExtra = finiteResourceNumber(foundry.utils.getProperty(actor, `${PLAY_RESOURCES_PATH}.magicPoints.maxExtra`));
+			return contributions.reduce((total, contribution) => total + contribution.value, maxExtra);
+		}
 		default:
 			return undefined;
 	}
@@ -544,6 +568,9 @@ function createPlayResourceRow(resource, actor) {
 	// Keep the render-time resource model on the row so wheel edits do not
 	// rebuild/recalculate every resource on each tick.
 	row._vursResource = resource;
+	if (resource.key === "magicPoints" && !isNpcActor(actor)) {
+		row._vursMagicPointPage = getMagicPointPageForValue(resource.value, resource.max);
+	}
 	if (resource.key === "budgetPoints") row.classList.add("budget-points");
 	if (resource.key === "magicPoints") row.classList.add("magic-points");
 	if (resource.key === "budgetPoints") {
@@ -552,16 +579,12 @@ function createPlayResourceRow(resource, actor) {
 		row.style.setProperty("--vurs-resource-frame", resourceFrameDataUrl("#3498db"));
 	}
 
-	const value = document.createElement("span");
-	value.className = "value";
-	value.textContent = `${formatResourceNumber(resource.value)} / ${formatResourceNumber(resource.max)}`;
-
 	if (resource.icon) {
 		const control = document.createElement("button");
 		control.type = "button";
 		control.className = "vurs-play-resource-control";
-		control.title = resource.label;
-		control.setAttribute("aria-label", `${resource.label}: ${formatResourceNumber(resource.value)} of ${formatResourceNumber(resource.max)}. Left click to increase; right click to decrease.`);
+		control.title = `${resource.label}: left click to increase; right-click to decrease; Ctrl+left-click to increase maximum; Ctrl+right-click to decrease maximum.`;
+		control.setAttribute("aria-label", `${resource.label}: ${formatResourceNumber(resource.value)} of ${formatResourceNumber(resource.max)}. Left click to increase; right click to decrease; Ctrl+left-click to increase maximum; Ctrl+right-click to decrease maximum.`);
 		const icon = document.createElement("img");
 		const iconFile = getResourceIcon(resource).replace(/\.webp$/i, ".svg");
 		icon.src = `${RESOURCE_ICON_BASE}${iconFile}`;
@@ -570,16 +593,7 @@ function createPlayResourceRow(resource, actor) {
 		// Keep numeric values outside the icon; the adjacent editable field is
 		// the single place for current/max numbers.
 		control.append(icon);
-		control.addEventListener("click", event => {
-			event.preventDefault();
-			if (control.dataset.updating) return;
-			void adjustPlayResource(actor, resource, 1, control);
-		});
-		control.addEventListener("contextmenu", event => {
-			event.preventDefault();
-			if (control.dataset.updating) return;
-			void adjustPlayResource(actor, resource, -1, control);
-		});
+		addPlayResourceControlHandlers(control, actor, resource);
 		row.append(control);
 
 		// All icon resources get the same direct-edit field as BP/MP, so a value
@@ -589,7 +603,11 @@ function createPlayResourceRow(resource, actor) {
 		const currentValue = createEditableCurrentValue(resource, actor);
 		const maximum = document.createElement("span");
 		maximum.className = "vurs-play-resource-maximum";
-		maximum.textContent = formatResourceNumber(resource.max);
+		const maxValue = document.createElement("span");
+		maxValue.className = "vurs-play-resource-max-value";
+		maxValue.textContent = formatResourceNumber(resource.max);
+		maximum.append(maxValue);
+		if (resource.maxReduction !== 0) maximum.append(createMaxReductionBadge(resource.maxReduction));
 		maximum.setAttribute("aria-label", `${resource.label} maximum`);
 		editFields.append(currentValue, " / ", maximum);
 		row.append(editFields);
@@ -644,7 +662,9 @@ function createPlayResourceRow(resource, actor) {
 			star.title = resource.label;
 			bar.append(star);
 		} else {
-			for (const segmentData of getMagicPointSegments(actor, resource)) {
+			const pageSegments = getMagicPointPageSegments(actor, resource, row._vursMagicPointPage ?? 0);
+			bar.style.setProperty("--mp-star-count", String(Math.max(1, pageSegments.length)));
+			for (const segmentData of pageSegments) {
 				for (let index = 0; index < Math.max(0, Math.floor(segmentData.size)); index += 1) {
 					const star = document.createElement("i");
 					const filled = segmentData.start + index < resource.value;
@@ -660,19 +680,6 @@ function createPlayResourceRow(resource, actor) {
 		fields.append(...createEditableResourceFields(resource, actor));
 		frame.append(bar, fields);
 		row.append(frame);
-	}
-
-	if (resource.hasMaxReduction && resource.maxReduction !== 0 && resource.key !== "budgetPoints") {
-		const reduction = document.createElement("span");
-		reduction.className = "vurs-play-resource-max-reduction";
-		if (resource.maxReduction < 0) reduction.classList.add("is-increase");
-		const adjustment = resource.maxReduction > 0
-			? `-${formatResourceNumber(resource.maxReduction)}`
-			: `+${formatResourceNumber(Math.abs(resource.maxReduction))}`;
-		reduction.textContent = adjustment;
-		reduction.setAttribute("aria-label", `Maximum reduced by ${formatResourceNumber(resource.maxReduction)}`);
-		reduction.title = `Maximum reduced by ${formatResourceNumber(resource.maxReduction)}`;
-		value.append(" ", reduction);
 	}
 
 	if (resource.segmented && resource.key !== "magicPoints") {
@@ -715,21 +722,25 @@ function getMagicPointContributions(actor) {
 	};
 	return [
 		{
+			field: "maxArcane",
 			label: `${abilityLabel("PF2E.AbilityInt", "Intelligence", "Intelligence")} (${localize("PF2E.TraitArcane", "Arcane")})`,
 			color: "#3498db",
 			value: 2 * Math.min(modifier("int"), rank("arcana"))
 		},
 		{
+			field: "maxOccult",
 			label: `${abilityLabel("PF2E.AbilityCha", "Void", "Charisma")} (${localize("PF2E.TraitOccult", "Occult")})`,
 			color: "#9b59b6",
 			value: Math.min(modifier("cha"), rank("occultism"))
 		},
 		{
+			field: "maxDivine",
 			label: `${abilityLabel("PF2E.AbilityWis", "Spirit", "Wisdom")} (${localize("PF2E.TraitDivine", "Divine")})`,
 			color: "#00bcd4",
 			value: Math.min(modifier("wis"), rank("religion"))
 		},
 		{
+			field: "maxPrimal",
 			label: `${abilityLabel("PF2E.AbilityWis", "Spirit", "Wisdom")} (${localize("PF2E.TraitPrimal", "Primal")})`,
 			color: "#2ecc71",
 			value: Math.min(modifier("wis"), rank("nature"))
@@ -740,11 +751,19 @@ function getMagicPointContributions(actor) {
 function getMagicPointSegments(actor, resource) {
 	const remainingMaximum = Math.max(0, resource.max);
 	const segments = [];
+	const contributionTotal = getMagicPointContributions(actor)
+		.reduce((total, contribution) => total + contribution.value, finiteResourceNumber(resource.maxExtra));
 	let remaining = remainingMaximum;
 	let start = 0;
+	const excess = Math.min(remaining, Math.max(0, remainingMaximum - contributionTotal));
+	for (let index = 0; index < excess && segments.length < 200; index += 1) {
+		segments.push({ start, size: 1, color: "#3498db", label: "Magic Points (extra)" });
+		start += 1;
+		remaining -= 1;
+	}
 
 	for (const contribution of getMagicPointContributions(actor)) {
-		const capacity = Math.min(remaining, Math.max(0, contribution.value));
+		const capacity = Math.min(remaining, Math.max(0, resource[contribution.field] ?? contribution.value));
 		let contributionRemaining = capacity;
 		while (contributionRemaining > 0 && segments.length < 200) {
 			const size = Math.min(1, contributionRemaining);
@@ -755,18 +774,34 @@ function getMagicPointSegments(actor, resource) {
 		remaining -= capacity;
 		if (remaining <= 0 || segments.length >= 200) break;
 	}
-
-	// If the editable maximum exceeds the formula, retain the extra capacity
-	// with the yellow overflow color instead of leaving a gap in the bar.
-	while (remaining > 0 && segments.length < 200) {
-		const size = Math.min(1, remaining);
+	let extraRemaining = Math.min(remaining, Math.max(0, finiteResourceNumber(resource.maxExtra)));
+	while (extraRemaining > 0 && segments.length < 200) {
+		const size = Math.min(1, extraRemaining);
 		segments.push({ start, size, color: "#f1c40f", label: "Magic Points (extra)" });
 		start += size;
 		remaining -= size;
+		extraRemaining -= size;
 	}
 
 	if (!segments.length) segments.push({ start: 0, size: 0, color: "#f1c40f", label: "Magic Points" });
 	return segments;
+}
+
+function getMagicPointPageForValue(value, max) {
+	const pageCount = Math.max(1, Math.ceil(Math.max(0, max) / MAGIC_POINTS_PER_ROW));
+	const page = Math.max(0, Math.ceil(Math.max(0, value) / MAGIC_POINTS_PER_ROW) - 1);
+	return Math.min(page, pageCount - 1);
+}
+
+function getMagicPointPageSegments(actor, resource, page) {
+	const start = page * MAGIC_POINTS_PER_ROW;
+	const segments = [];
+	for (const segment of getMagicPointSegments(actor, resource)) {
+		for (let index = 0; index < Math.floor(segment.size) && segments.length < 200; index += 1) {
+			segments.push({ ...segment, start: segment.start + index, size: 1 });
+		}
+	}
+	return segments.slice(start, start + MAGIC_POINTS_PER_ROW);
 }
 
 function addResourceWheelEditing(input, getMaximum) {
@@ -836,6 +871,10 @@ function createEditableResourceFields(resource, actor) {
 		const next = Math.clamp(finiteResourceNumber(currentValue.value), 0, resource.max);
 		currentValue.value = String(next);
 		sizeNumberField(currentValue, next);
+		if (resource.key === "magicPoints" && !isNpcActor(actor)) {
+			const row = currentValue.closest("li.vurs-play-resource");
+			if (row) row._vursMagicPointPage = getMagicPointPageForValue(next, resource.max);
+		}
 		void savePlayResourceValue(actor, resource.key, next, currentValue);
 	});
 	addResourceWheelEditing(currentValue, () => resource.max);
@@ -861,18 +900,26 @@ function createEditableResourceFields(resource, actor) {
 	const maximumDisplay = document.createElement("span");
 	maximumDisplay.className = "vurs-play-resource-maximum";
 	maximumDisplay.append(maximum);
-	if (resource.maxReduction !== 0) {
-		const delta = document.createElement("span");
-		delta.className = "vurs-play-resource-max-reduction-delta";
-		if (resource.maxReduction < 0) delta.classList.add("is-increase");
-		delta.textContent = resource.maxReduction > 0
-			? `-${formatResourceNumber(resource.maxReduction)}`
-			: `+${formatResourceNumber(Math.abs(resource.maxReduction))}`;
-		delta.title = `Maximum adjustment: ${delta.textContent}`;
-		maximumDisplay.append(delta);
-	}
+	if (resource.maxReduction !== 0) maximumDisplay.append(createMaxReductionBadge(resource.maxReduction));
 
 	return [currentValue, " / ", maximumDisplay];
+}
+
+function createMaxReductionBadge(maxReduction) {
+	const badge = document.createElement("span");
+	badge.className = "vurs-play-resource-max-reduction-delta";
+	updateMaxReductionBadge(badge, maxReduction);
+	return badge;
+}
+
+function updateMaxReductionBadge(badge, maxReduction) {
+	const adjustment = maxReduction > 0
+		? `-${formatResourceNumber(maxReduction)}`
+		: `+${formatResourceNumber(Math.abs(maxReduction))}`;
+	badge.classList.toggle("is-increase", maxReduction < 0);
+	badge.textContent = adjustment;
+	badge.setAttribute("aria-label", `Maximum adjusted by ${adjustment}`);
+	badge.title = `Maximum adjusted by ${adjustment}`;
 }
 
 function createBudgetCoinStacks(resource, actor) {
@@ -926,6 +973,10 @@ async function adjustPlayResource(actor, resource, amount, control) {
 	const max = pendingReduction === undefined ? resource.max : Math.max(0, resource.baseMax - finiteResourceNumber(pendingReduction));
 	const next = Math.clamp(current + amount, 0, max);
 	if (next === current) return;
+	if (resource.key === "magicPoints" && !isNpcActor(actor)) {
+		const row = control?.closest?.("li.vurs-play-resource");
+		if (row) row._vursMagicPointPage = getMagicPointPageForValue(next, max);
+	}
 	await savePlayResourceValue(actor, resource.key, next, control);
 }
 
@@ -966,6 +1017,9 @@ async function savePlayResourceFlags(actor, updates, control) {
 				resource.maxReduction = finiteResourceNumber(nextValue);
 				resource.max = Math.max(0, resource.baseMax - resource.maxReduction);
 				resource.value = Math.clamp(resource.value, 0, resource.max);
+				if (resourceKey === "magicPoints" && !isNpcActor(actor)) {
+					row._vursMagicPointPage = getMagicPointPageForValue(resource.value, resource.max);
+				}
 			}
 		}
 		const currentInput = row.querySelector('input[aria-label$="current value"]');
@@ -988,7 +1042,7 @@ async function savePlayResourceFlags(actor, updates, control) {
 			const preloaded = preloadedResourceIcons.get(iconFile);
 			icon.src = preloaded?.src ?? `${RESOURCE_ICON_BASE}${iconFile}`;
 			const control = icon.closest("button");
-			if (control) control.setAttribute("aria-label", `${resource.label}: ${formatResourceNumber(resource.value)} of ${formatResourceNumber(resource.max)}. Left click to increase; right click to decrease.`);
+			if (control) control.setAttribute("aria-label", `${resource.label}: ${formatResourceNumber(resource.value)} of ${formatResourceNumber(resource.max)}. Left click to increase; right click to decrease; Ctrl+left-click to increase maximum; Ctrl+right-click to decrease maximum.`);
 		}
 		// Reflect staged BP/MP values in the segment icons before Apply is clicked.
 		if (resourceKey === "budgetPoints") {
@@ -996,6 +1050,7 @@ async function savePlayResourceFlags(actor, updates, control) {
 			if (bar) {
 				bar.setAttribute("aria-valuemax", String(resource.max));
 				bar.setAttribute("aria-valuenow", String(resource.value));
+				bar.replaceChildren(createBudgetCoinStacks(resource, actor));
 				bar.querySelectorAll(".coin").forEach((coin, index) => {
 					coin.classList.toggle("is-filled", index < resource.value);
 					coin.classList.toggle("is-empty", index >= resource.value);
@@ -1015,18 +1070,27 @@ async function savePlayResourceFlags(actor, updates, control) {
 						star.classList.toggle("fa-regular", resource.value <= 0);
 					}
 				} else {
-					bar.querySelectorAll(".vurs-mp-star").forEach((star, index) => {
-						const filled = index < resource.value;
-						star.classList.toggle("is-filled", filled);
-						star.classList.toggle("is-empty", !filled);
-						star.classList.toggle("fa-solid", filled);
-						star.classList.toggle("fa-regular", !filled);
-					});
+					bar.replaceChildren();
+					const pageSegments = getMagicPointPageSegments(actor, resource, row._vursMagicPointPage ?? 0);
+					bar.style.setProperty("--mp-star-count", String(Math.max(1, pageSegments.length)));
+					for (const segmentData of pageSegments) {
+						for (let index = 0; index < Math.max(0, Math.floor(segmentData.size)); index += 1) {
+							const star = document.createElement("i");
+							const filled = segmentData.start + index < resource.value;
+							star.className = `${filled ? "fa-solid" : "fa-regular"} fa-star vurs-mp-star ${filled ? "is-filled" : "is-empty"}`;
+							star.style.setProperty("--segment-color", segmentData.color);
+							star.title = segmentData.label ?? resource.label;
+							bar.append(star);
+						}
+					}
 				}
 			}
 		}
-		const valueDisplay = row.querySelector(":scope > .value");
-		if (valueDisplay) valueDisplay.textContent = `${formatResourceNumber(resource.value)} / ${formatResourceNumber(resource.max)}`;
+		if (resourceKey === "styleRank") {
+			const sheet = row.closest(".actor.sheet.character") ?? row.closest("form");
+			if (sheet) renderStyleRankOverlay(sheet, actor, resource.value);
+		}
+		updatePlayResourceMaximumDisplay(row, resource);
 	}
 	const apply = section.querySelector(".vurs-play-apply");
 	if (apply) {
@@ -1034,6 +1098,26 @@ async function savePlayResourceFlags(actor, updates, control) {
 		apply.disabled = false;
 		apply.classList.toggle("has-pending-changes", hasPending);
 		apply.textContent = "Apply";
+	}
+}
+
+function updatePlayResourceMaximumDisplay(row, resource) {
+	const maximumDisplay = row.querySelector(".vurs-play-resource-maximum");
+	if (maximumDisplay) {
+		const maximumInput = maximumDisplay.querySelector("input");
+		const maximumValue = maximumDisplay.querySelector(".vurs-play-resource-max-value");
+		if (maximumInput) {
+			maximumInput.value = String(resource.max);
+			sizeNumberField(maximumInput, resource.max);
+		} else if (maximumValue) {
+			maximumValue.textContent = formatResourceNumber(resource.max);
+		} else {
+			maximumDisplay.insertBefore(document.createTextNode(formatResourceNumber(resource.max)), maximumDisplay.firstChild);
+		}
+		let delta = maximumDisplay.querySelector(".vurs-play-resource-max-reduction-delta");
+		if (resource.maxReduction === 0) delta?.remove();
+		else if (delta) updateMaxReductionBadge(delta, resource.maxReduction);
+		else maximumDisplay.append(createMaxReductionBadge(resource.maxReduction));
 	}
 }
 
@@ -1076,11 +1160,47 @@ async function ensurePlayResourceMaxDefaults(actor) {
 		const resource = foundry.utils.getProperty(actor, `${PLAY_RESOURCES_PATH}.${definition.key}`) ?? {};
 		if (typeof resource !== "object") continue;
 		const defaultMax = getFullVursDefaultMax(actor, definition.key);
-		if (resource.max === undefined || resource.max === null || resource.max === "") {
+		const hasDefaultMax = defaultMax !== undefined && defaultMax !== null && defaultMax !== "" && Number.isFinite(Number(defaultMax));
+		let effectiveMax = finiteResourceNumber(defaultMax);
+		if (definition.key === "magicPoints" && hasDefaultMax) {
+			const contributions = getMagicPointContributions(actor);
+			const contributionTotal = contributions.reduce((total, contribution) => {
+				const path = `${PLAY_RESOURCES_PATH}.magicPoints.${contribution.field}`;
+				if (finiteResourceNumber(resource[contribution.field]) !== contribution.value) updates[path] = contribution.value;
+				return total + contribution.value;
+			}, 0);
+			const maxExtra = resource.maxExtra === undefined || resource.maxExtra === null || resource.maxExtra === ""
+				? 0
+				: finiteResourceNumber(resource.maxExtra);
+			if (resource.maxExtra === undefined || resource.maxExtra === null || resource.maxExtra === "") {
+				updates[`${PLAY_RESOURCES_PATH}.magicPoints.maxExtra`] = 0;
+			}
+			const mechanicalMax = contributionTotal + maxExtra;
+			if (finiteResourceNumber(resource.max) !== mechanicalMax) {
+				updates[`${PLAY_RESOURCES_PATH}.magicPoints.max`] = mechanicalMax;
+			}
+			const maxReduction = finiteResourceNumber(resource.maxReduction);
+			effectiveMax = Math.max(0, mechanicalMax - maxReduction);
+			if (resource.value === undefined || resource.value === null || resource.value === "") {
+				updates[`${PLAY_RESOURCES_PATH}.magicPoints.value`] = effectiveMax;
+			} else if (finiteResourceNumber(resource.value) > effectiveMax) {
+				updates[`${PLAY_RESOURCES_PATH}.magicPoints.value`] = effectiveMax;
+			}
+			continue;
+		}
+		if (definition.key === "actionPoints" && hasDefaultMax) {
+			const maxReduction = resource.maxReduction === undefined || resource.maxReduction === null || resource.maxReduction === ""
+				? 0
+				: finiteResourceNumber(resource.maxReduction);
+			effectiveMax = Math.max(0, finiteResourceNumber(defaultMax) - maxReduction);
+			if (finiteResourceNumber(resource.max) !== effectiveMax) {
+				updates[`${PLAY_RESOURCES_PATH}.${definition.key}.max`] = effectiveMax;
+			}
+		} else if (resource.max === undefined || resource.max === null || resource.max === "") {
 			updates[`${PLAY_RESOURCES_PATH}.${definition.key}.max`] = finiteResourceNumber(defaultMax);
 		}
-		if ((resource.value === undefined || resource.value === null || resource.value === "") && Number.isFinite(finiteResourceNumber(defaultMax))) {
-			updates[`${PLAY_RESOURCES_PATH}.${definition.key}.value`] = Math.max(0, finiteResourceNumber(defaultMax));
+		if ((resource.value === undefined || resource.value === null || resource.value === "") && Number.isFinite(effectiveMax)) {
+			updates[`${PLAY_RESOURCES_PATH}.${definition.key}.value`] = Math.max(0, effectiveMax);
 		}
 	}
 	if (Object.keys(updates).length) await actor.update(updates, { render: false });

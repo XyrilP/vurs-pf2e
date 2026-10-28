@@ -176,6 +176,10 @@ Hooks.on("renderCheckModifiersDialog", (app, html) => {
 	const label = document.createElement("span");
 	label.className = "vurs-buildup-label";
 	label.setAttribute("aria-live", "polite");
+	const labelTitle = document.createElement("span");
+	const labelModifier = document.createElement("span");
+	labelModifier.className = "vurs-buildup-modifier";
+	label.append(labelTitle, labelModifier);
 	const button = document.createElement("button");
 	button.type = "button";
 	button.className = "vurs-buildup-choice";
@@ -190,7 +194,8 @@ Hooks.on("renderCheckModifiersDialog", (app, html) => {
 		button.textContent = String(base);
 		button.setAttribute("aria-label", `Buildup level ${level} of 3`);
 		button.title = "Left-click or scroll up to increase; right-click or scroll down to decrease";
-		label.textContent = level === 0 ? "Buildup" : `Buildup +${modifier}`;
+		labelTitle.textContent = "Buildup";
+		labelModifier.textContent = `+${modifier}`;
 		label.classList.toggle("off", level === 0);
 		cost.replaceChildren();
 		if (level > 0) cost.append(createVursPlayCostElement(`+${buildupCosts[level]}`, "top"));

@@ -33,7 +33,7 @@ export function appendVursPlayCostIcons(container, playCost) {
             container.append(separator);
             continue;
         }
-        const match = entry.match(/^(\d+)?\s*(AP|SP|TP|BP|MP|RP|REACTIONS?|FREE)$/i);
+        const match = entry.match(/^(\d+)?\s*(AP|SP|TP|BP|MP|KP|SR|RP|REACTIONS?|FREE)$/i);
         if (!match) {
             container.append(document.createTextNode(entry));
             continue;
@@ -99,14 +99,18 @@ export function appendVursPlayCostIcons(container, playCost) {
             lastAmount = amount;
             continue;
         }
-        const iconName = amount === 1 ? `One${resource}`
-            : amount === 2 ? `Two${resource}`
-                : amount === 3 ? `Three${resource}` : `Longer${resource}`;
-        const icon = document.createElement("img");
-        icon.src = `${RESOURCE_ICON_BASE}${iconName}.svg`;
-        icon.alt = entry;
-        icon.draggable = false;
-        container.append(icon);
+        let remaining = amount;
+        while (remaining > 0) {
+            const stackAmount = Math.min(3, remaining);
+            const iconName = stackAmount === 1 ? `One${resource}`
+                : stackAmount === 2 ? `Two${resource}` : `Three${resource}`;
+            const icon = document.createElement("img");
+            icon.src = `${RESOURCE_ICON_BASE}${iconName}.svg`;
+            icon.alt = `${stackAmount} ${resource}`;
+            icon.draggable = false;
+            container.append(icon);
+            remaining -= stackAmount;
+        }
         lastAmount = amount;
     }
 }

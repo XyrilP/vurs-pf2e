@@ -314,14 +314,20 @@
 }
 
 .actor.sheet.character .sidebar>.vurs-play-resources [data-resource="magicPoints"] .vurs-play-resource-segments {
+  align-content: start;
   align-items: center;
+  display: grid;
+  grid-auto-flow: row;
+  grid-auto-rows: 0.5rem;
+  grid-template-columns: repeat(var(--mp-star-count, 10), 0.68rem);
+  height: auto;
   justify-content: center;
-  height: 1.8rem;
   margin: 0;
-  min-height: 1.8rem;
+  min-height: 0.5rem;
   padding: 0;
   gap: 0;
-  overflow: hidden;
+  overflow: visible;
+  width: 100%;
 }
 
 .actor.sheet.character .sidebar>.vurs-play-resources .vurs-play-resource-segments {
@@ -440,9 +446,18 @@
 }
 
 .check-modifiers-content .vurs-buildup-label {
+  display: flex;
+  flex-direction: column;
   font-size: var(--font-size-12);
   justify-self: start;
+  line-height: 1.1;
   min-width: 0;
+}
+
+.check-modifiers-content .vurs-buildup-modifier {
+  align-self: flex-end;
+  font-size: var(--font-size-10);
+  text-align: right;
 }
 
 .check-modifiers-content .vurs-buildup-label.off {
@@ -645,12 +660,12 @@
 
 .actor.sheet.character .sidebar>.vurs-play-resources .vurs-mp-star {
   color: var(--segment-color, #5ab8ff);
-  flex: 1 1 0;
-  font-size: clamp(0.35rem, 1.2vw, 0.75rem);
-  line-height: 1;
+  font-size: 0.56rem;
+  height: 0.5rem;
+  line-height: 0.5rem;
   margin: 0;
-  min-width: 0;
   text-align: center;
+  width: 0.68rem;
 }
 
 .actor.sheet.character .sidebar>.vurs-play-resources .vurs-mp-star-stack,
