@@ -82,8 +82,9 @@ function getInlineDamageActor(anchor) {
 	if (message?.speakerActor) return message.speakerActor;
 	
 	const appElement = anchor.closest(".sheet");
+	const v2App = appElement?.id ? foundry.applications?.instances?.get(appElement.id) : null;
 	const appId = Number(appElement?.dataset.appid);
-	const app = Number.isFinite(appId) ? ui.windows?.[appId] : null;
+	const app = v2App ?? (Number.isFinite(appId) ? ui.windows?.[appId] : null);
 	if (app?.actor) return app.actor;
 	if (app?.item?.actor) return app.item.actor;
 	
@@ -321,27 +322,18 @@ Hooks.on("pf2e.preReroll", (originalRoll, newRoll, resource, rerollOptions = {})
 });
 
 function chooseFlatCheckBuildup() {
-	return new Promise(resolve => {
-		let settled = false;
-		const finish = value => {
-			if (settled) return;
-			settled = true;
-			resolve(value);
-		};
-		new Dialog({
-			title: "VURS Check",
-			content: "Choose a Buildup value for this check.",
-			buttons: {
-				base: { label: "None (8)", callback: () => finish(0) },
-				two: { label: "+2 (10)", callback: () => finish(2) },
-				five: { label: "+5 (13)", callback: () => finish(5) },
-				ten: { label: "+10 (18)", callback: () => finish(10) },
-				cancel: { label: "Cancel", callback: () => finish(null) }
-			},
-			default: "base",
-			close: () => finish(null)
-		}).render(true);
-	});
+	return foundry.applications.api.DialogV2.wait({
+		window: { title: "VURS Check" },
+		content: "Choose a Buildup value for this check.",
+		rejectClose: false,
+		buttons: [
+			{ action: "base", label: "None (8)", default: true, callback: () => 0 },
+			{ action: "two", label: "+2 (10)", callback: () => 2 },
+			{ action: "five", label: "+5 (13)", callback: () => 5 },
+			{ action: "ten", label: "+10 (18)", callback: () => 10 },
+			{ action: "cancel", label: "Cancel", callback: () => null }
+		]
+	}).then(result => typeof result === "number" ? result : null);
 }
 
 /**

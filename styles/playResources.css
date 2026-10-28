@@ -408,7 +408,8 @@
   color: var(--text-light);
 }
 
-.vurs-play-modifiers-dialog .window-content {
+.vurs-play-modifiers-dialog .window-content,
+.vurs-play-modifiers-dialog .application-content {
   background: transparent;
   padding: 0.35rem 0.5rem 0.5rem;
 }

@@ -30,7 +30,7 @@ const RESOURCE_ICON_PRELOAD_FILES = Object.freeze([
 	"OneSR.svg", "TwoSR.svg", "ThreeSR.svg", "LongerSR.svg",
 	"OneAction.svg", "TwoActions.svg", "ThreeActions.svg",
 	"OneAP.svg", "TwoAP.svg", "ThreeAP.svg", "LongerAP.svg", "Reaction.svg",
-	"Style-Rank_1.svg", "Style-Rank_2.svg", "Style-Rank_3.svg", "Style-Rank_4.svg", "Style-Rank_5.svg"
+	"Style-Rank_1D.svg", "Style-Rank_2C.svg", "Style-Rank_3B.svg", "Style-Rank_4A.svg", "Style-Rank_5S.svg"
 ]);
 const preloadedResourceIcons = new Map();
 let resourceIconsPreloadStarted = false;

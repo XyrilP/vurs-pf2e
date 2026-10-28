@@ -36,6 +36,7 @@ const VURS_KEY_DAMAGE_MODIFIER = Symbol("vurs-pf2e.keyDamageModifier");
 const VURS_IWR_TEST_PATCH = Symbol("vurs-pf2e.iwrTestPatch");
 const VURS_IWR_INSTANCE_TEST_PATCH = Symbol("vurs-pf2e.iwrInstanceTestPatch");
 const VURS_SPECIAL_IWR_RULE_PATCH = Symbol("vurs-pf2e.specialIwrRulePatch");
+const VURS_PLAY_COST_REFRESH_PATCH = Symbol("vurs-pf2e.playCostRefreshPatch");
 const registeredIwrDamageTargets = new Set();
 const VURS_MAIN_ATTRIBUTE_ENABLED = true;
 const VURS_ABILITY_KEYS = ["str", "dex", "con", "int", "wis", "cha"];
@@ -208,25 +209,6 @@ Hooks.on("preUpdateItem", (item, changes) => {
 	changes.flags.vurs ??= {};
 	changes.flags.vurs["-=playCost"] = null;
 });
-Hooks.on("updateItem", (item, changes, options, userId) => {
-	const parentItem = item?.parentUuid ? fromUuidSync(item.parentUuid) : null;
-	if (!parentItem || parentItem === item) return;
-	const hasPlayCostChange = !!changes && (
-		Object.hasOwn(changes, "flags.vurs.playCost") ||
-		(!!changes?.flags?.vurs && Object.hasOwn(changes.flags.vurs, "playCost"))
-	);
-	const playCost = hasPlayCostChange
-		? foundry.utils.getProperty(changes, "flags.vurs.playCost")
-		: foundry.utils.getProperty(item, "flags.vurs.playCost");
-	if (playCost === undefined) return;
-	const targetValue = String(playCost ?? "").split(";").map(entry => entry.trim()).filter(Boolean).join("; ");
-	const currentValue = String(foundry.utils.getProperty(parentItem, "flags.vurs.playCost") ?? "");
-	if (targetValue === currentValue) return;
-	const update = targetValue
-		? { "flags.vurs.playCost": targetValue }
-		: { "flags.vurs.-=playCost": null };
-	void parentItem.update(update, { render: false });
-});
 Hooks.on("renderApplication", (app, html) => applyActorSheetPresentation(app, html));
 
 Hooks.on("updateActor", (actor, changes, options = {}) => {
@@ -335,18 +317,8 @@ function replaceVursPlayCostTokensOnActorSheet(root, actor) {
 function addVursAbilityCostField(app, element) {
 	const item = app?.item ?? app?.object;
 	if (!item || !["action", "feat"].includes(item.type)) return;
-	const parentItem = item.parentUuid ? fromUuidSync(item.parentUuid) : null;
-	if (parentItem && parentItem !== item) {
-		const parentValue = foundry.utils.getProperty(parentItem, "flags.vurs.playCost");
-		if (parentValue !== undefined && parentValue !== foundry.utils.getProperty(item, "flags.vurs.playCost")) {
-			item.flags ??= {};
-			item.flags.vurs ??= {};
-			item.flags.vurs.playCost = parentValue;
-		}
-	}
-	const sourceItem = item.parentUuid ? (parentItem ?? item) : item;
 	const root = element instanceof HTMLElement ? element : element?.[0];
-	const currentPlayCost = String(foundry.utils.getProperty(sourceItem, "flags.vurs.playCost") ?? "");
+	const currentPlayCost = String(foundry.utils.getProperty(item, "flags.vurs.playCost") ?? "");
 	const playCost = resolveVursPlayCostRolls(currentPlayCost, item.actor ?? item.parent?.actor)
 		.split("; ")
 		.map(entry => entry.trim())
@@ -928,7 +900,7 @@ function applySystemMode(mode = getSystemMode()) {
 		...(game.actors?.contents ?? []),
 		...getCanvasActors(),
 		game.user?.character,
-		...Object.values(ui.windows ?? {}).map(app => app.actor)
+		...getOpenApplications().map(app => app.actor ?? app.document?.actor)
 	].filter(Boolean));
 	for (const actor of actors) {
 		installActorKeyAttributeSupport(actor, false);
@@ -936,9 +908,31 @@ function applySystemMode(mode = getSystemMode()) {
 		// prepareData directly can leave startup-derived sheet data stale until
 		// the next document update (such as changing HP).
 		actor.reset?.();
-		actor.sheet?.render?.(false);
+		rerenderApplication(actor.sheet);
 	}
-	for (const app of Object.values(ui.windows ?? {})) app.render?.(false);
+	for (const app of getOpenApplications()) rerenderApplication(app);
+}
+
+function getOpenApplications() {
+	const v2Applications = foundry.applications?.instances?.values?.() ?? [];
+	return [...new Set([...Object.values(ui.windows ?? {}), ...v2Applications])];
+}
+
+function rerenderApplication(app) {
+	if (typeof app?.render !== "function") return;
+	const ApplicationV2 = foundry.applications?.api?.ApplicationV2;
+	if (ApplicationV2 && app instanceof ApplicationV2) app.render({ force: true });
+	else app.render(false);
+}
+
+function getApplicationForRoot(root) {
+	const applicationElement = root?.closest?.(".application");
+	const v2App = applicationElement?.id
+		? foundry.applications?.instances?.get(applicationElement.id)
+		: null;
+	if (v2App) return v2App;
+	const appId = Number(root?.closest?.(".window-app[data-appid], [data-appid]")?.dataset?.appid);
+	return Number.isFinite(appId) ? ui.windows?.[appId] ?? null : null;
 }
 
 function applyActorAbilityLabels(element, actor) {
@@ -1039,6 +1033,55 @@ function installKeyAttributeStrikes(reprepare = true) {
 
 function installSystemPatches() {
 	installDicelessPatches();
+	installVursPlayCostRefreshPatch();
+}
+
+function installVursPlayCostRefreshPatch() {
+	const prototype = CONFIG.Item?.documentClass?.prototype;
+	const originalRefresh = prototype?.refreshFromCompendium;
+	if (typeof originalRefresh !== "function" || prototype[VURS_PLAY_COST_REFRESH_PATCH]) return;
+
+	prototype.refreshFromCompendium = async function (options = {}) {
+		const sourceId = this.sourceId;
+		const sourceItem = sourceId?.startsWith("Compendium.") ? await fromUuid(sourceId) : null;
+		const originalUpdate = this.update;
+		const ownUpdateDescriptor = Object.getOwnPropertyDescriptor(this, "update");
+		this.update = function (changes, updateOptions = {}) {
+			if (updateOptions.diff === false && updateOptions.recursive === false && changes?.system && sourceId) {
+				const stats = changes._stats ??= {};
+				const sourceStats = this._source?._stats ?? {};
+				if (sourceStats.duplicateSource) stats.duplicateSource = sourceStats.duplicateSource;
+				if (sourceStats.compendiumSource) stats.compendiumSource = sourceStats.compendiumSource;
+				if (!stats.duplicateSource && !stats.compendiumSource) stats.duplicateSource = sourceId;
+			}
+			return originalUpdate.call(this, changes, updateOptions);
+		};
+		let refreshedItem;
+		try {
+			refreshedItem = await originalRefresh.call(this, options);
+		} finally {
+			if (ownUpdateDescriptor) Object.defineProperty(this, "update", ownUpdateDescriptor);
+			else delete this.update;
+		}
+		if (!refreshedItem || !sourceItem) return refreshedItem;
+
+		const playCost = String(foundry.utils.getProperty(sourceItem, "flags.vurs.playCost") ?? "")
+			.split(";")
+			.map(entry => entry.trim())
+			.filter(Boolean)
+			.join("; ");
+		const update = playCost
+			? { "flags.vurs.playCost": playCost }
+			: { "flags.vurs.-=playCost": null };
+
+		if (options.update === false) this.updateSource(update);
+		else {
+			await this.update(update, { render: false });
+			if (this.sheet?.rendered) rerenderApplication(this.sheet);
+		}
+		return refreshedItem;
+	};
+	Object.defineProperty(prototype, VURS_PLAY_COST_REFRESH_PATCH, { value: true });
 }
 
 function addMainAttributeChoice(app, element, context = {}, renderOptions = {}) {
@@ -1052,9 +1095,7 @@ function addMainAttributeChoice(app, element, context = {}, renderOptions = {}) 
 		// Resolve the application associated with this specific DOM root first.
 		// PF2e can render more than one builder, and the global instance lookup may
 		// return a stale or actor-less application when a builder is opened from a sheet.
-		const appElement = root.closest?.(".application[data-appid], .window-app[data-appid]");
-		const appId = Number(appElement?.dataset?.appid);
-		const rootApp = Number.isFinite(appId) ? ui.windows?.[appId] : null;
+		const rootApp = getApplicationForRoot(root);
 		const builder = app ?? rootApp ?? foundry.applications?.instances?.get?.("attribute-builder");
 		const candidates = [
 			renderOptions.actor, context.actor,
@@ -1125,7 +1166,7 @@ function addMainAttributeChoice(app, element, context = {}, renderOptions = {}) 
 						"flags.vurs.mainAttribute": nextMainAttribute
 					});
 
-					targetActor.sheet?.render(false);
+					rerenderApplication(targetActor.sheet);
 					app?.render?.({ force: true });
 				} catch (error) {
 					console.error("VURS | Failed to set Main Attribute", error);
