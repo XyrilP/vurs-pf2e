@@ -1,22 +1,22 @@
-.actor.sheet.character .sidebar > .vurs-play-resources {
+.actor.sheet.character .sidebar>.vurs-play-resources {
   margin-block: var(--space-8);
 }
 
-.actor.sheet.character .sidebar > .vurs-play-resources > header {
+.actor.sheet.character .sidebar>.vurs-play-resources>header {
   align-items: center;
   display: flex;
   justify-content: space-between;
   margin-bottom: var(--space-4);
 }
 
-.actor.sheet.character .sidebar > .vurs-play-resources > header .vurs-play-header-controls {
+.actor.sheet.character .sidebar>.vurs-play-resources>header .vurs-play-header-controls {
   align-items: center;
   display: flex;
   gap: 2px;
 }
 
-.actor.sheet.character .sidebar > .vurs-play-resources > header .vurs-play-modifiers,
-.actor.sheet.character .sidebar > .vurs-play-resources > header .vurs-play-reset {
+.actor.sheet.character .sidebar>.vurs-play-resources>header .vurs-play-modifiers,
+.actor.sheet.character .sidebar>.vurs-play-resources>header .vurs-play-reset {
   background: rgba(255, 255, 255, 0.75);
   border-radius: 2px 2px 0 0;
   border: none;
@@ -32,21 +32,21 @@
   white-space: nowrap;
 }
 
-.actor.sheet.character .sidebar > .vurs-play-resources > header h2 {
+.actor.sheet.character .sidebar>.vurs-play-resources>header h2 {
   margin: 0;
 }
 
-.actor.sheet.character .sidebar > .vurs-play-resources > header .vurs-play-modifiers,
-.actor.sheet.character .sidebar > .vurs-play-resources > header .vurs-play-reset {
+.actor.sheet.character .sidebar>.vurs-play-resources>header .vurs-play-modifiers,
+.actor.sheet.character .sidebar>.vurs-play-resources>header .vurs-play-reset {
   cursor: pointer;
 }
 
-.actor.sheet.character .sidebar > .vurs-play-resources > header .vurs-play-modifiers:hover,
-.actor.sheet.character .sidebar > .vurs-play-resources > header .vurs-play-reset:hover {
+.actor.sheet.character .sidebar>.vurs-play-resources>header .vurs-play-modifiers:hover,
+.actor.sheet.character .sidebar>.vurs-play-resources>header .vurs-play-reset:hover {
   filter: brightness(1.15);
 }
 
-.actor.sheet.character .sidebar > .vurs-play-resources > ol {
+.actor.sheet.character .sidebar>.vurs-play-resources>ol {
   display: grid;
   gap: var(--space-2) var(--space-4);
   grid-template-columns: repeat(10, minmax(0, 1fr));
@@ -55,7 +55,7 @@
   padding: 0;
 }
 
-.actor.sheet.character .sidebar > .vurs-play-resources .vurs-play-resource {
+.actor.sheet.character .sidebar>.vurs-play-resources .vurs-play-resource {
   align-items: center;
   display: flex;
   flex-wrap: wrap;
@@ -65,25 +65,25 @@
   min-width: 0;
 }
 
-.actor.sheet.character .sidebar > .vurs-play-resources .vurs-play-resource .label {
+.actor.sheet.character .sidebar>.vurs-play-resources .vurs-play-resource .label {
   flex: 1 1 auto;
   font-size: inherit;
   min-width: 0;
 }
 
-.actor.sheet.character .sidebar > .vurs-play-resources .vurs-play-resource .value {
+.actor.sheet.character .sidebar>.vurs-play-resources .vurs-play-resource .value {
   flex: 0 0 auto;
   font-size: inherit;
   font-variant-numeric: tabular-nums;
   white-space: nowrap;
 }
 
-.actor.sheet.character .sidebar > .vurs-play-resources .vurs-play-resource:has(.vurs-play-resource-control) {
+.actor.sheet.character .sidebar>.vurs-play-resources .vurs-play-resource:has(.vurs-play-resource-control) {
   grid-column: span 2;
   justify-content: center;
 }
 
-.actor.sheet.character .sidebar > .vurs-play-resources .vurs-play-resource-control {
+.actor.sheet.character .sidebar>.vurs-play-resources .vurs-play-resource-control {
   align-items: center;
   appearance: none;
   aspect-ratio: 1;
@@ -102,13 +102,13 @@
   width: 100%;
 }
 
-.actor.sheet.character .sidebar > .vurs-play-resources .vurs-play-resource-control::before,
-.actor.sheet.character .sidebar > .vurs-play-resources .vurs-play-resource-control::after {
+.actor.sheet.character .sidebar>.vurs-play-resources .vurs-play-resource-control::before,
+.actor.sheet.character .sidebar>.vurs-play-resources .vurs-play-resource-control::after {
   content: none;
   display: none;
 }
 
-.actor.sheet.character .sidebar > .vurs-play-resources .vurs-play-resource-edit {
+.actor.sheet.character .sidebar>.vurs-play-resources .vurs-play-resource-edit {
   appearance: textfield;
   background: transparent;
   border: 0;
@@ -122,7 +122,7 @@
   width: auto;
 }
 
-.actor.sheet.character .sidebar > .vurs-play-resources .vurs-play-resource-control:hover {
+.actor.sheet.character .sidebar>.vurs-play-resources .vurs-play-resource-control:hover {
   filter: brightness(1.2);
 }
 
@@ -172,7 +172,7 @@
   paint-order: stroke fill;
 }
 
-.actor.sheet.character .sidebar > .vurs-play-resources .vurs-play-resource-control img {
+.actor.sheet.character .sidebar>.vurs-play-resources .vurs-play-resource-control img {
   background: transparent;
   border: 0 !important;
   box-shadow: none !important;
@@ -183,7 +183,7 @@
   width: 100%;
 }
 
-.actor.sheet.character .sidebar > .vurs-play-resources .vurs-play-resource-control .value {
+.actor.sheet.character .sidebar>.vurs-play-resources .vurs-play-resource-control .value {
   background: transparent;
   border-radius: 0;
   font-size: inherit;
@@ -194,16 +194,16 @@
   z-index: 1;
 }
 
-.actor.sheet.character .sidebar > .vurs-play-resources [data-resource="budgetPoints"],
-.actor.sheet.character .sidebar > .vurs-play-resources [data-resource="magicPoints"] {
+.actor.sheet.character .sidebar>.vurs-play-resources [data-resource="budgetPoints"],
+.actor.sheet.character .sidebar>.vurs-play-resources [data-resource="magicPoints"] {
   grid-column: span 5;
 }
 
-.actor.sheet.character .sidebar > .vurs-play-resources [data-resource="budgetPoints"] {
+.actor.sheet.character .sidebar>.vurs-play-resources [data-resource="budgetPoints"] {
   display: block;
 }
 
-.actor.sheet.character .sidebar > .vurs-play-resources .vurs-play-resource-frame {
+.actor.sheet.character .sidebar>.vurs-play-resources .vurs-play-resource-frame {
   align-items: center;
   border: 14px double transparent;
   border-image: var(--vurs-resource-frame) 11 / 14px repeat;
@@ -219,14 +219,14 @@
   width: 100%;
 }
 
-.actor.sheet.character .sidebar > .vurs-play-resources .vurs-play-resource-frame > .label {
+.actor.sheet.character .sidebar>.vurs-play-resources .vurs-play-resource-frame>.label {
   font-size: inherit;
   line-height: 1;
   margin: 0;
   text-align: center;
 }
 
-.actor.sheet.character .sidebar > .vurs-play-resources .vurs-budget-points-bar {
+.actor.sheet.character .sidebar>.vurs-play-resources .vurs-budget-points-bar {
   border: 0;
   height: 0.72rem;
   margin: 0;
@@ -235,7 +235,7 @@
   width: 100%;
 }
 
-.actor.sheet.character .sidebar > .vurs-play-resources .vurs-budget-coin-stacks {
+.actor.sheet.character .sidebar>.vurs-play-resources .vurs-budget-coin-stacks {
   align-items: center;
   display: flex;
   gap: 0;
@@ -245,13 +245,13 @@
   position: absolute;
 }
 
-.actor.sheet.character .sidebar > .vurs-play-resources .vurs-budget-coin-stack {
+.actor.sheet.character .sidebar>.vurs-play-resources .vurs-budget-coin-stack {
   height: 1.05rem;
   position: relative;
   width: 0.55rem;
 }
 
-.actor.sheet.character .sidebar > .vurs-play-resources .vurs-budget-coin-stack .coin {
+.actor.sheet.character .sidebar>.vurs-play-resources .vurs-budget-coin-stack .coin {
   bottom: calc(var(--coin-index, 0) * 0.16rem);
   color: #80651d;
   font-size: 0.55rem;
@@ -262,16 +262,16 @@
   width: 0.55rem;
 }
 
-.actor.sheet.character .sidebar > .vurs-play-resources .vurs-budget-coin-stack .coin.is-filled {
+.actor.sheet.character .sidebar>.vurs-play-resources .vurs-budget-coin-stack .coin.is-filled {
   color: #f1c40f;
 }
 
-.actor.sheet.character .sidebar > .vurs-play-resources .vurs-play-resource-maximum {
+.actor.sheet.character .sidebar>.vurs-play-resources .vurs-play-resource-maximum {
   display: inline-flex;
   position: relative;
 }
 
-.actor.sheet.character .sidebar > .vurs-play-resources .vurs-play-resource-max-reduction-delta {
+.actor.sheet.character .sidebar>.vurs-play-resources .vurs-play-resource-max-reduction-delta {
   bottom: -0.55em;
   color: #ff3b3b;
   font-size: 0.55em;
@@ -286,34 +286,34 @@
   z-index: 1;
 }
 
-.actor.sheet.character .sidebar > .vurs-play-resources .vurs-play-resource-max-reduction-delta.is-increase {
+.actor.sheet.character .sidebar>.vurs-play-resources .vurs-play-resource-max-reduction-delta.is-increase {
   color: inherit;
 }
 
-.actor.sheet.character .sidebar > .vurs-play-resources .vurs-play-resource-max-reduction {
+.actor.sheet.character .sidebar>.vurs-play-resources .vurs-play-resource-max-reduction {
   color: #ff3b3b;
   font-size: 0.75em;
   font-weight: 700;
   text-shadow: -1px -1px 0 #1a0d0d, 1px -1px 0 #1a0d0d, -1px 1px 0 #1a0d0d, 1px 1px 0 #1a0d0d;
 }
 
-.actor.sheet.character .sidebar > .vurs-play-resources .vurs-play-resource-max-reduction.is-increase {
+.actor.sheet.character .sidebar>.vurs-play-resources .vurs-play-resource-max-reduction.is-increase {
   color: #ff3b3b;
 }
 
-.actor.sheet.character .sidebar > .vurs-play-resources [data-resource="magicPoints"] {
+.actor.sheet.character .sidebar>.vurs-play-resources [data-resource="magicPoints"] {
   display: block;
 }
 
-.actor.sheet.character .sidebar > .vurs-play-resources [data-resource="budgetPoints"] .vurs-play-resource-frame,
-.actor.sheet.character .sidebar > .vurs-play-resources [data-resource="magicPoints"] .vurs-play-resource-frame {
+.actor.sheet.character .sidebar>.vurs-play-resources [data-resource="budgetPoints"] .vurs-play-resource-frame,
+.actor.sheet.character .sidebar>.vurs-play-resources [data-resource="magicPoints"] .vurs-play-resource-frame {
   border: 0;
   border-image: none;
   gap: 0;
   padding: 0;
 }
 
-.actor.sheet.character .sidebar > .vurs-play-resources [data-resource="magicPoints"] .vurs-play-resource-segments {
+.actor.sheet.character .sidebar>.vurs-play-resources [data-resource="magicPoints"] .vurs-play-resource-segments {
   align-items: center;
   justify-content: center;
   height: 1.8rem;
@@ -324,7 +324,7 @@
   overflow: hidden;
 }
 
-.actor.sheet.character .sidebar > .vurs-play-resources .vurs-play-resource-segments {
+.actor.sheet.character .sidebar>.vurs-play-resources .vurs-play-resource-segments {
   display: flex;
   cursor: pointer;
   gap: 2px;
@@ -335,7 +335,7 @@
   width: 100%;
 }
 
-.actor.sheet.character .sidebar > .vurs-play-resources .vurs-play-resource-segment-values {
+.actor.sheet.character .sidebar>.vurs-play-resources .vurs-play-resource-segment-values {
   align-items: center;
   display: flex;
   font-size: inherit;
@@ -348,18 +348,18 @@
   z-index: 1;
 }
 
-.actor.sheet.character .sidebar > .vurs-play-resources .vurs-play-resource-edit-values {
+.actor.sheet.character .sidebar>.vurs-play-resources .vurs-play-resource-edit-values {
   inset: auto;
   min-height: 0.85rem;
   position: static;
   width: 100%;
 }
 
-.actor.sheet.character .sidebar > .vurs-play-resources .vurs-play-resource-segment-values input {
+.actor.sheet.character .sidebar>.vurs-play-resources .vurs-play-resource-segment-values input {
   cursor: text;
 }
 
-.actor.sheet.character .sidebar > .vurs-play-resources .vurs-play-resource-segments .segment {
+.actor.sheet.character .sidebar>.vurs-play-resources .vurs-play-resource-segments .segment {
   background: linear-gradient(to right, var(--segment-color, #3498db) var(--segment-fill, 0%), transparent var(--segment-fill, 0%));
   border: 1px solid var(--segment-color, #3498db);
   border-radius: 1px;
@@ -367,11 +367,11 @@
   min-width: 1px;
 }
 
-.actor.sheet.character .sidebar > .vurs-play-resources {
+.actor.sheet.character .sidebar>.vurs-play-resources {
   position: relative;
 }
 
-.actor.sheet.character .sidebar > .vurs-play-resources > .vurs-play-modifiers-tooltip {
+.actor.sheet.character .sidebar>.vurs-play-resources>.vurs-play-modifiers-tooltip {
   background: rgba(12, 9, 5, 0.96);
   border: 14px double transparent;
   border-image: var(--vurs-resource-frame) 11 / 14px repeat;
@@ -397,7 +397,7 @@
   margin: 0;
 }
 
-.vurs-play-modifiers-tooltip > p {
+.vurs-play-modifiers-tooltip>p {
   margin: 0.2rem 0;
 }
 
@@ -412,6 +412,64 @@
 .vurs-play-modifiers-dialog .application-content {
   background: transparent;
   padding: 0.35rem 0.5rem 0.5rem;
+}
+
+.check-modifiers-content .vurs-check-roll-footer {
+  align-items: center;
+  display: grid;
+  gap: 0.65rem;
+  grid-template-columns: minmax(0, 1fr) auto;
+  margin: 0.5rem 0;
+}
+
+.check-modifiers-content .vurs-check-roll-footer>button[type="submit"] {
+  inline-size: max-content;
+  justify-self: end;
+  margin: 0;
+  max-inline-size: 100%;
+}
+
+.check-modifiers-content .vurs-buildup-selector {
+  align-items: center;
+  display: grid;
+  gap: 0.5rem;
+  grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
+  min-width: 0;
+}
+
+.check-modifiers-content .vurs-buildup-label {
+  font-size: var(--font-size-12);
+  justify-self: start;
+  min-width: 0;
+}
+
+.check-modifiers-content .vurs-buildup-choice {
+  align-items: center;
+  block-size: 2.6rem;
+  font-size: var(--font-size-16);
+  font-weight: 700;
+  inline-size: 2.6rem;
+  justify-self: center;
+  margin: 0;
+  padding: 0;
+}
+
+.check-modifiers-content .vurs-buildup-cost {
+  align-items: center;
+  display: inline-flex;
+  gap: 0.2rem;
+  justify-self: end;
+  min-width: 0;
+  white-space: nowrap;
+}
+
+.check-modifiers-content .vurs-buildup-cost img {
+  background: transparent;
+  border: 0;
+  box-shadow: none;
+  height: 1.1rem;
+  object-fit: contain;
+  width: 1.1rem;
 }
 
 .vurs-play-modifiers-tooltip .vurs-play-regeneration-list {
@@ -573,7 +631,7 @@
   vertical-align: middle;
 }
 
-.actor.sheet.character .sidebar > .vurs-play-resources .vurs-mp-star {
+.actor.sheet.character .sidebar>.vurs-play-resources .vurs-mp-star {
   color: var(--segment-color, #5ab8ff);
   flex: 1 1 0;
   font-size: clamp(0.35rem, 1.2vw, 0.75rem);
@@ -583,7 +641,7 @@
   text-align: center;
 }
 
-.actor.sheet.character .sidebar > .vurs-play-resources .vurs-mp-star-stack,
+.actor.sheet.character .sidebar>.vurs-play-resources .vurs-mp-star-stack,
 .item.sheet .vurs-play-cost-mp-star-stack {
   align-items: center;
   display: inline-flex;
@@ -595,7 +653,7 @@
   vertical-align: middle;
 }
 
-.actor.sheet.character .sidebar > .vurs-play-resources .vurs-mp-star-stack .vurs-mp-star,
+.actor.sheet.character .sidebar>.vurs-play-resources .vurs-mp-star-stack .vurs-mp-star,
 .item.sheet .vurs-play-cost-mp-star-stack .vurs-play-cost-mp-star {
   margin-bottom: -0.18rem;
 }
@@ -685,7 +743,7 @@
   vertical-align: middle;
 }
 
-.item.sheet .vurs-play-resource-token > img {
+.item.sheet .vurs-play-resource-token>img {
   background: transparent;
   border: 0;
   box-shadow: none;
@@ -696,4 +754,3 @@
 .item.sheet .vurs-play-resource-token .vurs-play-cost-resource-stack i {
   font-size: 0.8rem;
 }
-
