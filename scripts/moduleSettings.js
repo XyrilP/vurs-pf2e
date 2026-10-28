@@ -1,12 +1,17 @@
 const MODULE_ID = "vurs-pf2e";
-const SETTING_KEY = "systemMode";
-const NEGATIVE_HP_SETTING_KEY = "negativeHpInDefault";
-const DEFAULT_SKILL_GROUPING_SETTING_KEY = "groupSkillsByAttributeInDefault";
-const DEFAULT_ATTRIBUTE_MODIFIER_FRAMES_SETTING_KEY = "colorAttributeModifierFramesInDefault";
-const DEFAULT_VURS_SKILLS_SETTING_KEY = "includeVursSkillsInDefault";
-const DEFAULT_SAVE_SKILLS_SETTING_KEY = "addSaveSkillsInDefault";
-const DEFAULT_ACTION_POINTS_SETTING_KEY = "addActionPointsInDefault";
-const DEFAULT_VURS_CRITICAL_DAMAGE_SETTING_KEY = "vursCriticalDamageInDefault";
+
+const SETTING_KEYS = Object.freeze({
+  systemMode: "systemMode",
+  dicelessInDefault: "dicelessInDefault",
+  dicelessInAgnostic: "dicelessInAgnostic",
+  negativeHpInDefault: "negativeHpInDefault",
+  groupSkillsByAttributeInDefault: "groupSkillsByAttributeInDefault",
+  colorAttributeModifierFramesInDefault: "colorAttributeModifierFramesInDefault",
+  includeVursSkillsInDefault: "includeVursSkillsInDefault",
+  addSaveSkillsInDefault: "addSaveSkillsInDefault",
+  addActionPointsInDefault: "addActionPointsInDefault",
+  vursCriticalDamageInDefault: "vursCriticalDamageInDefault"
+});
 
 function requestSettingsRefresh(settingName) {
   const confirm = globalThis.Dialog?.confirm;
@@ -23,99 +28,194 @@ function requestSettingsRefresh(settingName) {
   });
 }
 
+const FEATURE_DEFINITIONS = Object.freeze([
+  {
+    id: "negativeHp",
+    label: "Negative HP",
+    hint: "Damage below 0 HP reduces maximum HP.",
+    defaultSetting: SETTING_KEYS.negativeHpInDefault
+  },
+  {
+    id: "diceless",
+    label: "Diceless Rolls",
+    hint: "Use a fixed VURS-style check result and optional buildup.",
+    defaultSetting: SETTING_KEYS.dicelessInDefault,
+    agnosticSetting: SETTING_KEYS.dicelessInAgnostic
+  },
+  {
+    id: "skillGrouping",
+    label: "Group Skills by Attribute",
+    hint: "Organize skills into attribute groups.",
+    defaultSetting: SETTING_KEYS.groupSkillsByAttributeInDefault
+  },
+  {
+    id: "attributeFrames",
+    label: "Attribute Modifier Borders",
+    hint: "Color attribute modifier borders by attribute.",
+    defaultSetting: SETTING_KEYS.colorAttributeModifierFramesInDefault
+  },
+  {
+    id: "vursSkills",
+    label: "VURS Skills",
+    hint: "Add VURS homebrew skills.",
+    defaultSetting: SETTING_KEYS.includeVursSkillsInDefault
+  },
+  {
+    id: "saveSkills",
+    label: "Saves and Perception Skills",
+    hint: "Add Fortitude, Reflex, Will, and Perception to the Skills tab.",
+    defaultSetting: SETTING_KEYS.addSaveSkillsInDefault
+  },
+  {
+    id: "actionResources",
+    label: "Actions and Reactions",
+    hint: "Add three Actions and one Reaction as Play resources.",
+    defaultSetting: SETTING_KEYS.addActionPointsInDefault
+  },
+  {
+    id: "criticalDamage",
+    label: "VURS Critical Damage",
+    hint: "Add maximum damage to critical-hit damage rolls.",
+    defaultSetting: SETTING_KEYS.vursCriticalDamageInDefault
+  }
+]);
+
+const MODE_LABELS = Object.freeze({
+  default: "Default",
+  vurs: "VURS",
+  agnostic: "Agnostic VURS"
+});
+
+const ALWAYS_ON_FEATURES = Object.freeze(new Set([
+  "negativeHp",
+  "skillGrouping",
+  "attributeFrames",
+  "vursSkills",
+  "saveSkills",
+  "actionResources",
+  "criticalDamage",
+  "diceless"
+]));
+
+function registerSetting(settings, key, data) {
+  const registration = `${MODULE_ID}.${key}`;
+  if (settings.settings?.has?.(registration)) return;
+  settings.register(MODULE_ID, key, data);
+}
+
+function settingValue(settings, key) {
+  return settings.get(MODULE_ID, key) === true;
+}
+
+class VursFeatureSettings extends foundry.applications.api.HandlebarsApplicationMixin(
+  foundry.applications.api.ApplicationV2
+) {
+  static DEFAULT_OPTIONS = {
+    id: `${MODULE_ID}-feature-settings`,
+    classes: [MODULE_ID, "vurs-feature-settings"],
+    tag: "form",
+    position: { width: 760 },
+    window: { title: "VURS Feature Settings", resizable: true },
+    form: {
+      handler: VursFeatureSettings.#onSubmit,
+      submitOnChange: false,
+      closeOnSubmit: true
+    }
+  };
+
+  static PARTS = {
+    form: { template: `modules/${MODULE_ID}/templates/moduleSettings.hbs` }
+  };
+
+  async _prepareContext() {
+    const settings = game.settings;
+    const features = FEATURE_DEFINITIONS.map(feature => ({
+      ...feature,
+      modes: ["default", "vurs", "agnostic"].map(mode => {
+        const isVurs = mode === "vurs";
+        const isAgnosticDiceless = mode === "agnostic" && feature.id === "diceless";
+        const locked = isVurs || (mode === "agnostic" && ALWAYS_ON_FEATURES.has(feature.id) && !isAgnosticDiceless);
+        const enabled = locked || (mode === "agnostic"
+          ? settingValue(settings, feature.agnosticSetting)
+          : settingValue(settings, feature.defaultSetting));
+        return {
+          id: mode,
+          label: MODE_LABELS[mode],
+          name: `${mode}.${feature.id}`,
+          checked: enabled,
+          locked
+        };
+      })
+    }));
+
+    return {
+      features,
+      modes: ["default", "vurs", "agnostic"].map(id => ({ id, label: MODE_LABELS[id] }))
+    };
+  }
+
+  static async #onSubmit(event, form, formData) {
+    event.preventDefault();
+    const values = formData.object;
+    const updates = [];
+    for (const feature of FEATURE_DEFINITIONS) {
+      if (feature.defaultSetting) {
+        updates.push(game.settings.set(MODULE_ID, feature.defaultSetting,
+          values[`default.${feature.id}`] === true));
+      }
+      if (feature.agnosticSetting) {
+        updates.push(game.settings.set(MODULE_ID, feature.agnosticSetting,
+          values[`agnostic.${feature.id}`] === true));
+      }
+    }
+    await Promise.all(updates);
+    requestSettingsRefresh("Feature settings");
+  }
+}
+
 function registerModuleSettings() {
   const settings = globalThis.game?.settings;
   if (!settings?.register) return;
-  const registered = key => settings.settings?.has?.(`${MODULE_ID}.${key}`) ?? false;
-  if (!registered(SETTING_KEY)) settings.register(MODULE_ID, SETTING_KEY, {
-    name: "Select System",
+
+  registerSetting(settings, SETTING_KEYS.systemMode, {
+    name: "System Mode",
     hint: "Choose the rules mode for this world.",
     scope: "world",
     config: true,
     type: String,
     default: "default",
     onChange: value => {
-      Hooks.callAll("vurs-pf2e.systemModeChanged", value);
-      // Some system and sheet labels are initialized only once per page.
+      Hooks.callAll(`${MODULE_ID}.systemModeChanged`, value);
       requestSettingsRefresh("System mode");
     },
     choices: {
       default: "Default",
-      "vurs": "Vionheart Universe Roleplaying System",
+      vurs: "Vionheart Universe Roleplaying System",
       "vurs-agnostic": "VURS (Agnostic)"
     }
   });
 
-  if (!registered(NEGATIVE_HP_SETTING_KEY)) settings.register(MODULE_ID, NEGATIVE_HP_SETTING_KEY, {
-    name: "Enable Negative HP in Default Mode",
-    hint: "When enabled, damage below 0 HP reduces maximum HP in Default mode, as it does in VURS.",
-    scope: "world",
-    config: true,
-    type: Boolean,
-    default: false,
-    onChange: () => requestSettingsRefresh("Negative HP in Default Mode")
-  });
+  if (!settings.menus?.has?.(`${MODULE_ID}.featureSettings`)) {
+    settings.registerMenu(MODULE_ID, "featureSettings", {
+      name: "Features by System Mode",
+      label: "Configure Features",
+      hint: "Choose optional features for each system mode. Locked boxes are always enabled by that mode.",
+      icon: "fas fa-table-cells",
+      restricted: true,
+      type: VursFeatureSettings
+    });
+  }
 
-  if (!registered(DEFAULT_SKILL_GROUPING_SETTING_KEY)) settings.register(MODULE_ID, DEFAULT_SKILL_GROUPING_SETTING_KEY, {
-    name: "Group Skills by Attribute in Default Mode",
-    hint: "Organize character skills into the VURS attribute groups when the world uses Default mode.",
-    scope: "world",
-    config: true,
-    type: Boolean,
-    default: false,
-    onChange: () => requestSettingsRefresh("Grouped Skills in Default Mode")
-  });
-
-  if (!registered(DEFAULT_ATTRIBUTE_MODIFIER_FRAMES_SETTING_KEY)) settings.register(MODULE_ID, DEFAULT_ATTRIBUTE_MODIFIER_FRAMES_SETTING_KEY, {
-    name: "Color Attribute Modifier Borders in Default Mode",
-    hint: "Color character Attribute Modifiers borders to match their attributes in Default mode.",
-    scope: "world",
-    config: true,
-    type: Boolean,
-    default: false,
-    onChange: () => requestSettingsRefresh("Attribute Modifier Border Colors in Default Mode")
-  });
-
-  if (!registered(DEFAULT_VURS_SKILLS_SETTING_KEY)) settings.register(MODULE_ID, DEFAULT_VURS_SKILLS_SETTING_KEY, {
-    name: "Add VURS Skills in Default Mode",
-    hint: "Make VURS homebrew skills available when the world uses Default mode.",
-    scope: "world",
-    config: true,
-    type: Boolean,
-    default: false,
-    onChange: () => requestSettingsRefresh("VURS Skills in Default Mode")
-  });
-
-  if (!registered(DEFAULT_SAVE_SKILLS_SETTING_KEY)) settings.register(MODULE_ID, DEFAULT_SAVE_SKILLS_SETTING_KEY, {
-    name: "Add Saves and Perception to Skills in Default Mode",
-    hint: "Show Fortitude, Reflex, Will, and Perception in the Skills tab, using their matching statistics.",
-    scope: "world",
-    config: true,
-    type: Boolean,
-    default: false,
-    onChange: () => requestSettingsRefresh("Saves and Perception in Skills")
-  });
-
-  if (!registered(DEFAULT_ACTION_POINTS_SETTING_KEY)) settings.register(MODULE_ID, DEFAULT_ACTION_POINTS_SETTING_KEY, {
-    name: "Actions and Reactions as Play Resource in Default Mode",
-    hint: "Show three Actions and one Reaction as Play resources for Default actors.",
-    scope: "world",
-    config: true,
-    type: Boolean,
-    default: false,
-    onChange: () => requestSettingsRefresh("Actions in Default Mode")
-  });
-
-  if (!registered(DEFAULT_VURS_CRITICAL_DAMAGE_SETTING_KEY)) settings.register(MODULE_ID, DEFAULT_VURS_CRITICAL_DAMAGE_SETTING_KEY, {
-    name: "Use VURS Critical Damage in Default Mode",
-    hint: "On critical hits, add maximum damage to the damage roll in Default mode.",
-    scope: "world",
-    config: true,
-    type: Boolean,
-    default: false,
-    onChange: () => requestSettingsRefresh("VURS Critical Damage in Default Mode")
-  });
-
+  for (const feature of FEATURE_DEFINITIONS) {
+    for (const key of [feature.defaultSetting, feature.agnosticSetting].filter(Boolean)) {
+      registerSetting(settings, key, {
+        scope: "world",
+        config: false,
+        type: Boolean,
+        default: false
+      });
+    }
+  }
 }
 
 // Module scripts normally register settings during init. Keep guarded later

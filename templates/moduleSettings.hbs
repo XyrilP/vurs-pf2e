@@ -1,0 +1,39 @@
+<section class="standard-form vurs-feature-settings-content">
+  <p class="hint">Enable optional features for each rules mode. Locked checkboxes are always enabled for that mode.</p>
+  <table>
+    <thead>
+      <tr>
+        <th scope="col">Feature</th>
+        <th scope="col">Description</th>
+        {{#each modes}}
+        <th scope="col" class="mode-column">{{label}}</th>
+        {{/each}}
+      </tr>
+    </thead>
+    <tbody>
+      {{#each features}}
+      <tr>
+        <th scope="row" class="feature-label">{{label}}</th>
+        <td class="feature-description hint">{{hint}}</td>
+        {{#each modes}}
+        <td class="mode-column">
+          <label class="feature-toggle" title="{{#if locked}}Always enabled for {{label}}{{/if}}">
+            <input
+              type="checkbox"
+              name="{{name}}"
+              {{#if checked}}checked{{/if}}
+              {{#if locked}}disabled{{/if}}
+            >
+            {{#if locked}}<i class="fas fa-lock" aria-hidden="true"></i>{{/if}}
+            <span class="sr-only">{{label}}</span>
+          </label>
+        </td>
+        {{/each}}
+      </tr>
+      {{/each}}
+    </tbody>
+  </table>
+  <footer class="form-footer">
+    <button type="submit"><i class="fas fa-save"></i> Save Changes</button>
+  </footer>
+</section>

@@ -503,17 +503,10 @@ async function resetEncounterPlayResources(combat) {
 
 function getFullVursDefaultMax(actor, resourceKey) {
 	const agnostic = actorUsesAgnosticVurs(actor);
-	const agnosticNpc = agnostic && isNpcActor(actor);
 	if (!actorUsesVursSystem(actor) && !agnostic && getSystemModeForPlayResource(actor) !== "default") return undefined;
-	// Agnostic PCs keep the classic 3 AP / 1 Reaction defaults. Agnostic NPCs
-	// get the full VURS resource set, while retaining Agnostic minimums.
-	if (agnostic && !agnosticNpc) {
-		if (resourceKey === "actionPoints") return 3;
-		if (resourceKey === "reactions") return 1;
-		if (resourceKey === "magicPoints") return 0;
-		return undefined;
-	}
-	if (agnosticNpc && resourceKey === "reactions") return 1;
+	// Agnostic actors use the same NPC-derived resource formulas, including
+	// Agnostic minimums, regardless of whether they are characters or NPCs.
+	if (agnostic && resourceKey === "reactions") return 1;
 	if (getSystemModeForPlayResource(actor) === "default") {
 		if (game.settings.get("vurs-pf2e", DEFAULT_ACTION_POINTS_SETTING) !== true) return undefined;
 		if (resourceKey === "actionPoints") return 3;
@@ -522,15 +515,15 @@ function getFullVursDefaultMax(actor, resourceKey) {
 	}
 	const system = actor.system;
 	const attributeModifier = slug => finiteResourceNumber(system?.abilities?.[slug]?.mod);
-	// NPC skill modifiers use PF2e's level-scaled modifier representation in
-	// this module's NPC resource formulas; characters continue to use ranks.
-	const skillRank = slug => isNpcActor(actor)
+	// NPC and Agnostic skill modifiers use PF2e's level-scaled modifier
+	// representation; only ordinary VURS characters use proficiency ranks.
+	const skillRank = slug => isNpcActor(actor) || agnostic
 		? Math.floor(finiteResourceNumber(system?.skills?.[slug]?.mod) / 7)
 		: finiteResourceNumber(system?.skills?.[slug]?.rank);
 
 	switch (resourceKey) {
 		case "actionPoints":
-			return Math.max(agnosticNpc ? 3 : 2, 2 + Math.min(attributeModifier("dex"), skillRank("mobility")));
+			return Math.max(agnostic ? 3 : 2, 2 + Math.min(attributeModifier("dex"), skillRank("mobility")));
 		case "staminaPoints":
 			return Math.max(0, Math.min(attributeModifier("str"), skillRank("athletics")));
 		case "tacticPoints":
@@ -768,25 +761,25 @@ function getMagicPointContributions(actor) {
 			field: "maxArcane",
 			label: `${abilityLabel("PF2E.AbilityInt", "Intelligence", "Intelligence")} (${localize("PF2E.TraitArcane", "Arcane")})`,
 			color: "#3498db",
-			value: actorUsesAgnosticVurs(actor) ? 0 : 2 * Math.min(modifier("int"), rank("arcana"))
+			value: 2 * Math.min(modifier("int"), rank("arcana"))
 		},
 		{
 			field: "maxOccult",
 			label: `${abilityLabel("PF2E.AbilityCha", "Void", "Charisma")} (${localize("PF2E.TraitOccult", "Occult")})`,
 			color: "#9b59b6",
-			value: actorUsesAgnosticVurs(actor) ? 0 : Math.min(modifier("cha"), rank("occultism"))
+			value: Math.min(modifier("cha"), rank("occultism"))
 		},
 		{
 			field: "maxDivine",
 			label: `${abilityLabel("PF2E.AbilityWis", "Spirit", "Wisdom")} (${localize("PF2E.TraitDivine", "Divine")})`,
 			color: "#00bcd4",
-			value: actorUsesAgnosticVurs(actor) ? 0 : Math.min(modifier("wis"), rank("religion"))
+			value: Math.min(modifier("wis"), rank("religion"))
 		},
 		{
 			field: "maxPrimal",
 			label: `${abilityLabel("PF2E.AbilityWis", "Spirit", "Wisdom")} (${localize("PF2E.TraitPrimal", "Primal")})`,
 			color: "#2ecc71",
-			value: actorUsesAgnosticVurs(actor) ? 0 : Math.min(modifier("wis"), rank("nature"))
+			value: Math.min(modifier("wis"), rank("nature"))
 		}
 	];
 }
@@ -1276,13 +1269,11 @@ async function ensurePlayResourceMaxDefaults(actor) {
 		let effectiveMax = finiteResourceNumber(defaultMax);
 		if (definition.key === "magicPoints" && hasDefaultMax) {
 			const contributions = getMagicPointContributions(actor);
-			const contributionTotal = actorUsesAgnosticVurs(actor)
-				? getStoredMagicPointContributionTotal(resource)
-				: contributions.reduce((total, contribution) => {
-					const path = `${PLAY_RESOURCES_PATH}.magicPoints.${contribution.field}`;
-					if (finiteResourceNumber(resource[contribution.field]) !== contribution.value) updates[path] = contribution.value;
-					return total + contribution.value;
-				}, 0);
+			const contributionTotal = contributions.reduce((total, contribution) => {
+				const path = `${PLAY_RESOURCES_PATH}.magicPoints.${contribution.field}`;
+				if (finiteResourceNumber(resource[contribution.field]) !== contribution.value) updates[path] = contribution.value;
+				return total + contribution.value;
+			}, 0);
 			const maxExtra = resource.maxExtra === undefined || resource.maxExtra === null || resource.maxExtra === ""
 				? 0
 				: finiteResourceNumber(resource.maxExtra);

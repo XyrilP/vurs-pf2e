@@ -118,5 +118,13 @@ export function actorUsesVursHpRules(actor) {
 }
 
 export function actorUsesDicelessRolls(actor) {
-  return Boolean(getModeProfile(getActorSystemMode(actor))?.systemWideDiceless) || actorHasDicelessFlag(actor);
+  const mode = getActorSystemMode(actor);
+  if (getModeProfile(mode)?.systemWideDiceless) return true;
+  if (actorHasDicelessFlag(actor)) return true;
+
+  if (mode !== "default" && mode !== AGNOSTIC_VURS_MODE.id) return false;
+  if (mode === "default") {
+    return game.settings.get(MODULE_ID, "dicelessInDefault") === true;
+  }
+  return game.settings.get(MODULE_ID, "dicelessInAgnostic") === true;
 }

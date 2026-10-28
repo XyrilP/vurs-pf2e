@@ -480,7 +480,8 @@
 	"description": "",
 	"styles": [
 		"styles/consolidatedSkills.css",
-		"styles/playResources.css"
+		"styles/playResources.css",
+		"styles/moduleSettings.css"
 	],
 	"esmodules": [
 		"scripts/cooldown.js",

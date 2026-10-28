@@ -1,0 +1,73 @@
+#vurs-pf2e-feature-settings .window-content {
+  padding: 0;
+}
+
+.vurs-feature-settings-content {
+  padding: 1rem;
+  overflow: auto;
+}
+
+.vurs-feature-settings-content table {
+  width: 100%;
+  margin-top: 0.75rem;
+  border-collapse: collapse;
+}
+
+.vurs-feature-settings-content th,
+.vurs-feature-settings-content td {
+  padding: 0.55rem 0.75rem;
+  border-bottom: 1px solid var(--color-border-light-primary);
+  vertical-align: middle;
+}
+
+.vurs-feature-settings-content thead th {
+  border-bottom: 2px solid var(--color-border-dark);
+  text-align: center;
+}
+
+.vurs-feature-settings-content thead th:nth-child(2) {
+  text-align: left;
+}
+
+.vurs-feature-settings-content th:nth-child(2),
+.vurs-feature-settings-content .feature-description {
+  width: 55%;
+}
+
+.vurs-feature-settings-content tbody th {
+  text-align: left;
+  font-weight: normal;
+}
+
+.vurs-feature-settings-content .mode-column {
+  width: 8.5rem;
+  text-align: center;
+}
+
+.vurs-feature-settings-content tbody .feature-label {
+  font-weight: 600;
+}
+
+.vurs-feature-settings-content .feature-description {
+  font-size: var(--font-size-small);
+}
+
+.vurs-feature-settings-content .feature-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  cursor: pointer;
+}
+
+.vurs-feature-settings-content .feature-toggle input:disabled {
+  cursor: not-allowed;
+}
+
+.vurs-feature-settings-content .feature-toggle i {
+  color: var(--color-text-dark-secondary);
+  font-size: 0.75rem;
+}
+
+.vurs-feature-settings-content .form-footer {
+  margin-top: 1rem;
+}
