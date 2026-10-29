@@ -176,6 +176,7 @@ Hooks.on("canvasReady", () => {
 for (const hook of ["createItem", "updateItem", "deleteItem"]) {
 	Hooks.on(hook, syncVursConditionFlagsFromItem);
 }
+Hooks.on("updateItem", refreshBrokenStateFromItem);
 // Register this before the first ApplicationV2 render. The builder may be
 // opened before ready-time actor preparation finishes.
 
@@ -414,6 +415,17 @@ Hooks.on("renderApplication", (app, html) => applyActorSheetPresentation(app, ht
 function syncVursConditionFlagsFromItem(item) {
 	if (item?.type !== "condition") return;
 	syncVursConditionFlags(item.actor ?? item.parent);
+}
+
+function refreshBrokenStateFromItem(item) {
+	if (!item?.isOfType?.("action", "feat")) return;
+	const actor = item.actor ?? item.parent;
+	if (!isSupportedVursActor(actor)) return;
+
+	for (const app of Object.values(actor.apps ?? {})) {
+		const root = app?.element instanceof HTMLElement ? app.element : app?.element?.[0];
+		if (root) applyBrokenState(root, actor);
+	}
 }
 
 async function syncVursConditionFlags(actor) {
@@ -923,8 +935,21 @@ function applyBrokenState(root, actor) {
 		const hasReactionTrait = Array.isArray(traits) && traits.includes("reaction");
 		const isReaction = item.actionCost?.type === "reaction" || hasReactionTrait;
 		const isPassive = !item.actionCost;
-		setConditionDisabled(element, "broken", isBroken && (isReaction || isPassive));
+		setConditionDisabled(element, "broken", isBroken && (
+			isReaction || (isPassive && !itemIgnoresBroken(item))
+		));
 	}
+}
+
+function itemIgnoresBroken(item) {
+	const otherTags = [
+		foundry.utils.getProperty(item, "_source.system.traits.otherTags"),
+		foundry.utils.getProperty(item, "system.traits.otherTags")
+	].filter(Array.isArray).flat();
+	return otherTags.some(tag =>
+		typeof tag === "string" &&
+		tag.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "") === "immunity-to-broken"
+	);
 }
 
 function getBrokenConditionFlag(actor) {
@@ -972,7 +997,7 @@ function installBrokenPassiveRuleSuppression() {
 
 			return rules.filter(rule => {
 				const item = rule.item;
-				return !item?.isOfType?.("action", "feat") || item.actionCost;
+				return !item?.isOfType?.("action", "feat") || item.actionCost || itemIgnoresBroken(item);
 			});
 		};
 		Object.defineProperty(prototype, VURS_BROKEN_PASSIVE_RULE_PATCH, { value: true });

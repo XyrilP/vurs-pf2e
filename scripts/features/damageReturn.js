@@ -306,7 +306,7 @@ async function applyDamageReturn(actor, wrapped, args) {
 			damage,
 			damageApplied,
 			rollOptions,
-			getDamageSelectors(params.damage)
+			getDamageSelectors(params.damage, params.item)
 		);
 		if (amount <= 0) return result;
 

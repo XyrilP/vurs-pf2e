@@ -83,8 +83,9 @@ function currentHealthPool(actor) {
 	return Number(hp.value ?? 0) + Number(hp.temp ?? 0) + stamina;
 }
 
-export function getDamageSelectors(damage) {
+export function getDamageSelectors(damage, item = null) {
 	const selectors = new Set(["damage-received"]);
+	if (item?.isOfType?.("weapon", "melee")) selectors.add("strike-damage");
 	const modifiers = damage?.options?.damage?.modifiers;
 	if (Array.isArray(modifiers)) {
 		for (const modifier of modifiers) {
@@ -94,8 +95,17 @@ export function getDamageSelectors(damage) {
 		}
 	}
 
-	const sourceMessage = [...(game.messages?.contents ?? [])]
-		.find(message => message.rolls?.includes(damage));
+	const messages = [...(game.messages?.contents ?? [])];
+	const sourceMessage = messages.find(message => message.rolls?.includes(damage)) ??
+		(item?.uuid
+			? messages
+				.filter(message => {
+					const messageItem = message.item;
+					return messageItem?.uuid === item.uuid &&
+						message.rolls?.some(roll => roll?.constructor === damage?.constructor);
+				})
+				.sort((left, right) => right.timestamp - left.timestamp)[0]
+			: null);
 	const domains = foundry.utils.getProperty(
 		sourceMessage,
 		`flags.${game.system.id}.context.domains`
@@ -266,23 +276,27 @@ async function addLifestealTooltip(message, sources) {
 
 async function healDamageDealer(attacker, amount) {
 	const hp = attacker?.attributes?.hp;
-	if (!hp || amount <= 0) return { healing: 0, card: null };
-
-	const healing = Math.min(amount, Math.max(hp.max - hp.value, 0));
-	if (healing <= 0) return { healing: 0, card: null };
+	if (!hp || !Number.isFinite(amount) || amount <= 0) return { healing: 0, card: null };
 
 	const token = attacker.token ?? attacker.getActiveTokens?.()[0]?.document;
 	if (!token || typeof attacker.applyDamage !== "function") {
+		const healing = Math.min(amount, Math.max(hp.max - hp.value, 0));
+		if (healing <= 0) return { healing: 0, card: null };
 		await attacker.update({ "system.attributes.hp.value": hp.value + healing });
 		return { healing, card: null };
 	}
 
+	const hpBefore = Number(hp.value);
 	const previousMessageIds = new Set((game.messages?.contents ?? []).map(message => message.id));
 	await attacker.applyDamage({
-		damage: -healing,
+		damage: -amount,
 		token,
 		skipIWR: true
 	});
+	const hpAfter = Number(attacker.attributes?.hp?.value);
+	const healing = Number.isFinite(hpBefore) && Number.isFinite(hpAfter)
+		? Math.max(0, hpAfter - hpBefore)
+		: 0;
 	return { healing, card: findHealingCard(previousMessageIds, attacker) };
 }
 
@@ -310,7 +324,7 @@ async function applyLifesteal(actor, wrapped, args) {
 		if (damageApplied === 0) return result;
 
 		const rollOptions = getDamageRollOptions(params.damage, params.rollOptions);
-		const selectors = getDamageSelectors(params.damage);
+		const selectors = getDamageSelectors(params.damage, params.item);
 		const { healing, sources } = getLifestealHealing(attacker, damageApplied, rollOptions, selectors);
 		const { healing: healed, card } = await healDamageDealer(attacker, healing);
 		if (healed > 0 && card) {
