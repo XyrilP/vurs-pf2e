@@ -481,6 +481,7 @@
 	"styles": [
 		"styles/consolidatedSkills.css",
 		"styles/playResources.css",
+		"styles/conditions.css",
 		"styles/moduleSettings.css"
 	],
 	"esmodules": [

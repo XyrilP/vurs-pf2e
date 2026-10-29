@@ -592,6 +592,7 @@ async function resetEncounterPlayResources(combat) {
 
 function isNpcPlayResourceVisible(actor, resourceKey) {
 	if (!isNpcActor(actor)) return true;
+	if (resourceKey === "actionPoints" && actorUsesVursSystem(actor)) return true;
 	const associatedSkills = {
 		staminaPoints: "athletics",
 		actionPoints: "mobility",

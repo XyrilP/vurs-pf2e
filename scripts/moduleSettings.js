@@ -2,6 +2,9 @@ const MODULE_ID = "vurs-pf2e";
 
 const SETTING_KEYS = Object.freeze({
   systemMode: "systemMode",
+  enforceDisabledFeaturesInDefault: "enforceDisabledFeaturesInDefault",
+  enforceDisabledFeaturesInVurs: "enforceDisabledFeaturesInVurs",
+  enforceDisabledFeaturesInAgnostic: "enforceDisabledFeaturesInAgnostic",
   dicelessInDefault: "dicelessInDefault",
   dicelessInAgnostic: "dicelessInAgnostic",
   negativeHpInDefault: "negativeHpInDefault",
@@ -29,6 +32,14 @@ function requestSettingsRefresh(settingName) {
 }
 
 const FEATURE_DEFINITIONS = Object.freeze([
+  {
+    id: "disabledFeatureEnforcement",
+    label: "Enforce Disabled Features",
+    hint: "Prevent condition-disabled features and rule elements from being used. When off, disabled features are revealed on hover.",
+    defaultSetting: SETTING_KEYS.enforceDisabledFeaturesInDefault,
+    vursSetting: SETTING_KEYS.enforceDisabledFeaturesInVurs,
+    agnosticSetting: SETTING_KEYS.enforceDisabledFeaturesInAgnostic
+  },
   {
     id: "negativeHp",
     label: "Negative HP",
@@ -134,10 +145,14 @@ class VursFeatureSettings extends foundry.applications.api.HandlebarsApplication
       modes: ["default", "vurs", "agnostic"].map(mode => {
         const isVurs = mode === "vurs";
         const isAgnosticDiceless = mode === "agnostic" && feature.id === "diceless";
-        const locked = isVurs || (mode === "agnostic" && ALWAYS_ON_FEATURES.has(feature.id) && !isAgnosticDiceless);
-        const enabled = locked || (mode === "agnostic"
-          ? settingValue(settings, feature.agnosticSetting)
-          : settingValue(settings, feature.defaultSetting));
+        const modeSetting = isVurs
+          ? feature.vursSetting
+          : mode === "agnostic"
+            ? feature.agnosticSetting
+            : feature.defaultSetting;
+        const locked = (isVurs && !feature.vursSetting) ||
+          (mode === "agnostic" && ALWAYS_ON_FEATURES.has(feature.id) && !isAgnosticDiceless);
+        const enabled = locked || settingValue(settings, modeSetting);
         return {
           id: mode,
           label: MODE_LABELS[mode],
@@ -159,13 +174,14 @@ class VursFeatureSettings extends foundry.applications.api.HandlebarsApplication
     const values = formData.object;
     const updates = [];
     for (const feature of FEATURE_DEFINITIONS) {
-      if (feature.defaultSetting) {
-        updates.push(game.settings.set(MODULE_ID, feature.defaultSetting,
-          values[`default.${feature.id}`] === true));
-      }
-      if (feature.agnosticSetting) {
-        updates.push(game.settings.set(MODULE_ID, feature.agnosticSetting,
-          values[`agnostic.${feature.id}`] === true));
+      for (const [mode, key] of [
+        ["default", feature.defaultSetting],
+        ["vurs", feature.vursSetting],
+        ["agnostic", feature.agnosticSetting]
+      ]) {
+        if (key) {
+          updates.push(game.settings.set(MODULE_ID, key, values[`${mode}.${feature.id}`] === true));
+        }
       }
     }
     await Promise.all(updates);
@@ -199,7 +215,7 @@ function registerModuleSettings() {
     settings.registerMenu(MODULE_ID, "featureSettings", {
       name: "Features by System Mode",
       label: "Configure Features",
-      hint: "Choose optional features for each system mode. Locked boxes are always enabled by that mode.",
+      hint: "Configure optional features and disabled-feature enforcement for each system mode.",
       icon: "fas fa-table-cells",
       restricted: true,
       type: VursFeatureSettings
@@ -207,12 +223,12 @@ function registerModuleSettings() {
   }
 
   for (const feature of FEATURE_DEFINITIONS) {
-    for (const key of [feature.defaultSetting, feature.agnosticSetting].filter(Boolean)) {
+    for (const key of [feature.defaultSetting, feature.vursSetting, feature.agnosticSetting].filter(Boolean)) {
       registerSetting(settings, key, {
         scope: "world",
         config: false,
         type: Boolean,
-        default: false
+        default: feature.id === "disabledFeatureEnforcement"
       });
     }
   }
@@ -225,4 +241,3 @@ registerModuleSettings();
 Hooks.once("init", registerModuleSettings);
 Hooks.once("setup", registerModuleSettings);
 Hooks.once("ready", registerModuleSettings);
-

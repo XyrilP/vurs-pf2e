@@ -31,6 +31,11 @@ import {
 } from "./features/systemModes.js";
 
 const MODULE_ID = "vurs-pf2e";
+const DISABLED_FEATURE_ENFORCEMENT_SETTINGS = Object.freeze({
+	default: "enforceDisabledFeaturesInDefault",
+	vurs: "enforceDisabledFeaturesInVurs",
+	agnostic: "enforceDisabledFeaturesInAgnostic"
+});
 const VURS_UNDO_ACTIVE = Symbol("vurs-pf2e.undoDamageActive");
 const VURS_KEY_STRIKE_PATCH = Symbol("vurs-pf2e.keyStrikePatch");
 const VURS_KEY_ATTACK_MODIFIER = Symbol("vurs-pf2e.keyAttackModifier");
@@ -39,6 +44,12 @@ const VURS_IWR_TEST_PATCH = Symbol("vurs-pf2e.iwrTestPatch");
 const VURS_IWR_INSTANCE_TEST_PATCH = Symbol("vurs-pf2e.iwrInstanceTestPatch");
 const VURS_SPECIAL_IWR_RULE_PATCH = Symbol("vurs-pf2e.specialIwrRulePatch");
 const VURS_PLAY_COST_REFRESH_PATCH = Symbol("vurs-pf2e.playCostRefreshPatch");
+const VURS_BROKEN_PASSIVE_RULE_PATCH = Symbol("vurs-pf2e.brokenPassiveRulePatch");
+const VURS_MUTED_ITEM_RULE_PATCH = Symbol("vurs-pf2e.mutedItemRulePatch");
+const VURS_MUTED_PHYSICAL_RULE_PATCH = Symbol("vurs-pf2e.mutedPhysicalRulePatch");
+const VURS_MUTED_EQUIPPED_PATCH = Symbol("vurs-pf2e.mutedEquippedPatch");
+const VURS_MUTED_INVESTED_PATCH = Symbol("vurs-pf2e.mutedInvestedPatch");
+const VURS_ORIGINAL_EQUIPPED_GETTER = Symbol("vurs-pf2e.originalEquippedGetter");
 const registeredIwrDamageTargets = new Set();
 const VURS_MAIN_ATTRIBUTE_ENABLED = true;
 
@@ -111,13 +122,20 @@ Hooks.once("setup", () => {
 // are ready, but before the first character sheet is prepared.
 Hooks.once("pf2e.systemReady", () => {
 	registerVursCharacterPreparationWrappers();
+	installBrokenPassiveRuleSuppression();
+	installMutedItemRuleSuppression();
+	installMutedUnequippedItems();
 	installCustomDamageIwrPatch();
 	installSystemPatches();
 	installKeyAttributeStrikes(false);
 	applySystemMode();
 });
 Hooks.once("ready", () => {
+	updateDisabledFeaturesPresentation();
 	registerVursCharacterPreparationWrappers();
+	installBrokenPassiveRuleSuppression();
+	installMutedItemRuleSuppression();
+	installMutedUnequippedItems();
 	installCustomDamageIwrPatch();
 	installKeyAttributeStrikes(false);
 	applySystemMode();
@@ -145,6 +163,17 @@ Hooks.on("vurs-pf2e.systemModeChanged", mode => applySystemMode(mode));
 // The active canvas can create synthetic token actors after `ready`. Reprepare
 // them when it finishes so their first rendered sheet already has VURS data.
 Hooks.on("canvasReady", refreshCanvasActors);
+Hooks.once("ready", () => {
+	for (const actor of game.actors?.contents ?? []) syncVursConditionFlags(actor);
+});
+Hooks.on("canvasReady", () => {
+	for (const token of canvas.tokens?.placeables ?? []) {
+		if (token.actor) syncVursConditionFlags(token.actor);
+	}
+});
+for (const hook of ["createItem", "updateItem", "deleteItem"]) {
+	Hooks.on(hook, syncVursConditionFlagsFromItem);
+}
 // Register this before the first ApplicationV2 render. The builder may be
 // opened before ready-time actor preparation finishes.
 
@@ -153,6 +182,168 @@ function isSupportedVursActor(actor) {
 		actor?.isOfType?.("character") ||
 		actor?.isOfType?.("npc")
 	);
+}
+
+function areDisabledFeaturesEnforced() {
+	const settings = globalThis.game?.settings;
+	const mode = getSystemMode();
+	const key = mode === "vurs"
+		? DISABLED_FEATURE_ENFORCEMENT_SETTINGS.vurs
+		: isAgnosticVursMode(mode)
+			? DISABLED_FEATURE_ENFORCEMENT_SETTINGS.agnostic
+			: DISABLED_FEATURE_ENFORCEMENT_SETTINGS.default;
+	const registration = `${MODULE_ID}.${key}`;
+	if (!settings?.settings?.has?.(registration)) return true;
+	return settings.get(MODULE_ID, key) !== false;
+}
+
+function updateDisabledFeaturesPresentation() {
+	globalThis.document?.body?.classList.toggle("vurs-disabled-features-unenforced", !areDisabledFeaturesEnforced());
+}
+
+function hasMutedOrCursedCondition(actor, rules = null) {
+	if (!isSupportedVursActor(actor)) return false;
+	if ([
+		foundry.utils.getProperty(actor, "flags.vurs.conditions.isMuted"),
+		foundry.utils.getProperty(actor, "flags.vurs.conditions.isCursed")
+	].some(value => [1, "1", true].includes(value))) {
+		return true;
+	}
+	if (!rules) return false;
+	return rules.some(rule =>
+		ruleEnablesVursCondition(rule, actor, "isMuted") ||
+		ruleEnablesVursCondition(rule, actor, "isCursed")
+	);
+}
+
+function installMutedUnequippedItems() {
+	const shieldPrototype = CONFIG.PF2E?.Item?.documentClasses?.shield?.prototype;
+	let physicalItemPrototype = shieldPrototype;
+	while (physicalItemPrototype && !Object.hasOwn(physicalItemPrototype, "isEquipped")) {
+		physicalItemPrototype = Object.getPrototypeOf(physicalItemPrototype);
+	}
+	if (!physicalItemPrototype) return;
+
+	installMutedPhysicalItemRuleSuppression(physicalItemPrototype);
+
+	const prototypes = new Set([physicalItemPrototype]);
+	for (const ItemClass of Object.values(CONFIG.PF2E?.Item?.documentClasses ?? {})) {
+		const prototype = ItemClass?.prototype;
+		if (!prototype || !physicalItemPrototype.isPrototypeOf(prototype)) continue;
+		if (
+			Object.hasOwn(prototype, "isEquipped") ||
+			Object.hasOwn(prototype, "isInvested")
+		) {
+			prototypes.add(prototype);
+		}
+	}
+
+	for (const prototype of prototypes) {
+		if (!prototype[VURS_MUTED_EQUIPPED_PATCH]) {
+			const equippedDescriptor = Object.getOwnPropertyDescriptor(prototype, "isEquipped");
+			if (typeof equippedDescriptor?.get === "function") {
+				Object.defineProperty(prototype, VURS_ORIGINAL_EQUIPPED_GETTER, {
+					value: equippedDescriptor.get
+				});
+				Object.defineProperty(prototype, "isEquipped", {
+					...equippedDescriptor,
+					get() {
+						const isEquipped = equippedDescriptor.get.call(this);
+						if (
+							!isEquipped ||
+							!areDisabledFeaturesEnforced() ||
+							!hasMutedOrCursedCondition(this.actor)
+						) return isEquipped;
+						if (["weapon", "shield", "armor"].some(type => this.isOfType?.(type))) {
+							return isEquipped;
+						}
+						return false;
+					}
+				});
+				Object.defineProperty(prototype, VURS_MUTED_EQUIPPED_PATCH, { value: true });
+			}
+		}
+
+		if (!prototype[VURS_MUTED_INVESTED_PATCH]) {
+			const investedDescriptor = Object.getOwnPropertyDescriptor(prototype, "isInvested");
+			if (typeof investedDescriptor?.get === "function") {
+				Object.defineProperty(prototype, "isInvested", {
+					...investedDescriptor,
+					get() {
+						const isInvested = investedDescriptor.get.call(this);
+						if (
+							isInvested !== false ||
+							!hasMutedOrCursedCondition(this.actor) ||
+							["weapon", "shield", "armor"].some(type => this.isOfType?.(type))
+						) {
+							return isInvested;
+						}
+						return wasInvestedBeforeMuted(this) ? true : isInvested;
+					}
+				});
+				Object.defineProperty(prototype, VURS_MUTED_INVESTED_PATCH, { value: true });
+			}
+		}
+	}
+}
+
+function wasInvestedBeforeMuted(item) {
+	const traits = foundry.utils.getProperty(item, "system.traits.value");
+	if (
+		!Array.isArray(traits) ||
+		!traits.includes("invested") ||
+		item.isStowed ||
+		!item.isIdentified ||
+		item.system.equipped.invested !== true
+	) {
+		return false;
+	}
+
+	const equippedGetter = getOriginalEquippedGetter(item);
+	const wasEquipped = equippedGetter ? equippedGetter.call(item) : item.isEquipped;
+	return wasEquipped || !["implanted", "worn"].includes(item.system.usage.type);
+}
+
+function getOriginalEquippedGetter(item) {
+	for (let prototype = Object.getPrototypeOf(item); prototype; prototype = Object.getPrototypeOf(prototype)) {
+		if (Object.hasOwn(prototype, VURS_ORIGINAL_EQUIPPED_GETTER)) {
+			return prototype[VURS_ORIGINAL_EQUIPPED_GETTER];
+		}
+	}
+	return null;
+}
+
+function installMutedPhysicalItemRuleSuppression(physicalItemPrototype) {
+	const prototypes = new Set([physicalItemPrototype]);
+	for (const ItemClass of Object.values(CONFIG.PF2E?.Item?.documentClasses ?? {})) {
+		const prototype = ItemClass?.prototype;
+		if (
+			prototype &&
+			physicalItemPrototype.isPrototypeOf(prototype) &&
+			Object.hasOwn(prototype, "prepareRuleElements")
+		) {
+			prototypes.add(prototype);
+		}
+	}
+
+	for (const prototype of prototypes) {
+		if (prototype[VURS_MUTED_PHYSICAL_RULE_PATCH]) continue;
+		const original = prototype.prepareRuleElements;
+		if (typeof original !== "function") continue;
+
+		prototype.prepareRuleElements = function (...args) {
+			if (
+				this.isOfType?.("physical") &&
+				!["weapon", "shield", "armor"].some(type => this.isOfType(type)) &&
+				areDisabledFeaturesEnforced() &&
+				hasMutedOrCursedCondition(this.actor)
+			) {
+				return this.rules = [];
+			}
+			return original.apply(this, args);
+		};
+		Object.defineProperty(prototype, VURS_MUTED_PHYSICAL_RULE_PATCH, { value: true });
+	}
 }
 
 Hooks.on("renderApplicationV2", (app, element, context, options) => {
@@ -218,6 +409,43 @@ Hooks.on("preUpdateItem", (item, changes) => {
 });
 Hooks.on("renderApplication", (app, html) => applyActorSheetPresentation(app, html));
 
+function syncVursConditionFlagsFromItem(item) {
+	if (item?.type !== "condition") return;
+	syncVursConditionFlags(item.actor ?? item.parent);
+}
+
+async function syncVursConditionFlags(actor) {
+	if (!isSupportedVursActor(actor)) return;
+	const changes = { flags: { vurs: { conditions: {} } } };
+	for (const [condition, flagName] of [
+		["confused", "isConfused"],
+		["fatigued", "isFatigued"],
+		["immobilized", "isImmobilized"],
+		["unconscious", "isUnconscious"],
+		["paralyzed", "isParalyzed"],
+		["petrified", "isPetrified"],
+		["prone", "isProne"],
+		["restrained", "isRestrained"],
+		["stunned", "isStunned"]
+	]) {
+		const hasCondition = actor.hasCondition?.(condition) === true;
+		const flag = foundry.utils.getProperty(actor, `flags.vurs.conditions.${flagName}`);
+		const flagIsSet = flag === 1 || flag === "1" || flag === true;
+		if (hasCondition === flagIsSet) continue;
+
+		changes.flags.vurs.conditions[flagName] = hasCondition
+			? 1
+			: new foundry.data.operators.ForcedDeletion();
+	}
+	if (Object.keys(changes.flags.vurs.conditions).length === 0) return;
+
+	try {
+		await actor.update(changes, { render: false });
+	} catch (error) {
+		console.error(`${MODULE_ID} | Failed to synchronize condition flags for ${actor.name}`, error);
+	}
+}
+
 const scheduledPlayResourceRefreshes = new WeakMap();
 
 Hooks.on("updateActor", (actor, changes, options = {}) => {
@@ -231,6 +459,25 @@ Hooks.on("updateActor", (actor, changes, options = {}) => {
 		const root = app?.element instanceof HTMLElement
 			? app.element
 			: app?.element?.[0];
+		if (!root) continue;
+
+		applyDisarmedStrikeState(root, actor);
+		applySilencedState(root, actor);
+		applyMutedState(root, actor);
+		applyConfusedState(root, actor);
+		applyFatiguedState(root, actor);
+		applyRootedState(root, actor);
+		applyImmobilizedState(root, actor);
+		applyProneState(root, actor);
+		applyRestrainedState(root, actor);
+		applyActingStatusState(root, actor, "staggered");
+		applyParalyzedState(root, actor);
+		applyActingStatusState(root, actor, "unconscious");
+		applyActingStatusState(root, actor, "cantAct");
+		applyActingStatusState(root, actor, "incapacitated");
+		applyActingStatusState(root, actor, "petrified");
+		applyActingStatusState(root, actor, "stunned");
+		applyBrokenState(root, actor);
 
 		// Refresh only applications already identified as VURS actor sheets.
 		if (
@@ -294,11 +541,44 @@ function applyActorSheetPresentation(app, element) {
 	].find(candidate => isSupportedVursActor(candidate));
 	if (!root || !actor) return;
 	renderVursPlayResources(root, actor);
+	applyDisarmedStrikeState(root, actor);
+	applySilencedState(root, actor);
+	applyMutedState(root, actor);
+	applyConfusedState(root, actor);
+	applyFatiguedState(root, actor);
+	applyRootedState(root, actor);
+	applyImmobilizedState(root, actor);
+	applyProneState(root, actor);
+	applyRestrainedState(root, actor);
+	applyActingStatusState(root, actor, "staggered");
+	applyParalyzedState(root, actor);
+	applyActingStatusState(root, actor, "unconscious");
+	applyActingStatusState(root, actor, "cantAct");
+	applyActingStatusState(root, actor, "incapacitated");
+	applyActingStatusState(root, actor, "petrified");
+	applyActingStatusState(root, actor, "stunned");
+	applyBrokenState(root, actor);
 	replaceVursPlayResourceTokens(root, actor);
 	replaceVursPlayCostTokensOnActorSheet(root, actor);
 	if (!root.dataset.vursPlayResourceTokenObserver) {
 		root.dataset.vursPlayResourceTokenObserver = "true";
 		const observer = new MutationObserver(() => {
+			applySilencedState(root, actor);
+			applyMutedState(root, actor);
+			applyConfusedState(root, actor);
+			applyFatiguedState(root, actor);
+			applyRootedState(root, actor);
+			applyImmobilizedState(root, actor);
+			applyProneState(root, actor);
+			applyRestrainedState(root, actor);
+			applyActingStatusState(root, actor, "staggered");
+			applyParalyzedState(root, actor);
+			applyActingStatusState(root, actor, "unconscious");
+			applyActingStatusState(root, actor, "cantAct");
+			applyActingStatusState(root, actor, "incapacitated");
+			applyActingStatusState(root, actor, "petrified");
+			applyActingStatusState(root, actor, "stunned");
+			applyBrokenState(root, actor);
 			replaceVursPlayResourceTokens(root, actor);
 			replaceVursPlayCostTokensOnActorSheet(root, actor);
 		});
@@ -317,6 +597,473 @@ function applyActorSheetPresentation(app, element) {
 	linkVursStatisticSkillControls(root, actor);
 	nestVursConsolidatedSkills(root, actor);
 	groupVursSkillsByAttribute(root, actor, localizeDefaultAbility);
+}
+
+function applyDisarmedStrikeState(root, actor) {
+	const isDisarmed = [1, "1", true].includes(
+		foundry.utils.getProperty(actor, "flags.vurs.conditions.isDisarmed")
+	);
+	const isCursed = [1, "1", true].includes(
+		foundry.utils.getProperty(actor, "flags.vurs.conditions.isCursed")
+	);
+	let section;
+
+	if (actor.isOfType?.("character") || actor.type === "character") {
+		const encounterPanel = root.querySelector('.actions-panel[data-tab="encounter"]');
+		section = encounterPanel?.querySelector(":scope > .vurs-disarmed-strikes");
+
+		if (!section && encounterPanel) {
+			const strikes = encounterPanel.querySelector(":scope > ol.strikes-list[data-strikes]");
+			let heading = strikes?.previousElementSibling;
+			while (heading && heading.tagName !== "HEADER") heading = heading.previousElementSibling;
+
+			if (heading && strikes) {
+				section = document.createElement("div");
+				section.className = "vurs-disarmed-strikes";
+				encounterPanel.insertBefore(section, heading);
+				let element = heading;
+				while (element) {
+					const next = element.nextElementSibling;
+					section.append(element);
+					if (element === strikes) break;
+					element = next;
+				}
+			}
+		}
+	} else if (actor.isOfType?.("npc") || actor.type === "npc") {
+		section = root.querySelector(".attacks.section-container");
+	}
+
+	if (!section) return;
+	setConditionDisabled(section, "disarmed", isDisarmed || isCursed);
+	setConditionDisabled(section, "cursed", isCursed);
+}
+
+function applySilencedState(root, actor) {
+	const isSilenced = [1, "1", true].includes(
+		foundry.utils.getProperty(actor, "flags.vurs.conditions.isSilenced")
+	);
+	const isCursed = [1, "1", true].includes(
+		foundry.utils.getProperty(actor, "flags.vurs.conditions.isCursed")
+	);
+	const spellcastingTab = root.querySelector(
+		'.tab.spellcasting[data-tab="spellcasting"], .tab.spells[data-tab="spells"]'
+	);
+	setConditionDisabled(spellcastingTab, "silenced", isSilenced || isCursed);
+	setConditionDisabled(spellcastingTab, "cursed", isCursed);
+
+	const actionSelector = actor.isOfType?.("character") || actor.type === "character"
+		? '.tab.actions[data-tab="actions"] .actions-list > .item[data-item-id]'
+		: ".actions.section-container .actions-list > .item[data-item-id]";
+	for (const element of root.querySelectorAll(actionSelector)) {
+		const item = actor.items?.get(element.dataset.itemId);
+		const slug = item?.slug ?? foundry.utils.getProperty(item, "system.slug");
+		const isBasicAction = typeof slug === "string" && game.pf2e?.actions?.has(slug) === true;
+		setConditionDisabled(element, "silenced", isSilenced && !isBasicAction);
+		setConditionDisabled(element, "cursed", isCursed && !isBasicAction);
+	}
+}
+
+function applyMutedState(root, actor) {
+	const isMuted = [1, "1", true].includes(
+		foundry.utils.getProperty(actor, "flags.vurs.conditions.isMuted")
+	);
+	const isCursed = [1, "1", true].includes(
+		foundry.utils.getProperty(actor, "flags.vurs.conditions.isCursed")
+	);
+	const disableItems = isMuted || isCursed;
+	const inventoryTab = root.querySelector('.tab.inventory[data-tab="inventory"]');
+	setConditionDisabled(inventoryTab, "muted", false);
+	setConditionDisabled(inventoryTab, "cursed", false);
+	const inventoryList = inventoryTab?.querySelector(".inventory-list");
+	for (const header of inventoryList?.querySelectorAll(":scope > header") ?? []) {
+		const itemList = header.nextElementSibling;
+		if (!itemList?.matches("ul.items")) continue;
+		const itemTypes = new Set(
+			header.querySelector('[data-action="create-item"]')?.dataset.types?.split(",") ?? []
+		);
+		if (itemTypes.has("weapon") || itemTypes.has("shield") || itemTypes.has("armor")) {
+			for (const element of itemList.querySelectorAll(":scope > li[data-item-id]")) {
+				setConditionDisabled(element, "muted", false);
+				setConditionDisabled(element, "cursed", false);
+			}
+		} else {
+			setConditionDisabled(header, "muted", disableItems, false);
+			setConditionDisabled(header, "cursed", isCursed, false);
+			setConditionDisabled(itemList, "muted", disableItems);
+			setConditionDisabled(itemList, "cursed", isCursed);
+		}
+	}
+	for (const element of root.querySelectorAll(
+		".actions-list > .item[data-item-id], .feats-list [data-item-id], .spell-list > .spell[data-item-id]"
+	)) {
+		const item = actor.items?.get(element.dataset.itemId);
+		const isAcquisitionGated = isAcquisitionGatedItem(item);
+		setConditionDisabled(element, "muted", disableItems && isAcquisitionGated);
+		setConditionDisabled(element, "cursed", isCursed && isAcquisitionGated);
+	}
+
+	for (const element of root.querySelectorAll(".actions-list > .item[data-item-id]")) {
+		const item = actor.items?.get(element.dataset.itemId);
+		const slug = item?.slug ?? foundry.utils.getProperty(item, "system.slug");
+		if (slug !== "raise-a-shield") continue;
+
+		element.dataset.vursRaiseShieldAction = "true";
+		setConditionDisabled(element, "muted", disableItems);
+		setConditionDisabled(element, "cursed", isCursed);
+	}
+
+	for (const strike of root.querySelectorAll(".strikes-list > [data-strike][data-action-index]")) {
+		const action = actor.system.actions?.[Number(strike.dataset.actionIndex)];
+		const item = actor.items?.get(action?.item?.id);
+		const isShieldStrike = item?.isOfType?.("shield") || item?.type === "shield";
+
+		for (const button of strike.querySelectorAll('[data-action="auxiliary-action"]')) {
+			const auxiliaryAction = action.auxiliaryActions?.[Number(button.dataset.auxiliaryActionIndex)];
+			const isShieldRaise = isShieldStrike && auxiliaryAction?.action === "raise-a-shield";
+			const isParry = auxiliaryAction?.action === "parry";
+			if (!isShieldRaise && !isParry) continue;
+
+			button.dataset.vursMutedAuxiliary = "true";
+			setConditionButtonDisabled(button, disableItems);
+			setConditionDisabled(button, "muted", disableItems);
+			setConditionDisabled(button, "cursed", isCursed);
+		}
+	}
+
+	if (actor.isOfType?.("npc") || actor.type === "npc") {
+		for (const button of root.querySelectorAll('.subsection.shield button[data-action="raise-a-shield"]')) {
+			setConditionButtonDisabled(button, disableItems);
+			setConditionDisabled(button, "muted", disableItems);
+			setConditionDisabled(button, "cursed", isCursed);
+		}
+	}
+}
+
+function setConditionButtonDisabled(button, isDisabled) {
+	isDisabled = isDisabled && areDisabledFeaturesEnforced();
+	if (isDisabled) {
+		if (!Object.hasOwn(button.dataset, "vursOriginalDisabled")) {
+			button.dataset.vursOriginalDisabled = String(button.disabled);
+		}
+		button.disabled = true;
+	} else if (Object.hasOwn(button.dataset, "vursOriginalDisabled")) {
+		button.disabled = button.dataset.vursOriginalDisabled === "true";
+		delete button.dataset.vursOriginalDisabled;
+	}
+}
+
+function applyFatiguedState(root, actor) {
+	const isFatigued = [1, "1", true].includes(
+		foundry.utils.getProperty(actor, "flags.vurs.conditions.isFatigued")
+	);
+	for (const panel of root.querySelectorAll(
+		'.tab.actions .actions-panel[data-tab="exploration"], .tab.actions .actions-panel[data-tab="downtime"]'
+	)) {
+		setConditionDisabled(panel, "fatigued", isFatigued);
+		for (const element of panel.querySelectorAll(".actions-list > .item[data-item-id]")) {
+			setConditionDisabled(element, "fatigued", isFatigued);
+		}
+	}
+
+	for (const element of root.querySelectorAll(
+		".actions-list > .item[data-item-id], .spell-list > .spell[data-item-id]"
+	)) {
+		const item = actor.items?.get(element.dataset.itemId);
+		const traits = foundry.utils.getProperty(item, "system.traits.value");
+		setConditionDisabled(
+			element,
+			"fatigued",
+			isFatigued && Array.isArray(traits) && traits.includes("exploration")
+		);
+	}
+
+	for (const element of root.querySelectorAll(".feats-list [data-item-id]")) {
+		const item = actor.items?.get(element.dataset.itemId);
+		const traits = foundry.utils.getProperty(item, "system.traits.value");
+		setConditionDisabled(
+			element,
+			"fatigued",
+			isFatigued && Array.isArray(traits) && traits.includes("exploration")
+		);
+	}
+}
+
+function applyConfusedState(root, actor) {
+	const isConfused = [1, "1", true].includes(
+		foundry.utils.getProperty(actor, "flags.vurs.conditions.isConfused")
+	);
+	const selector = [
+		".actions-list > .item[data-item-id]",
+		".spell-list > .spell[data-item-id]",
+		".feats-list [data-item-id]"
+	].join(", ");
+	for (const element of root.querySelectorAll(selector)) {
+		const item = actor.items?.get(element.dataset.itemId);
+		const traits = foundry.utils.getProperty(item, "system.traits.value");
+		const slug = item?.slug ?? foundry.utils.getProperty(item, "system.slug");
+		const isDelayOrReady = ["delay", "ready"].includes(slug);
+		const hasReaction = item?.actionCost?.type === "reaction" ||
+			(Array.isArray(traits) && traits.includes("reaction"));
+		setConditionDisabled(element, "confused", isConfused && (isDelayOrReady || hasReaction));
+	}
+}
+
+function applyRootedState(root, actor) {
+	const isRooted = [1, "1", true].includes(
+		foundry.utils.getProperty(actor, "flags.vurs.conditions.isRooted")
+	);
+	applyMovementConditionToSpeed(root, actor, "rooted", isRooted);
+	for (const { element, traits } of getActionAndSpellItems(root, actor)) {
+		const hasMovementTrait = traits.some(trait => ["move", "traversal", "teleportation"].includes(trait));
+		setConditionDisabled(element, "rooted", isRooted && hasMovementTrait);
+	}
+}
+
+function applyImmobilizedState(root, actor) {
+	const isImmobilized = [1, "1", true].includes(
+		foundry.utils.getProperty(actor, "flags.vurs.conditions.isImmobilized")
+	);
+	applyMovementConditionToSpeed(root, actor, "immobilized", isImmobilized);
+	for (const { element, traits } of getActionAndSpellItems(root, actor)) {
+		setConditionDisabled(element, "immobilized", isImmobilized && traits.includes("move"));
+	}
+}
+
+function applyProneState(root, actor) {
+	const isProne = [1, "1", true].includes(
+		foundry.utils.getProperty(actor, "flags.vurs.conditions.isProne")
+	);
+	applyMovementConditionToSpeed(root, actor, "prone", isProne);
+	for (const { element, traits, slug } of getActionAndSpellItems(root, actor)) {
+		const isException = ["crawl", "stand"].includes(slug);
+		setConditionDisabled(element, "prone", isProne && !isException && traits.includes("move"));
+	}
+}
+
+function applyRestrainedState(root, actor) {
+	const isRestrained = [1, "1", true].includes(
+		foundry.utils.getProperty(actor, "flags.vurs.conditions.isRestrained")
+	);
+
+	for (const { element, traits, slug } of getActionAndSpellItems(root, actor)) {
+		const isException = ["escape", "force-open"].includes(slug);
+		const isRestricted = !isException && traits.some(trait =>
+			trait === "attack" || trait === "manipulate"
+		);
+		setConditionDisabled(element, "restrained", isRestrained && isRestricted);
+	}
+
+	if (actor.isOfType?.("character") || actor.type === "character") {
+		const strikeSection = root.querySelector(".vurs-disarmed-strikes, .strikes-list");
+		setConditionDisabled(strikeSection, "restrained", isRestrained);
+	} else {
+		setConditionDisabled(root.querySelector(".attacks.section-container"), "restrained", isRestrained);
+	}
+}
+
+function applyParalyzedState(root, actor) {
+	const isParalyzed = [1, "1", true].includes(
+		foundry.utils.getProperty(actor, "flags.vurs.conditions.isParalyzed")
+	);
+	applyMovementConditionToSpeed(root, actor, "paralyzed", isParalyzed);
+
+	for (const { element, slug } of getActionAndSpellItems(root, actor)) {
+		setConditionDisabled(element, "paralyzed", isParalyzed && slug !== "recall-knowledge");
+	}
+
+	const isCharacter = actor.isOfType?.("character") || actor.type === "character";
+	const strikeSection = isCharacter
+		? root.querySelector(".vurs-disarmed-strikes, .strikes-list")
+		: root.querySelector(".attacks.section-container");
+	setConditionDisabled(strikeSection, "paralyzed", isParalyzed);
+}
+
+function applyActingStatusState(root, actor, condition) {
+	const isActive = [1, "1", true].includes(
+		foundry.utils.getProperty(actor, `flags.vurs.conditions.is${condition[0].toUpperCase()}${condition.slice(1)}`)
+	);
+	applyMovementConditionToSpeed(root, actor, condition, isActive);
+
+	if (actor.isOfType?.("character") || actor.type === "character") {
+		setConditionDisabled(root.querySelector('.tab.actions[data-tab="actions"]'), condition, isActive);
+		setConditionDisabled(root.querySelector('.tab.spellcasting[data-tab="spellcasting"]'), condition, isActive);
+		return;
+	}
+
+	setConditionDisabled(root.querySelector(".attacks.section-container"), condition, isActive);
+	setConditionDisabled(root.querySelector(".actions.section-container"), condition, isActive);
+	setConditionDisabled(root.querySelector('.tab.spells[data-tab="spells"]'), condition, isActive);
+}
+
+function applyMovementConditionToSpeed(root, actor, condition, isDisabled) {
+	const selector = actor.isOfType?.("character") || actor.type === "character"
+		? '.tab.character .subsection.speeds'
+		: ".sidebar .subsection.speeds";
+	setConditionDisabled(root.querySelector(selector), condition, isDisabled);
+}
+
+function applyBrokenState(root, actor) {
+	const isBroken = [1, "1", true].includes(
+		getBrokenConditionFlag(actor)
+	);
+	const itemSelector = actor.isOfType?.("character") || actor.type === "character"
+		? [
+			'.tab.actions[data-tab="actions"] .actions-list > .item[data-item-id]',
+			'.tab.feats[data-tab="feats"] .feats-list [data-item-id]'
+		].join(", ")
+		: ".actions.section-container .actions-list > .item[data-item-id], .passives.section-container .actions-list > .item[data-item-id]";
+
+	for (const element of root.querySelectorAll(itemSelector)) {
+		const item = actor.items?.get(element.dataset.itemId);
+		if (!item?.isOfType?.("action", "feat")) continue;
+		const traits = foundry.utils.getProperty(item, "system.traits.value");
+		const hasReactionTrait = Array.isArray(traits) && traits.includes("reaction");
+		const isReaction = item.actionCost?.type === "reaction" || hasReactionTrait;
+		const isPassive = !item.actionCost;
+		setConditionDisabled(element, "broken", isBroken && (isReaction || isPassive));
+	}
+}
+
+function getBrokenConditionFlag(actor) {
+	const sourceFlag = foundry.utils.getProperty(actor, "_source.flags.vurs.conditions.isBroken");
+	if ([1, "1", true].includes(sourceFlag)) return sourceFlag;
+	if (actor?.rules?.some(rule => ruleEnablesBroken(rule, actor))) return 1;
+	return sourceFlag ?? foundry.utils.getProperty(actor, "flags.vurs.conditions.isBroken");
+}
+
+function getActionAndSpellItems(root, actor) {
+	const itemSelector = actor.isOfType?.("character") || actor.type === "character"
+		? [
+			'.tab.actions[data-tab="actions"] .actions-list > .item[data-item-id]',
+			'.tab.spellcasting[data-tab="spellcasting"] .spell-list > .spell[data-item-id]'
+		].join(", ")
+		: [
+			".actions.section-container .actions-list > .item[data-item-id]",
+			'.tab.spells[data-tab="spells"] .spell-list > .spell[data-item-id]'
+		].join(", ");
+
+	return [...root.querySelectorAll(itemSelector)].map(element => {
+		const item = actor.items?.get(element.dataset.itemId);
+		const traits = foundry.utils.getProperty(item, "system.traits.value");
+		const slug = item?.slug ??
+			foundry.utils.getProperty(item, "system.slug") ??
+			element.dataset.slug ??
+			element.dataset.actionSlug ??
+			element.dataset.action;
+		return { element, traits: Array.isArray(traits) ? traits : [], slug };
+	});
+}
+
+function installBrokenPassiveRuleSuppression() {
+	for (const type of ["character", "npc"]) {
+		const prototype = CONFIG.PF2E?.Actor?.documentClasses?.[type]?.prototype;
+		const original = prototype?.prepareRuleElements;
+		if (typeof original !== "function" || prototype[VURS_BROKEN_PASSIVE_RULE_PATCH]) continue;
+
+		prototype.prepareRuleElements = function (...args) {
+			const rules = original.apply(this, args);
+			if (!areDisabledFeaturesEnforced()) return rules;
+			const isBroken = [1, "1", true].includes(getBrokenConditionFlag(this)) ||
+				rules.some(rule => ruleEnablesBroken(rule, this));
+			if (!isBroken) return rules;
+
+			return rules.filter(rule => {
+				const item = rule.item;
+				return !item?.isOfType?.("action", "feat") || item.actionCost;
+			});
+		};
+		Object.defineProperty(prototype, VURS_BROKEN_PASSIVE_RULE_PATCH, { value: true });
+	}
+}
+
+function installMutedItemRuleSuppression() {
+	for (const type of ["character", "npc"]) {
+		const prototype = CONFIG.PF2E?.Actor?.documentClasses?.[type]?.prototype;
+		const original = prototype?.prepareRuleElements;
+		if (typeof original !== "function" || prototype[VURS_MUTED_ITEM_RULE_PATCH]) continue;
+
+		prototype.prepareRuleElements = function (...args) {
+			const rules = original.apply(this, args);
+			if (!areDisabledFeaturesEnforced() || !hasMutedOrCursedCondition(this, rules)) return rules;
+
+			const isMutedItemRule = rule => {
+				const item = rule.item;
+				return (
+					(item?.isOfType?.("physical") &&
+						!["weapon", "shield", "armor"].some(itemType => item.isOfType(itemType))) ||
+					isAcquisitionGatedItem(item)
+				);
+			};
+			const rulesByItem = new Map();
+			for (const rule of rules) {
+				if (!isMutedItemRule(rule)) continue;
+				const item = rule.item;
+				if (!rulesByItem.has(item)) rulesByItem.set(item, new Set());
+				rulesByItem.get(item).add(rule);
+			}
+			for (const [item, mutedRules] of rulesByItem) {
+				item.rules = item.rules.filter(rule => !mutedRules.has(rule));
+			}
+
+			return rules.filter(rule => !isMutedItemRule(rule));
+		};
+		Object.defineProperty(prototype, VURS_MUTED_ITEM_RULE_PATCH, { value: true });
+	}
+}
+
+function isAcquisitionGatedItem(item) {
+	const visited = new Set();
+	let current = item;
+
+	while (current && !visited.has(current.id)) {
+		visited.add(current.id);
+		if (
+			current.isOfType?.("feat") &&
+			current.system.prerequisites?.value?.some(prerequisite =>
+				/\b(?:trained|expert|master|legendary)\s+in\s+acquisition\b/i.test(prerequisite.value ?? "")
+			)
+		) {
+			return true;
+		}
+
+		current = current.actor?.items?.get(current.flags?.pf2e?.grantedBy?.id) ?? null;
+	}
+
+	return false;
+}
+
+function ruleEnablesBroken(rule, actor) {
+	return ruleEnablesVursCondition(rule, actor, "isBroken");
+}
+
+function ruleEnablesVursCondition(rule, actor, condition) {
+	if (
+		rule.key !== "ActiveEffectLike" ||
+		rule.path !== `flags.vurs.conditions.${condition}` ||
+		!["applyAEs", "beforeDerived"].includes(rule.phase) ||
+		!["override", "add", "upgrade"].includes(rule.mode) ||
+		![1, "1", true].includes(rule.value) ||
+		rule.ignored ||
+		typeof rule.test !== "function"
+	) {
+		return false;
+	}
+
+	return rule.test(new Set(actor.getRollOptions(rule.testDomains)));
+}
+
+function setConditionDisabled(element, condition, isDisabled, disableInteraction = true) {
+	if (!element) return;
+	element.dataset[`vurs${condition[0].toUpperCase()}${condition.slice(1)}`] = String(isDisabled);
+	const activeConditions = ["Cursed", "Muted", "Disarmed", "Silenced", "Confused", "Fatigued", "Rooted", "Immobilized", "Incapacitated", "Paralyzed", "Petrified", "Prone", "Restrained", "Staggered", "Stunned", "Unconscious", "CantAct", "Broken"]
+		.filter(name => element.dataset[`vurs${name}`] === "true")
+		.map(name => name === "CantAct" ? "Can't Act" : name);
+	element.dataset.vursConditionLabel = activeConditions.join(" · ");
+	const disabled = areDisabledFeaturesEnforced() && disableInteraction && activeConditions.length > 0;
+	element.inert = disabled;
+	if (disabled) element.setAttribute("aria-disabled", "true");
+	else element.removeAttribute("aria-disabled");
 }
 
 function replaceVursPlayCostTokensOnActorSheet(root, actor) {
