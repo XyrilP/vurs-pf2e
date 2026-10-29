@@ -43,6 +43,8 @@ const VURS_KEY_DAMAGE_MODIFIER = Symbol("vurs-pf2e.keyDamageModifier");
 const VURS_IWR_TEST_PATCH = Symbol("vurs-pf2e.iwrTestPatch");
 const VURS_IWR_INSTANCE_TEST_PATCH = Symbol("vurs-pf2e.iwrInstanceTestPatch");
 const VURS_SPECIAL_IWR_RULE_PATCH = Symbol("vurs-pf2e.specialIwrRulePatch");
+const VURS_SPECIAL_DAMAGE_SELECTOR_METHOD_PATCH = Symbol("vurs-pf2e.specialDamageSelectorMethodPatch");
+const VURS_SPECIAL_DAMAGE_RULE_PREDICATE = Symbol("vurs-pf2e.specialDamageRulePredicate");
 const VURS_PLAY_COST_REFRESH_PATCH = Symbol("vurs-pf2e.playCostRefreshPatch");
 const VURS_BROKEN_PASSIVE_RULE_PATCH = Symbol("vurs-pf2e.brokenPassiveRulePatch");
 const VURS_MUTED_ITEM_RULE_PATCH = Symbol("vurs-pf2e.mutedItemRulePatch");
@@ -52,6 +54,7 @@ const VURS_MUTED_INVESTED_PATCH = Symbol("vurs-pf2e.mutedInvestedPatch");
 const VURS_ORIGINAL_EQUIPPED_GETTER = Symbol("vurs-pf2e.originalEquippedGetter");
 const registeredIwrDamageTargets = new Set();
 const VURS_MAIN_ATTRIBUTE_ENABLED = true;
+let specialDamageDomainHookInstalled = false;
 
 function normalizeVursPlayCost(value) {
 	if (typeof value !== "string" && typeof value !== "number") return "";
@@ -2623,6 +2626,7 @@ function registerCustomIwrTypes() {
 function installCustomDamageIwrPatch() {
 	registerCustomIwrTypes();
 	installSpecialIwrRuleElementPatch();
+	installSpecialDamageSelectorPatch();
 
 	const actorClasses = CONFIG.PF2E?.Actor?.documentClasses ?? {};
 	const candidates = new Set([
@@ -2663,6 +2667,133 @@ function installCustomDamageIwrPatch() {
 			console.error(`${MODULE_ID} | Failed to register IWR damage handling for ${target}`, error);
 		}
 	}
+}
+
+function installSpecialDamageSelectorPatch() {
+	if (!specialDamageDomainHookInstalled) {
+		Hooks.on("preCreateChatMessage", addSpecialDamageDomainToMessage);
+		Hooks.on("createChatMessage", addSpecialDamageDomainToCreatedMessage);
+		specialDamageDomainHookInstalled = true;
+	}
+
+	const registry = game.pf2e?.RuleElements;
+	const ruleElementClasses = [
+		...Object.values(registry?.builtin ?? {}),
+		...Object.values(registry?.custom ?? {})
+	];
+	for (const RuleElementClass of new Set(ruleElementClasses)) {
+		const prototype = RuleElementClass?.prototype;
+		if (!prototype || Object.hasOwn(prototype, VURS_SPECIAL_DAMAGE_SELECTOR_METHOD_PATCH)) continue;
+
+		for (const method of ["beforePrepareData", "afterPrepareData"]) {
+			if (!Object.hasOwn(prototype, method) || typeof prototype[method] !== "function") continue;
+			const original = prototype[method];
+			prototype[method] = function (...args) {
+				const selectorProperties = ["selector", "selectors"].filter(property => {
+					const descriptor = Object.getOwnPropertyDescriptor(this, property);
+					return descriptor &&
+						Object.hasOwn(descriptor, "value") &&
+						descriptor.writable &&
+						hasSpecialDamageSelector(descriptor.value);
+				});
+				if (selectorProperties.length === 0) return original.apply(this, args);
+				if (!installSpecialDamageRulePredicate(this)) return original.apply(this, args);
+
+				const originalSelectors = selectorProperties.map(property => [property, this[property]]);
+				for (const [property, selectors] of originalSelectors) {
+					this[property] = replaceSpecialDamageSelector(selectors);
+				}
+				try {
+					return original.apply(this, args);
+				} finally {
+					for (const [property, selectors] of originalSelectors) {
+						this[property] = selectors;
+					}
+				}
+			};
+		}
+		Object.defineProperty(prototype, VURS_SPECIAL_DAMAGE_SELECTOR_METHOD_PATCH, { value: true });
+	}
+}
+
+function addSpecialDamageDomainToMessage(message, data) {
+	const context = foundry.utils.getProperty(data, `flags.${game.system.id}.context`) ??
+		foundry.utils.getProperty(message, `flags.${game.system.id}.context`);
+	addSpecialDamageDomain(context);
+}
+
+async function addSpecialDamageDomainToCreatedMessage(message) {
+	const context = foundry.utils.getProperty(message, `flags.${game.system.id}.context`);
+	if (!addSpecialDamageDomain(context)) return;
+	if (!message.canUserModify?.(game.user, "update")) return;
+
+	try {
+		await message.update({
+			[`flags.${game.system.id}.context.domains`]: context.domains
+		});
+	} catch (error) {
+		console.error(`${MODULE_ID} | Failed to add special-damage domain to created chat message`, error);
+	}
+}
+
+function addSpecialDamageDomain(context) {
+	if (context?.type !== "damage-roll" || !hasSpecialDamageOption(context.options)) return false;
+	if (!Array.isArray(context.domains)) {
+		console.error(`${MODULE_ID} | Could not add special-damage domain: damage roll context has no domains array`);
+		return false;
+	}
+	if (context.domains.includes("special-damage")) return false;
+	context.domains.push("special-damage");
+	return true;
+}
+
+function hasSpecialDamageSelector(selectors) {
+	return selectors === "special-damage" ||
+		(Array.isArray(selectors) && selectors.includes("special-damage"));
+}
+
+function replaceSpecialDamageSelector(selectors) {
+	if (selectors === "special-damage") return "damage";
+	if (Array.isArray(selectors)) {
+		return selectors.map(selector => selector === "special-damage" ? "damage" : selector);
+	}
+	return selectors;
+}
+
+function installSpecialDamageRulePredicate(rule) {
+	const predicate = rule.predicate;
+	if (!Array.isArray(predicate)) {
+		console.error(`${MODULE_ID} | Could not install special-damage selector: Rule Element predicate is unavailable`);
+		return false;
+	}
+	if (rule[VURS_SPECIAL_DAMAGE_RULE_PREDICATE]) return true;
+
+	try {
+		const specialDamagePredicate = createSpecialDamagePredicate();
+		if (!specialDamagePredicate) return false;
+		predicate.push(specialDamagePredicate);
+		Object.defineProperty(rule, VURS_SPECIAL_DAMAGE_RULE_PREDICATE, { value: true });
+		return true;
+	} catch (error) {
+		console.error(`${MODULE_ID} | Failed to add special-damage conditions to Rule Element predicate`, error);
+		return false;
+	}
+}
+
+function createSpecialDamagePredicate() {
+	const excludedTypes = new Set(["physical", "bludgeoning", "slashing", "piercing"]);
+	const systemConfig = CONFIG[game.system.id.toUpperCase()] ?? CONFIG.PF2E;
+	const damageTypes = Object.keys(systemConfig?.damageTypes ?? {})
+		.filter(type => !excludedTypes.has(type));
+	const options = damageTypes.flatMap(type => [
+		`damage:type:${type}`,
+		`item:damage:type:${type}`
+	]);
+	if (options.length === 0) {
+		console.error(`${MODULE_ID} | Could not install special-damage selector: no damage types are configured`);
+		return null;
+	}
+	return { or: options };
 }
 
 function installSpecialIwrRuleElementPatch() {
@@ -2753,11 +2884,26 @@ function hasPureDamageOption(options) {
 function hasSpecialDamageOption(options) {
 	const values = options instanceof Set ? [...options] : Array.isArray(options) ? options :
 		typeof options === "string" ? [options] : [];
-	const hasDamageOption = values.includes("damage") || values.some(option =>
-		typeof option === "string" && (option.startsWith("damage:type:") || option.startsWith("damage:category:"))
+	const damageOptions = values
+		.filter(option => typeof option === "string")
+		.map(option => option.startsWith("item:damage:") ? option.slice("item:".length) : option);
+	const hasDamageOption = damageOptions.includes("damage") || damageOptions.some(option =>
+		option.startsWith("damage:type:") || option.startsWith("damage:category:")
 	);
-	if (!hasDamageOption || values.includes("damage:category:physical")) return false;
-	return !["bludgeoning", "slashing", "piercing"].some(type => values.includes(`damage:type:${type}`));
+	if (!hasDamageOption) return false;
+
+	const damageTypeOptions = damageOptions.filter(option => option.startsWith("damage:type:"));
+	const damageCategoryOptions = damageOptions.filter(option => option.startsWith("damage:category:"));
+	const excludedTypes = ["physical", "bludgeoning", "slashing", "piercing"];
+	if (
+		damageTypeOptions.some(option => !excludedTypes.some(type => option === `damage:type:${type}`)) ||
+		damageCategoryOptions.some(option => option !== "damage:category:physical")
+	) {
+		return true;
+	}
+
+	return damageTypeOptions.length === 0 &&
+		damageCategoryOptions.length === 0;
 }
 
 function iwrExplicitlyNamesPure(iwr) {
