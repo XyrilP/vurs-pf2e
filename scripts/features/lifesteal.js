@@ -161,9 +161,16 @@ function hasSpecialDamageOption(options) {
 		damageCategoryOptions.length === 0;
 }
 
-function getLifestealHealing(attacker, damage, rollOptions, selectors) {
+function getLifestealHealing(attacker, damageRoll, damage, rollOptions, selectors) {
 	if (damage <= 0) return { healing: 0, sources: [] };
 
+	const instances = Array.isArray(damageRoll?.instances) ? damageRoll.instances : null;
+	const instanceTotal = instances?.reduce((total, instance) => {
+		const value = Number(instance.total);
+		return Number.isFinite(value) && value > 0 ? total + value : total;
+	}, 0) ?? 0;
+	const damageScale = instanceTotal > 0 ? damage / instanceTotal : 1;
+	const physicalDamageTypes = new Set(["physical", "bludgeoning", "piercing", "slashing"]);
 	const seenSlugs = new Set();
 	const sources = [];
 	for (const rule of Array.isArray(attacker?.rules) ? attacker.rules : []) {
@@ -179,6 +186,23 @@ function getLifestealHealing(attacker, damage, rollOptions, selectors) {
 			continue;
 		}
 
+		const damageByType = new Map();
+		if (instances?.length > 0) {
+			for (const instance of instances) {
+				const instanceDamage = Number(instance.total);
+				if (!Number.isFinite(instanceDamage) || instanceDamage <= 0) continue;
+				const isSpecial = !physicalDamageTypes.has(instance.type);
+				if (rule.selector === "special-damage" ? !isSpecial : rule.selector && isSpecial) continue;
+				damageByType.set(
+					instance.type,
+					(damageByType.get(instance.type) ?? 0) + instanceDamage * damageScale
+				);
+			}
+		} else {
+			damageByType.set("untyped", damage);
+		}
+		if (damageByType.size === 0) continue;
+
 		const slug = typeof rule.slug === "string" ? rule.slug.trim() : "";
 		if (slug && seenSlugs.has(slug)) continue;
 		const value = Number(rule.resolveValue(rule.value, 0));
@@ -190,7 +214,10 @@ function getLifestealHealing(attacker, damage, rollOptions, selectors) {
 				healing = value;
 				break;
 			case "percent":
-				healing = Math.floor(damage * value);
+				healing = [...damageByType.values()].reduce(
+					(total, typeDamage) => total + Math.floor(typeDamage * value),
+					0
+				);
 				break;
 			case "threshold":
 			default: {
@@ -199,7 +226,11 @@ function getLifestealHealing(attacker, damage, rollOptions, selectors) {
 					console.error(`${MODULE_ID} | Skipping ${RULE_KEY} on ${rule.item?.name ?? "unknown item"}: lifestealThreshold must resolve to a positive number`);
 					continue;
 				}
-				healing = Math.max(Math.floor(damage / threshold) * value, damage < threshold ? 1 : 0);
+				healing = [...damageByType.values()].reduce((total, typeDamage) =>
+					total + Math.max(
+						Math.floor((typeDamage / threshold) * value),
+						typeDamage < threshold ? 1 : 0
+					), 0);
 			}
 		}
 		if (!Number.isFinite(healing) || healing <= 0) continue;
@@ -325,7 +356,13 @@ async function applyLifesteal(actor, wrapped, args) {
 
 		const rollOptions = getDamageRollOptions(params.damage, params.rollOptions);
 		const selectors = getDamageSelectors(params.damage, params.item);
-		const { healing, sources } = getLifestealHealing(attacker, damageApplied, rollOptions, selectors);
+		const { healing, sources } = getLifestealHealing(
+			attacker,
+			params.damage,
+			damage,
+			rollOptions,
+			selectors
+		);
 		const { healing: healed, card } = await healDamageDealer(attacker, healing);
 		if (healed > 0 && card) {
 			let remainingHealing = healed;
