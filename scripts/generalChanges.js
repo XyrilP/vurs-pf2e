@@ -52,7 +52,6 @@ const VURS_MUTED_PHYSICAL_RULE_PATCH = Symbol("vurs-pf2e.mutedPhysicalRulePatch"
 const VURS_MUTED_EQUIPPED_PATCH = Symbol("vurs-pf2e.mutedEquippedPatch");
 const VURS_MUTED_INVESTED_PATCH = Symbol("vurs-pf2e.mutedInvestedPatch");
 const VURS_ORIGINAL_EQUIPPED_GETTER = Symbol("vurs-pf2e.originalEquippedGetter");
-const registeredIwrDamageTargets = new Set();
 const VURS_MAIN_ATTRIBUTE_ENABLED = true;
 let specialDamageDomainHookInstalled = false;
 
@@ -2628,45 +2627,23 @@ function installCustomDamageIwrPatch() {
 	installSpecialIwrRuleElementPatch();
 	installSpecialDamageSelectorPatch();
 
-	const actorClasses = CONFIG.PF2E?.Actor?.documentClasses ?? {};
-	const candidates = new Set([
-		CONFIG.Actor?.documentClass,
-		...Object.values(actorClasses)
-	].filter(actorClass => typeof actorClass?.prototype?.applyDamage === "function"));
-
-	for (const actorClass of candidates) {
-		const actorType = Object.entries(actorClasses).find(([, candidate]) => candidate === actorClass)?.[0];
-		const target = actorType
-			? `CONFIG.PF2E.Actor.documentClasses.${actorType}.prototype.applyDamage`
-			: actorClass === CONFIG.Actor?.documentClass ? "CONFIG.Actor.documentClass.prototype.applyDamage" : null;
-		if (!target || registeredIwrDamageTargets.has(target)) continue;
-
-		const wrapper = function (wrapped, ...args) {
-			const attributes = this.attributes;
-			for (const entry of [...(attributes?.immunities ?? []), ...(attributes?.resistances ?? [])]) {
-				installIwrTestPatch(entry);
-			}
-			return wrapped(...args);
-		};
-		try {
-			if (globalThis.libWrapper?.register) {
-				globalThis.libWrapper.register(MODULE_ID, target, wrapper, "WRAPPER");
-			} else {
-				const prototype = actorClass.prototype;
-				const original = prototype.applyDamage;
-				prototype.applyDamage = function (...args) {
-					const attributes = this.attributes;
-					for (const entry of [...(attributes?.immunities ?? []), ...(attributes?.resistances ?? [])]) {
-						installIwrTestPatch(entry);
-					}
-					return original.apply(this, args);
-				};
-			}
-			registeredIwrDamageTargets.add(target);
-		} catch (error) {
-			console.error(`${MODULE_ID} | Failed to register IWR damage handling for ${target}`, error);
-		}
+	const handlerKey = Symbol.for(`${MODULE_ID}.iwrDamageHandler`);
+	if (globalThis[handlerKey]) return;
+	const damageHandlers = globalThis[Symbol.for(`${MODULE_ID}.applyDamageHandlers`)];
+	if (!(damageHandlers instanceof Set)) {
+		console.error(`${MODULE_ID} | Could not install IWR damage handling: shared applyDamage handlers are unavailable`);
+		return;
 	}
+
+	damageHandlers.add(function (actor, wrapped, args) {
+		if (!["character", "npc"].includes(actor?.type)) return wrapped(...args);
+		const attributes = actor.attributes;
+		for (const entry of [...(attributes?.immunities ?? []), ...(attributes?.resistances ?? [])]) {
+			installIwrTestPatch(entry);
+		}
+		return wrapped(...args);
+	});
+	globalThis[handlerKey] = true;
 }
 
 function installSpecialDamageSelectorPatch() {
@@ -2719,12 +2696,12 @@ function installSpecialDamageSelectorPatch() {
 function addSpecialDamageDomainToMessage(message, data) {
 	const context = foundry.utils.getProperty(data, `flags.${game.system.id}.context`) ??
 		foundry.utils.getProperty(message, `flags.${game.system.id}.context`);
-	addSpecialDamageDomain(context);
+	addSpecialDamageDomain(context, [message?.rolls, data?.rolls]);
 }
 
 async function addSpecialDamageDomainToCreatedMessage(message) {
 	const context = foundry.utils.getProperty(message, `flags.${game.system.id}.context`);
-	if (!addSpecialDamageDomain(context)) return;
+	if (!addSpecialDamageDomain(context, message?.rolls)) return;
 	if (!message.canUserModify?.(game.user, "update")) return;
 
 	try {
@@ -2736,8 +2713,11 @@ async function addSpecialDamageDomainToCreatedMessage(message) {
 	}
 }
 
-function addSpecialDamageDomain(context) {
-	if (context?.type !== "damage-roll" || !hasSpecialDamageOption(context.options)) return false;
+function addSpecialDamageDomain(context, rolls = []) {
+	if (
+		context?.type !== "damage-roll" ||
+		(!hasSpecialDamageDamageRoll(rolls) && !hasSpecialDamageOption(context.options))
+	) return false;
 	if (!Array.isArray(context.domains)) {
 		console.error(`${MODULE_ID} | Could not add special-damage domain: damage roll context has no domains array`);
 		return false;
@@ -2745,6 +2725,17 @@ function addSpecialDamageDomain(context) {
 	if (context.domains.includes("special-damage")) return false;
 	context.domains.push("special-damage");
 	return true;
+}
+
+function hasSpecialDamageDamageRoll(rolls) {
+	const excludedTypes = new Set(["physical", "bludgeoning", "piercing", "slashing"]);
+	const candidates = (Array.isArray(rolls) ? rolls : [rolls]).flat(Infinity);
+	return candidates.some(roll =>
+		Array.isArray(roll?.instances) &&
+		roll.instances.some(instance =>
+			typeof instance.type === "string" && !excludedTypes.has(instance.type)
+		)
+	);
 }
 
 function hasSpecialDamageSelector(selectors) {
@@ -2887,23 +2878,12 @@ function hasSpecialDamageOption(options) {
 	const damageOptions = values
 		.filter(option => typeof option === "string")
 		.map(option => option.startsWith("item:damage:") ? option.slice("item:".length) : option);
-	const hasDamageOption = damageOptions.includes("damage") || damageOptions.some(option =>
-		option.startsWith("damage:type:") || option.startsWith("damage:category:")
-	);
-	if (!hasDamageOption) return false;
-
 	const damageTypeOptions = damageOptions.filter(option => option.startsWith("damage:type:"));
 	const damageCategoryOptions = damageOptions.filter(option => option.startsWith("damage:category:"));
 	const excludedTypes = ["physical", "bludgeoning", "slashing", "piercing"];
-	if (
-		damageTypeOptions.some(option => !excludedTypes.some(type => option === `damage:type:${type}`)) ||
-		damageCategoryOptions.some(option => option !== "damage:category:physical")
-	) {
-		return true;
-	}
-
-	return damageTypeOptions.length === 0 &&
-		damageCategoryOptions.length === 0;
+	return damageTypeOptions.some(option =>
+		!excludedTypes.some(type => option === `damage:type:${type}`)
+	) || damageCategoryOptions.some(option => option !== "damage:category:physical");
 }
 
 function iwrExplicitlyNamesPure(iwr) {

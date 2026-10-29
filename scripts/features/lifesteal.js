@@ -2,6 +2,7 @@ const MODULE_ID = "vurs-pf2e";
 const RULE_KEY = "Lifesteal";
 const registeredDamageTargets = new Set();
 const activeDamageParams = new WeakSet();
+const damageHandlers = globalThis[Symbol.for(`${MODULE_ID}.applyDamageHandlers`)] ??= new Set();
 let LifestealRuleElement = null;
 
 function registerLifestealLocalization() {
@@ -14,17 +15,17 @@ function getSystemConfig() {
 	return CONFIG[game.system.id.toUpperCase()] ?? CONFIG.PF2E;
 }
 
-function registerLifestealRuleElement() {
+function registerLifestealRuleElement({ quiet = false } = {}) {
 	const system = game[game.system.id] ?? game.pf2e;
 	const RuleElement = system?.RuleElement;
 	const registry = system?.RuleElements;
 	if (!RuleElement || !registry?.custom) {
-		console.error(`${MODULE_ID} | Could not register ${RULE_KEY}: the system Rule Element API is unavailable`);
+		if (!quiet) console.error(`${MODULE_ID} | Could not register ${RULE_KEY}: the system Rule Element API is unavailable`);
 		return;
 	}
 	const ResolvableValueField = registry.builtin?.Resistance?.schema?.fields?.value?.constructor;
 	if (typeof ResolvableValueField !== "function") {
-		console.error(`${MODULE_ID} | Could not register ${RULE_KEY}: the system resolvable-value field is unavailable`);
+		if (!quiet) console.error(`${MODULE_ID} | Could not register ${RULE_KEY}: the system resolvable-value field is unavailable`);
 		return;
 	}
 
@@ -50,6 +51,16 @@ function registerLifestealRuleElement() {
 					nullable: false,
 					initial: 20
 				}),
+				mode: new fields.StringField({
+					required: false,
+					nullable: false,
+					initial: "threshold",
+					choices: {
+						threshold: "Threshold",
+						flat: "Flat",
+						percent: "Percent"
+					}
+				}),
 				selector: new fields.StringField({
 					required: false,
 					nullable: true,
@@ -72,10 +83,47 @@ function currentHealthPool(actor) {
 	return Number(hp.value ?? 0) + Number(hp.temp ?? 0) + stamina;
 }
 
-function getDamageSelectors(damage) {
+export function getDamageSelectors(damage) {
+	const selectors = new Set(["damage-received"]);
 	const modifiers = damage?.options?.damage?.modifiers;
-	if (!Array.isArray(modifiers)) return new Set();
-	return new Set(modifiers.flatMap(modifier => Array.isArray(modifier.domains) ? modifier.domains : []));
+	if (Array.isArray(modifiers)) {
+		for (const modifier of modifiers) {
+			if (Array.isArray(modifier.domains)) {
+				for (const selector of modifier.domains) selectors.add(selector);
+			}
+		}
+	}
+
+	const sourceMessage = [...(game.messages?.contents ?? [])]
+		.find(message => message.rolls?.includes(damage));
+	const domains = foundry.utils.getProperty(
+		sourceMessage,
+		`flags.${game.system.id}.context.domains`
+	);
+	if (Array.isArray(domains)) {
+		for (const selector of domains) selectors.add(selector);
+	}
+
+	return selectors;
+}
+
+export function getDamageRollOptions(damage, rollOptions) {
+	const options = rollOptions instanceof Set
+		? new Set(rollOptions)
+		: Array.isArray(rollOptions)
+			? new Set(rollOptions)
+			: new Set();
+	for (const instance of damage?.instances ?? []) {
+		if (typeof instance.type === "string" && instance.type.length > 0) {
+			options.add(`damage:type:${instance.type}`);
+		}
+		if (instance.formalDescription && Symbol.iterator in Object(instance.formalDescription)) {
+			for (const option of instance.formalDescription) {
+				if (typeof option === "string") options.add(option);
+			}
+		}
+	}
+	return options;
 }
 
 function hasSpecialDamageOption(options) {
@@ -123,13 +171,27 @@ function getLifestealHealing(attacker, damage, rollOptions, selectors) {
 
 		const slug = typeof rule.slug === "string" ? rule.slug.trim() : "";
 		if (slug && seenSlugs.has(slug)) continue;
-		const threshold = Number(rule.resolveValue(rule.lifestealThreshold ?? 20, 20));
-		if (!Number.isFinite(threshold) || threshold <= 0) {
-			console.error(`${MODULE_ID} | Skipping ${RULE_KEY} on ${rule.item?.name ?? "unknown item"}: lifestealThreshold must resolve to a positive number`);
-			continue;
-		}
 		const value = Number(rule.resolveValue(rule.value, 0));
-		const healing = Math.max(Math.floor(damage / threshold) * value, damage < threshold ? 1 : 0);
+		if (!Number.isFinite(value) || value <= 0) continue;
+
+		let healing;
+		switch (rule.mode ?? "threshold") {
+			case "flat":
+				healing = value;
+				break;
+			case "percent":
+				healing = Math.floor(damage * value);
+				break;
+			case "threshold":
+			default: {
+				const threshold = Number(rule.resolveValue(rule.lifestealThreshold ?? 20, 20));
+				if (!Number.isFinite(threshold) || threshold <= 0) {
+					console.error(`${MODULE_ID} | Skipping ${RULE_KEY} on ${rule.item?.name ?? "unknown item"}: lifestealThreshold must resolve to a positive number`);
+					continue;
+				}
+				healing = Math.max(Math.floor(damage / threshold) * value, damage < threshold ? 1 : 0);
+			}
+		}
 		if (!Number.isFinite(healing) || healing <= 0) continue;
 
 		if (slug) seenSlugs.add(slug);
@@ -247,7 +309,7 @@ async function applyLifesteal(actor, wrapped, args) {
 		const damageApplied = Math.max(0, healthBefore - healthAfter);
 		if (damageApplied === 0) return result;
 
-		const rollOptions = params.rollOptions instanceof Set ? params.rollOptions : new Set(params.rollOptions ?? []);
+		const rollOptions = getDamageRollOptions(params.damage, params.rollOptions);
 		const selectors = getDamageSelectors(params.damage);
 		const { healing, sources } = getLifestealHealing(attacker, damageApplied, rollOptions, selectors);
 		const { healing: healed, card } = await healDamageDealer(attacker, healing);
@@ -266,6 +328,19 @@ async function applyLifesteal(actor, wrapped, args) {
 	} finally {
 		activeDamageParams.delete(params);
 	}
+}
+
+damageHandlers.add(applyLifesteal);
+
+function applyDamageHandlers(actor, wrapped, args) {
+	const handlers = [...damageHandlers];
+	const dispatch = (index, forwardedArgs) => {
+		const handler = handlers[index];
+		return handler
+			? handler(actor, (...nextArgs) => dispatch(index + 1, nextArgs), forwardedArgs)
+			: wrapped(...forwardedArgs);
+	};
+	return dispatch(0, args);
 }
 
 function installLifestealDamageHandling() {
@@ -292,7 +367,7 @@ function installLifestealDamageHandling() {
 					MODULE_ID,
 					target,
 					function (wrapped, ...args) {
-						return applyLifesteal(this, wrapped, args);
+						return applyDamageHandlers(this, wrapped, args);
 					},
 					"WRAPPER"
 				);
@@ -300,7 +375,11 @@ function installLifestealDamageHandling() {
 				const prototype = candidate.prototype;
 				const original = prototype.applyDamage;
 				prototype.applyDamage = function (...args) {
-					return applyLifesteal(this, (...wrappedArgs) => original.apply(this, wrappedArgs), args);
+					return applyDamageHandlers(
+						this,
+						(...wrappedArgs) => original.apply(this, wrappedArgs),
+						args
+					);
 				};
 			}
 			registeredDamageTargets.add(target);
@@ -317,6 +396,7 @@ function initializeLifesteal() {
 }
 
 Hooks.once("init", registerLifestealLocalization);
+Hooks.once("init", () => registerLifestealRuleElement({ quiet: true }));
 Hooks.once("setup", registerLifestealRuleElement);
 Hooks.once("pf2e.systemReady", registerLifestealLocalization);
 Hooks.once("sf2e.systemReady", registerLifestealLocalization);
