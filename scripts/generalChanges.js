@@ -25,6 +25,7 @@ import {
 	actorUsesMainAttribute,
 	actorUsesVursHpRules,
 	actorUsesVursSystem,
+	isAgnosticVursMode,
 	getSystemMode,
 	isAnyVursMode,
 	isFullVursMode
