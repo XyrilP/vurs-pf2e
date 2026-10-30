@@ -22,9 +22,9 @@ import {
 	actorHasVursSystemFlag,
 	actorUsesAgnosticVurs,
 	actorUsesDicelessRolls,
-	actorUsesMainAttribute,
 	actorUsesVursHpRules,
 	actorUsesVursSystem,
+	getActorSystemMode,
 	isAgnosticVursMode,
 	getSystemMode,
 	isAnyVursMode,
@@ -38,9 +38,6 @@ const DISABLED_FEATURE_ENFORCEMENT_SETTINGS = Object.freeze({
 	agnostic: "enforceDisabledFeaturesInAgnostic"
 });
 const VURS_UNDO_ACTIVE = Symbol("vurs-pf2e.undoDamageActive");
-const VURS_KEY_STRIKE_PATCH = Symbol("vurs-pf2e.keyStrikePatch");
-const VURS_KEY_ATTACK_MODIFIER = Symbol("vurs-pf2e.keyAttackModifier");
-const VURS_KEY_DAMAGE_MODIFIER = Symbol("vurs-pf2e.keyDamageModifier");
 const VURS_IWR_TEST_PATCH = Symbol("vurs-pf2e.iwrTestPatch");
 const VURS_IWR_INSTANCE_TEST_PATCH = Symbol("vurs-pf2e.iwrInstanceTestPatch");
 const VURS_SPECIAL_IWR_RULE_PATCH = Symbol("vurs-pf2e.specialIwrRulePatch");
@@ -53,7 +50,6 @@ const VURS_MUTED_PHYSICAL_RULE_PATCH = Symbol("vurs-pf2e.mutedPhysicalRulePatch"
 const VURS_MUTED_EQUIPPED_PATCH = Symbol("vurs-pf2e.mutedEquippedPatch");
 const VURS_MUTED_INVESTED_PATCH = Symbol("vurs-pf2e.mutedInvestedPatch");
 const VURS_ORIGINAL_EQUIPPED_GETTER = Symbol("vurs-pf2e.originalEquippedGetter");
-const VURS_MAIN_ATTRIBUTE_ENABLED = true;
 let specialDamageDomainHookInstalled = false;
 
 function normalizeVursPlayCost(value) {
@@ -64,7 +60,6 @@ function normalizeVursPlayCost(value) {
 		.filter(Boolean)
 		.join("; ");
 }
-const VURS_ABILITY_KEYS = ["str", "dex", "con", "int", "wis", "cha"];
 const VURS_ABILITY_LABELS = {
 	str: "Strength",
 	dex: "Agility",
@@ -130,7 +125,7 @@ Hooks.once("pf2e.systemReady", () => {
 	installMutedUnequippedItems();
 	installCustomDamageIwrPatch();
 	installSystemPatches();
-	installKeyAttributeStrikes(false);
+	installActorPreparationSupport(false);
 	applySystemMode();
 });
 Hooks.once("ready", () => {
@@ -140,7 +135,7 @@ Hooks.once("ready", () => {
 	installMutedItemRuleSuppression();
 	installMutedUnequippedItems();
 	installCustomDamageIwrPatch();
-	installKeyAttributeStrikes(false);
+	installActorPreparationSupport(false);
 	applySystemMode();
 	installDicelessPatches();
 	// A bounded retry covers PF2e builds that expose Check or the Dice Roll
@@ -370,13 +365,9 @@ Hooks.on("renderApplicationV2", (app, element, context, options) => {
 
 		// Do not render Play Resources in the generic ApplicationV2 hook.
 
-		if (VURS_MAIN_ATTRIBUTE_ENABLED) {
-			addMainAttributeChoice(app, root, context, options);
-		}
 		reorderAttributeBuilderColumns(root, actor);
 		reorderCharacterSheetAttributes(root, actor);
 		applyActorAbilityLabels(root, actor);
-		applyMainAttributeStar(root, actor);
 		colorVursAttributeModifierFrames(root, actor);
 		addVursExtendedSaveRows(root, actor);
 		hideVursPerceptionSidebarSection(root, actor);
@@ -542,10 +533,6 @@ Hooks.on("renderChatMessage", (message, html) => {
 			.catch(error => console.error(`${MODULE_ID} | Failed to restore HP reduction after damage revert`, error)), 150);
 	});
 });
-if (VURS_MAIN_ATTRIBUTE_ENABLED) {
-	Hooks.once("ready", installMainAttributeObserver);
-}
-
 function applyActorSheetPresentation(app, element) {
 	const root = element instanceof HTMLElement ? element : element?.[0];
 	const actor = [
@@ -603,7 +590,6 @@ function applyActorSheetPresentation(app, element) {
 	allowNegativeHpEntry(root, actor);
 	reorderCharacterSheetAttributes(root, actor);
 	applyActorAbilityLabels(root, actor);
-	applyMainAttributeStar(root, actor);
 	colorVursAttributeModifierFrames(root, actor);
 	addVursExtendedSaveRows(root, actor);
 	hideVursPerceptionSidebarSection(root, actor);
@@ -1589,7 +1575,7 @@ function applySystemMode(mode = getSystemMode()) {
 		...getOpenApplications().map(app => app.actor ?? app.document?.actor)
 	].filter(Boolean));
 	for (const actor of actors) {
-		installActorKeyAttributeSupport(actor, false);
+		installActorVursPreparation(actor, false);
 		// PF2e's reset clears cached prepared state before rebuilding it. Calling
 		// prepareData directly can leave startup-derived sheet data stale until
 		// the next document update (such as changing HP).
@@ -1698,7 +1684,7 @@ function refreshCanvasActors() {
 	const tokens = globalThis.canvas?.tokens?.placeables ?? [];
 	const actors = new Set(tokens.map(token => token.actor).filter(Boolean));
 	for (const actor of actors) {
-		installActorKeyAttributeSupport(actor, false);
+		installActorVursPreparation(actor, false);
 		actor.reset?.();
 		actor.sheet?.render?.(false);
 	}
@@ -1708,11 +1694,11 @@ function refreshCanvasActors() {
 	for (const token of tokens) token.refresh?.();
 }
 
-function installKeyAttributeStrikes(reprepare = true) {
+function installActorPreparationSupport(reprepare = true) {
 	const actors = [...(game.actors?.contents ?? [])];
-	for (const actor of actors) installActorKeyAttributeSupport(actor, reprepare);
+	for (const actor of actors) installActorVursPreparation(actor, reprepare);
 	if (!actorCreationHookInstalled) {
-		Hooks.on("createActor", actor => installActorKeyAttributeSupport(actor));
+		Hooks.on("createActor", actor => installActorVursPreparation(actor));
 		actorCreationHookInstalled = true;
 	}
 }
@@ -1767,151 +1753,7 @@ function installVursPlayCostRefreshPatch() {
 	Object.defineProperty(prototype, VURS_PLAY_COST_REFRESH_PATCH, { value: true });
 }
 
-function addMainAttributeChoice(app, element, context = {}, renderOptions = {}) {
-	if (!VURS_MAIN_ATTRIBUTE_ENABLED) return;
-	const candidate = element instanceof HTMLElement ? element : element?.[0] ?? app.element;
-	const root = candidate instanceof HTMLElement ? candidate : candidate?.[0];
-	if (!root) return;
-	const rows = root.querySelector(".attribute-rows");
-	if (!rows) return;
-	const findActor = () => {
-		// Resolve the application associated with this specific DOM root first.
-		// PF2e can render more than one builder, and the global instance lookup may
-		// return a stale or actor-less application when a builder is opened from a sheet.
-		const rootApp = getApplicationForRoot(root);
-		const builder = app ?? rootApp ?? foundry.applications?.instances?.get?.("attribute-builder");
-		const candidates = [
-			renderOptions.actor, context.actor,
-			builder?.actor, builder?.document?.actor, builder?.document,
-			builder?.options?.actor, app?.actor, app?.document?.actor, app?.document,
-			rootApp?.actor, rootApp?.document?.actor, rootApp?.document,
-			...game.actors?.contents?.filter(candidate =>
-				candidate.apps?.[builder?.id] === builder || candidate.apps?.[rootApp?.id] === rootApp ||
-				candidate.apps?.["attribute-builder"] === builder || candidate.apps?.["attribute-builder"] === rootApp
-			) ?? []
-		];
-		return candidates.find(candidate => candidate?.isOfType?.("character")) ?? null;
-	};
-	const actor = findActor();
-	if (!actorUsesMainAttribute(actor)) {
-		rows.querySelector("[data-section='vurs-main']")?.remove();
-		return;
-	}
-
-	let section = rows.querySelector("[data-section='vurs-main']");
-	if (!section) {
-		const classSection = [...rows.querySelectorAll(":scope > section[role='group']")]
-			.find(candidate => !candidate.hasAttribute("data-section"));
-		if (!classSection) return;
-
-		section = document.createElement("section");
-		section.className = "row svelte-8m1dup vurs-main-attribute-choice";
-		section.dataset.section = "vurs-main";
-		section.setAttribute("role", "group");
-		section.setAttribute("aria-label", "Main attribute boost");
-
-		const heading = document.createElement("div");
-		heading.className = "row-heading svelte-8m1dup";
-		heading.innerHTML = '<div class="label svelte-8m1dup"><div class="title svelte-8m1dup">Main</div><div class="description svelte-8m1dup"></div></div>';
-		section.append(heading);
-
-		const choices = document.createElement("div");
-		choices.className = "attributes svelte-8m1dup";
-		const exampleButton = rows.querySelector("button.attribute-button.boost");
-		for (const ability of VURS_ABILITY_KEYS) {
-			const column = document.createElement("div");
-			column.className = "row-column svelte-8m1dup";
-			const button = exampleButton?.cloneNode(true) ?? document.createElement("button");
-			button.classList.add("attribute-button", "boost");
-			button.style.pointerEvents = "auto";
-			button.style.position = "relative";
-			button.style.zIndex = "2";
-			button.textContent = "BOOST";
-			button.dataset.vursMainAttribute = ability;
-			button.addEventListener("click", async (event) => {
-				event.preventDefault();
-				event.stopPropagation();
-
-				const targetActor = findActor();
-
-				if (!targetActor?.isOfType?.("character")) {
-					ui.notifications?.warn(
-						"Could not find the character for this Attribute Boost builder."
-					);
-					return;
-				}
-
-				try {
-					const nextMainAttribute =
-						getMainAttribute(targetActor) === ability ? null : ability;
-
-					await targetActor.update({
-						"flags.vurs.mainAttribute": nextMainAttribute
-					});
-
-					rerenderApplication(targetActor.sheet);
-					app?.render?.({ force: true });
-				} catch (error) {
-					console.error("VURS | Failed to set Main Attribute", error);
-					ui.notifications?.error("Failed to update the Main Attribute.");
-				}
-			});
-			column.append(button);
-			choices.append(column);
-		}
-		section.append(choices);
-		classSection.after(section);
-	}
-
-	// The row is a builder feature, so keep it visible even if PF2e doesn't
-	// expose its private actor reference in the render hook options.
-	const selected = actor?.isOfType?.("character") ? getMainAttribute(actor) : null;
-	const description = section.querySelector(".row-heading .description");
-	if (description) description.textContent = selected ? VURS_ABILITY_LABELS[selected] : "Choose one";
-	for (const button of section.querySelectorAll("button[data-vurs-main-attribute]")) {
-		const ability = button.dataset.vursMainAttribute;
-		const isSelected = ability === selected;
-		button.textContent = game.i18n.localize("PF2E.Actor.Character.AttributeBuilder.Boost");
-		button.classList.toggle("selected", isSelected);
-		button.classList.toggle("boosted", isSelected);
-		button.classList.toggle("active", isSelected);
-		button.setAttribute("aria-pressed", String(isSelected));
-
-		if (isSelected) {
-			button.style.backgroundColor = "var(--color-border-highlight, #c9a227)";
-			button.style.borderColor = "var(--color-border-highlight, #c9a227)";
-			button.style.color = "#fff";
-			button.style.boxShadow = "0 0 0 2px var(--color-border-highlight, #c9a227)";
-		} else {
-			button.style.removeProperty("background-color");
-			button.style.removeProperty("border-color");
-			button.style.removeProperty("color");
-			button.style.removeProperty("box-shadow");
-		}
-		button.setAttribute("aria-pressed", String(isSelected));
-		button.setAttribute("aria-label", `Main ${VURS_ABILITY_LABELS[ability]} boost`);
-		button.disabled = false;
-	}
-}
-
-function installMainAttributeObserver() {
-	if (!VURS_MAIN_ATTRIBUTE_ENABLED || !document.body || document.body.__vursMainAttributeObserver) return;
-	const attach = () => {
-		const app = foundry.applications?.instances?.get?.("attribute-builder") ??
-			game.actors?.contents?.map(actor => actor.apps?.["attribute-builder"]).find(Boolean);
-		for (const rows of document.querySelectorAll(".attribute-rows")) {
-			if (rows.querySelector("[data-section='vurs-main']")) continue;
-			const root = rows.closest(".application") ?? rows.parentElement;
-			if (root) addMainAttributeChoice(app, root, {}, app?.options ?? {});
-		}
-	};
-	const observer = new MutationObserver(() => requestAnimationFrame(attach));
-	observer.observe(document.body, { childList: true, subtree: true });
-	Object.defineProperty(document.body, "__vursMainAttributeObserver", { value: observer });
-	attach();
-}
-
-function installActorKeyAttributeSupport(actor, reprepare = true) {
+function installActorVursPreparation(actor, reprepare = true) {
 	if (!actor?.isOfType?.("character")) return;
 	registerVursCharacterPreparationWrappers();
 	if (reprepare) actor.prepareData?.();
@@ -1921,16 +1763,6 @@ function registerVursCharacterPreparationWrappers(actorClass = CONFIG.PF2E?.Acto
 	if (!actorClass?.prototype) return;
 	if (typeof globalThis.libWrapper?.register !== "function") return;
 	const wrappers = {
-		prepareSynthetics: function (wrapped, ...args) {
-			const result = wrapped(...args);
-			if (this.isOfType?.("character")) installMainAttributeAttackModifier(this);
-			return result;
-		},
-		prepareData: function (wrapped, ...args) {
-			const result = wrapped(...args);
-			if (this.isOfType?.("character")) applyKeyAttributeToStrikes(this);
-			return result;
-		},
 		prepareSaves: function (wrapped, ...args) {
 			if (actorUsesVursSystem(this) && this.system?.saves) {
 				if (this.system.saves.fortitude) this.system.saves.fortitude.attribute = "str";
@@ -1939,10 +1771,11 @@ function registerVursCharacterPreparationWrappers(actorClass = CONFIG.PF2E?.Acto
 			return wrapped(...args);
 		},
 		preparePerception: function (wrapped, ...args) {
-			if (actorUsesVursSystem(this)) addSavingThrowRuleSupport(this, ["perception"]);
+			const usesVurs = actorUsesVursSystem(this);
+			if (usesVurs) addSavingThrowRuleSupport(this, ["perception"]);
 			const perceptionRank = this.system?.perception?.rank;
 			const result = wrapped(...args);
-			if (actorUsesVursSystem(this) && this.perception) {
+			if (usesVurs && this.perception) {
 				const current = this.perception;
 				const data = foundry.utils.deepClone(current.data);
 				data.attribute = "cha";
@@ -1967,7 +1800,7 @@ function registerVursCharacterPreparationWrappers(actorClass = CONFIG.PF2E?.Acto
 		prepareSkills: function (wrapped, ...args) {
 			if (this.isOfType?.("character")) {
 				const usesVurs = actorUsesVursSystem(this);
-				if (usesVurs) applyFullVursSkillAttributes(this);
+				if (getActorSystemMode(this) === "vurs") applyFullVursSkillAttributes(this);
 				if (actorUsesAgnosticVurs(this)) applyAgnosticVursSkillAttributes(this);
 				const dexteritySkill = this.system?.skills?.["dexterity-skill"];
 				if (dexteritySkill) dexteritySkill.label = usesVurs ? "Dexterity" : "Agility";
@@ -2014,9 +1847,6 @@ function registerVursCharacterPreparationWrappers(actorClass = CONFIG.PF2E?.Acto
 			return result;
 		},
 		prepareDerivedData: function (wrapped, ...args) {
-			// Apply Main after PF2e has processed its normal build boosts but before
-			// PF2e derives dependent statistics from the ability modifiers.
-			applyMainAttributeBoost(this);
 			const result = wrapped(...args);
 			installActorDamageActionContext(this);
 			if (actorUsesVursSystem(this)) {
@@ -2392,44 +2222,10 @@ function applyDefaultActorAbilityDataLabels(actor) {
 	}
 }
 
-function applyMainAttributeStar(element, actor) {
-	const root = element instanceof HTMLElement ? element : element?.[0];
-	const selectedAttribute = VURS_MAIN_ATTRIBUTE_ENABLED && actorUsesMainAttribute(actor)
-		? getMainAttribute(actor)
-		: null;
-	for (const item of root?.querySelectorAll?.(".subsection.attributes li[data-attribute]") ?? []) {
-		const heading = item.querySelector(".abbreviation");
-		const label = heading?.querySelector(":scope > span");
-		const existing = heading?.querySelector(":scope > .vurs-main-attribute");
-		if (item.dataset.attribute !== selectedAttribute) {
-			existing?.remove();
-			continue;
-		}
-		if (!heading || !label || existing) continue;
-		const star = document.createElement("i");
-		star.className = "vurs-main-attribute fa-solid fa-star";
-		star.setAttribute("aria-label", "Main Attribute");
-		star.setAttribute("role", "img");
-		star.dataset.tooltip = "Main Attribute";
-		star.dataset.tooltipDirection = "UP";
-		star.dataset.tooltipClass = "pf2e";
-		heading.style.position = "relative";
-		star.style.position = "absolute";
-		star.style.left = `${label.offsetLeft + label.offsetWidth + 3}px`;
-		star.style.top = `${label.offsetTop + label.offsetHeight / 2}px`;
-		star.style.transform = "translateY(-50%)";
-		star.style.fontSize = "0.55em";
-		star.style.fontWeight = "900";
-		star.style.color = "inherit";
-		label.after(star);
-	}
-}
-
 function reorderAttributeBuilderColumns(element, actor) {
 	const root = element instanceof HTMLElement ? element : element?.[0];
-	const hasActorScopedVursBuilder = Boolean(root?.querySelector?.("[data-section='vurs-main']"));
 	if (!isAnyVursMode() && !actorHasVursSystemFlag(actor) &&
-		!actorHasAgnosticSystemFlag(actor) && !hasActorScopedVursBuilder) return;
+		!actorHasAgnosticSystemFlag(actor)) return;
 	const rows = root?.querySelector?.(".attribute-rows");
 	if (!rows) return;
 	for (const columns of rows.querySelectorAll(".attributes")) {
@@ -2469,23 +2265,8 @@ function reorderCharacterSheetAttributes(element, actor) {
 	}
 }
 
-function getMainAttribute(actor) {
-	const candidates = [
-		foundry.utils.getProperty(actor, "_source.flags.vurs.mainAttribute"),
-		foundry.utils.getProperty(actor, "document._source.flags.vurs.mainAttribute"),
-		foundry.utils.getProperty(actor, "flags.vurs.mainAttribute"),
-		foundry.utils.getProperty(actor, `_source.flags.${MODULE_ID}.mainAttribute`),
-		foundry.utils.getProperty(actor, `flags.${MODULE_ID}.mainAttribute`),
-		foundry.utils.getProperty(actor, `flags.${MODULE_ID}.MainAttribute`)
-	];
-	const chosen = candidates.find(candidate => candidate !== undefined);
-	return VURS_ABILITY_KEYS.includes(chosen) ? chosen : null;
-}
-
 async function migrateLegacyVursActorFlags() {
 	const migrations = [
-		{ legacy: "mainAttribute", current: "flags.vurs.mainAttribute" },
-		{ legacy: "MainAttribute", current: "flags.vurs.mainAttribute" },
 		{ legacy: "hp.maxReduction", current: "flags.vurs.hp.maxReduction" },
 		{ legacy: "hpReduction", current: "flags.vurs.hp.maxReduction" },
 		{ legacy: "vursSystem", current: "flags.vurs.vursSystem" },
@@ -2537,106 +2318,6 @@ async function migrateLegacyVursActorFlags() {
 			console.error(`${MODULE_ID} | Failed to migrate legacy actor flags for ${actor.name}`, error);
 		}
 	}
-}
-
-function applyMainAttributeBoost(actor) {
-	if (!VURS_MAIN_ATTRIBUTE_ENABLED || !actorUsesMainAttribute(actor)) {
-		return;
-	}
-	const attribute = getMainAttribute(actor);
-	const ability = actor.system?.abilities?.[attribute];
-	if (!attribute || !ability || !Number.isFinite(ability.mod)) {
-		return;
-	}
-
-	// Main is a dedicated full boost. Keep it independent from PF2e's partial
-	// boost accounting so it cannot leave the prepared modifier fractional.
-	ability.mod = Math.floor(Math.clamp(ability.mod + 1, -5, 10));
-	ability.base = ability.mod;
-}
-
-function applyKeyAttributeToStrikes(actor) {
-	if (!VURS_MAIN_ATTRIBUTE_ENABLED || !actorUsesMainAttribute(actor)) return;
-	installKeyAttributeDamageModifier(actor);
-}
-
-function installMainAttributeAttackModifier(actor) {
-	if (!VURS_MAIN_ATTRIBUTE_ENABLED || !actorUsesMainAttribute(actor)) return;
-	const modifiers = actor.synthetics?.modifiers;
-	if (!modifiers || Object.values(modifiers).some(entries => entries?.includes?.(actor[VURS_KEY_ATTACK_MODIFIER]))) return;
-
-	const strikeAttackModifiers = (modifiers["strike-attack-roll"] ??= []);
-	const ModifierClass = game.pf2e?.Modifier;
-	if (typeof ModifierClass !== "function") return;
-
-	const mainAttributeModifier = ({ resolvables } = {}) => {
-		if (!actorUsesMainAttribute(actor)) return null;
-		const weapon = resolvables?.weapon;
-		if (!weapon || weapon.actor?.uuid !== actor.uuid || !weapon.isOfType?.("weapon")) return null;
-
-		// A Strike Rule Element can set the weapon's attribute directly. Honor it;
-		// otherwise use Main only when the actor has selected one.
-		const selectedAttribute = VURS_ABILITY_KEYS.includes(weapon.system?.attribute)
-			? weapon.system.attribute
-			: getMainAttribute(actor);
-		const modifier = actor.system.abilities?.[selectedAttribute]?.mod;
-		if (!VURS_ABILITY_KEYS.includes(selectedAttribute) || !Number.isFinite(modifier)) return null;
-
-		return new ModifierClass({
-			slug: "vurs-main-attribute-attack",
-			label: VURS_ABILITY_LABELS[selectedAttribute],
-			modifier,
-			type: "ability",
-			ability: selectedAttribute,
-			force: true
-		});
-	};
-
-	strikeAttackModifiers.push(mainAttributeModifier);
-	actor[VURS_KEY_ATTACK_MODIFIER] = mainAttributeModifier;
-}
-
-function installKeyAttributeDamageModifier(actor) {
-	const modifiers = actor.synthetics?.modifiers;
-	if (!modifiers || Object.values(modifiers).some(entries => entries?.includes?.(actor[VURS_KEY_DAMAGE_MODIFIER]))) return;
-
-	const strikeDamageModifiers = (modifiers["strike-damage"] ??= []);
-	const ModifierClass = game.pf2e?.Modifier ??
-		actor.system.actions?.flatMap(action => action.modifiers ?? []).find(modifier => modifier?.constructor)?.constructor;
-	if (typeof ModifierClass !== "function") return;
-
-	const deferredModifier = ({ resolvables } = {}) => {
-		if (!actorUsesMainAttribute(actor)) return null;
-		const weapon = resolvables?.weapon;
-		if (!weapon || weapon.actor?.uuid !== actor.uuid || !weapon.isOfType?.("weapon")) return null;
-
-		const selectedAttribute = VURS_ABILITY_KEYS.includes(weapon.system?.attribute)
-			? weapon.system.attribute
-			: getMainAttribute(actor);
-		const selectedValue = actor.system.abilities?.[selectedAttribute]?.mod;
-		const strengthValue = actor.system.abilities?.str?.mod;
-		if (!Number.isFinite(selectedValue) || !Number.isFinite(strengthValue)) return null;
-
-		const traits = weapon.system.traits?.value ?? [];
-		const isStrengthBased = weapon.isMelee ||
-			traits.includes("propulsive") ||
-			(weapon.isThrown && !traits.includes("splash") && !["alchemical-bomb", "grenade"].includes(weapon.baseType));
-		const strengthComponent = isStrengthBased
-			? (strengthValue < 0 || !traits.includes("propulsive") ? strengthValue : Math.floor(strengthValue / 2))
-			: 0;
-		const adjustment = selectedValue - strengthComponent;
-		if (adjustment === 0) return null;
-
-		return new ModifierClass({
-			slug: "vurs-key-attribute-damage",
-			label: VURS_ABILITY_LABELS[selectedAttribute],
-			modifier: adjustment,
-			type: "untyped"
-		});
-	};
-
-	strikeDamageModifiers.push(deferredModifier);
-	actor[VURS_KEY_DAMAGE_MODIFIER] = deferredModifier;
 }
 
 function registerCustomIwrTypes() {

@@ -609,15 +609,13 @@ function isNpcPlayResourceVisible(actor, resourceKey) {
 function getFullVursDefaultMax(actor, resourceKey) {
 	const agnostic = actorUsesAgnosticVurs(actor);
 	if (!actorUsesVursSystem(actor) && !agnostic && getSystemModeForPlayResource(actor) !== "default") return undefined;
-	// Agnostic PCs keep their classic AP / Reaction defaults. Agnostic NPCs
-	// use the NPC-derived VURS resource formulas below.
-	if (agnostic && !isNpcActor(actor)) {
+	// Agnostic mode keeps fixed AP and Reaction defaults but leaves
+	// stat-derived resource maxima available for external configuration.
+	if (agnostic) {
 		if (resourceKey === "actionPoints") return 3;
 		if (resourceKey === "reactions") return 1;
-		if (resourceKey === "magicPoints") return 0;
 		return undefined;
 	}
-	if (agnostic && resourceKey === "reactions") return 1;
 	if (getSystemModeForPlayResource(actor) === "default") {
 		if (game.settings.get("vurs-pf2e", DEFAULT_ACTION_POINTS_SETTING) !== true) return undefined;
 		if (resourceKey === "actionPoints") return 3;

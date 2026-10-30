@@ -107,10 +107,6 @@ export function actorUsesVursSystem(actor) {
   return getModeProfile(getActorSystemMode(actor)) !== null;
 }
 
-export function actorUsesMainAttribute(actor) {
-  return getActorSystemMode(actor) === FULL_VURS_MODE.id;
-}
-
 export function actorUsesVursHpRules(actor) {
   const mode = getActorSystemMode(actor);
   if (getModeProfile(mode)?.systemWideNegativeHp) return true;

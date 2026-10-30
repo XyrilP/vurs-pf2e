@@ -1,7 +1,6 @@
 export const FULL_VURS_MODE = Object.freeze({
   id: "vurs",
   systemWideDiceless: true,
-  systemWideMainAttribute: true,
   systemWideNegativeHp: true
 });
 
