@@ -2,17 +2,53 @@ const MODULE_ID = "vurs-pf2e";
 const RULE_KEY = "Lifesteal";
 const registeredDamageTargets = new Set();
 const activeDamageParams = new WeakSet();
+const damageSelectorCache = new WeakMap();
 const damageHandlers = globalThis[Symbol.for(`${MODULE_ID}.applyDamageHandlers`)] ??= new Set();
 const damageTransactionState = globalThis[Symbol.for(`${MODULE_ID}.damageTransactions`)] ??= {
 	params: new WeakMap(),
 	active: new Set(),
 	finalizers: new Set(),
+	renderFinalizers: new Set(),
+	finalizerOrder: new Map(),
 	hooksInstalled: false
 };
+damageTransactionState.renderFinalizers ??= new Set();
+damageTransactionState.finalizerOrder ??= new Map();
 let LifestealRuleElement = null;
 
-export function registerDamageTransactionFinalizer(finalizer) {
-	damageTransactionState.finalizers.add(finalizer);
+export function registerDamageTransactionFinalizer(finalizer, phase = "apply") {
+	const finalizers = phase === "render"
+		? damageTransactionState.renderFinalizers
+		: damageTransactionState.finalizers;
+	finalizers.add(finalizer);
+	if (phase !== "render") {
+		const order = { prepare: 0, apply: 1, heal: 2 };
+		damageTransactionState.finalizerOrder.set(finalizer, order[phase] ?? order.apply);
+	}
+}
+
+export function queueDamageTransactionRequest(parentParams, key, request) {
+	const transaction = damageTransactionState.params.get(parentParams);
+	if (!transaction?.rootMessageId) return false;
+	transaction[key] ??= [];
+	transaction[key].push(request);
+	return true;
+}
+
+export function queueDamageTransactionApplication(parentParams, application) {
+	return queueDamageTransactionRequest(parentParams, "damageApplications", application);
+}
+
+export function runDamageTransactionActorOperation(parentParams, actor, operation) {
+	const transaction = damageTransactionState.params.get(parentParams);
+	if (!transaction) return operation();
+
+	transaction.actorOperations ??= new Map();
+	const key = actor.uuid ?? actor.id;
+	const previous = transaction.actorOperations.get(key) ?? Promise.resolve();
+	const current = previous.then(operation);
+	transaction.actorOperations.set(key, current.catch(() => {}));
+	return current;
 }
 
 export async function applyDamageInTransaction(actor, damageParams, parentParams, effect) {
@@ -22,6 +58,7 @@ export async function applyDamageInTransaction(actor, damageParams, parentParams
 	const pendingEffect = Object.assign(effect, {
 		actorUuid: actor.uuid,
 		actorId: actor.id,
+		tokenId: damageParams.token?.document?.id ?? damageParams.token?.id ?? null,
 		appliedDamage: null
 	});
 	transaction.pending.push(pendingEffect);
@@ -35,21 +72,189 @@ export async function applyDamageInTransaction(actor, damageParams, parentParams
 	}
 }
 
+function getDamageApplicationBatchKey(application) {
+	const { actor, damageParams, secret = false } = application;
+	const rollOptions = damageParams.rollOptions instanceof Set
+		? [...damageParams.rollOptions]
+		: Array.isArray(damageParams.rollOptions) ? damageParams.rollOptions : [];
+	return JSON.stringify([
+		actor.uuid ?? actor.id,
+		damageParams.token?.document?.id ?? damageParams.token?.id ?? null,
+		damageParams.item?.uuid ?? null,
+		rollOptions.map(String).sort(),
+		damageParams.vursDamageModifiers ?? [],
+		Boolean(damageParams.skipIWR),
+		Boolean(secret)
+	]);
+}
+
+function combineDamageRolls(rolls) {
+	const DamageRoll = CONFIG.Dice?.rolls?.find(rollClass => rollClass.name === "DamageRoll");
+	if (!DamageRoll) return null;
+
+	const validTypes = new Set(Object.keys(
+		CONFIG[game.system.id.toUpperCase()]?.damageTypes ?? CONFIG.PF2E?.damageTypes ?? {}
+	));
+	const totals = new Map();
+	for (const roll of rolls) {
+		for (const instance of roll?.instances ?? []) {
+			const amount = Number(instance.total);
+			if (!Number.isFinite(amount) || amount <= 0) continue;
+			const type = validTypes.has(instance.type) ? instance.type : "untyped";
+			totals.set(type, (totals.get(type) ?? 0) + amount);
+		}
+	}
+	if (!totals.size) return null;
+
+	const formula = `{${[...totals].map(([type, amount]) =>
+		type === "untyped" ? `${amount}` : `${amount}[${type}]`
+	).join(", ")}}`;
+	return new DamageRoll(formula).evaluateSync();
+}
+
+function getBatchedDamageEffect(applications) {
+	if (applications.length === 1) return applications[0].effect;
+	const effects = applications.map(application => application.effect);
+	const sources = effects.flatMap(effect =>
+		Array.isArray(effect.sources)
+			? effect.sources.map(source => ({
+				...source,
+				damage: source.damage ?? source.amount ?? effect.amount
+			}))
+			: [{ label: effect.label, damage: effect.amount }]
+	);
+	return {
+		...effects[0],
+		label: effects.map(effect => effect.label).filter(Boolean).join(", "),
+		amount: effects.reduce((total, effect) => total + (Number(effect.amount) || 0), 0),
+		sources,
+		hidden: effects.some(effect => effect.hidden),
+		modifiers: [...new Set(effects.flatMap(effect => effect.modifiers ?? []))]
+	};
+}
+
+async function applyDamageApplicationBatch(applications, parentParams) {
+	const first = applications[0];
+	const { actor } = first;
+	let damageParams = first.damageParams;
+	if (applications.length > 1) {
+		const combinedDamage = combineDamageRolls(applications.map(application =>
+			application.damageParams.damage
+		));
+		if (!combinedDamage) {
+			console.error(`${MODULE_ID} | Could not combine compatible damage applications to ${actor.name}; applying them individually`);
+			for (const application of applications) {
+				try {
+					await applyDamageApplicationBatch([application], parentParams);
+				} catch (error) {
+					console.error(`${MODULE_ID} | Failed to apply grouped damage to ${actor.name}`, error);
+				}
+			}
+			return;
+		}
+		damageParams = { ...damageParams, damage: combinedDamage };
+	}
+
+	const effect = getBatchedDamageEffect(applications);
+	const healthBefore = currentHealthPool(actor);
+	const apply = first.apply ?? ((targetActor, params, rootParams, targetEffect) =>
+		applyDamageInTransaction(targetActor, params, rootParams, targetEffect));
+	await apply(actor, damageParams, parentParams, effect);
+	const healthAfter = currentHealthPool(actor);
+	if (healthBefore !== null && healthAfter !== null) {
+		effect.amount = Math.max(0, healthBefore - healthAfter);
+	}
+}
+
+async function finalizeQueuedDamageApplications(transaction) {
+	const applications = (transaction.damageApplications ?? []).splice(0);
+	if (!applications.length) return;
+
+	const byActor = new Map();
+	for (const application of applications) {
+		const actorKey = application.actor.uuid ?? application.actor.id;
+		const actorApplications = byActor.get(actorKey) ?? [];
+		const key = getDamageApplicationBatchKey(application);
+		const lastBatch = actorApplications.at(-1);
+		if (lastBatch?.key === key) {
+			lastBatch.applications.push(application);
+		} else {
+			actorApplications.push({ key, applications: [application] });
+		}
+		byActor.set(actorKey, actorApplications);
+	}
+
+	await Promise.all([...byActor.values()].map(async batches => {
+		const actor = batches[0].applications[0].actor;
+		for (const batch of batches) {
+			try {
+				await runDamageTransactionActorOperation(transaction.rootParams, actor, () =>
+					applyDamageApplicationBatch(batch.applications, transaction.rootParams)
+				);
+			} catch (error) {
+				console.error(`${MODULE_ID} | Failed to apply grouped damage to ${actor.name}`, error);
+			}
+		}
+	}));
+}
+
+function getDamageMessageTokenId(message, data, appliedDamage) {
+	const speakerTokenId = data.speaker?.token ?? message.speaker?.token;
+	if (speakerTokenId) return speakerTokenId;
+	return /\.Token\.([^.]+)\.Actor\./.exec(appliedDamage?.uuid ?? "")?.[1] ?? null;
+}
+
+function getDamageMessageToken(message, appliedDamage) {
+	const tokenId = getDamageMessageTokenId(message, message, appliedDamage);
+	if (!tokenId) return null;
+	const sceneId = message.speaker?.scene ??
+		/^Scene\.([^.]+)\.Token\./.exec(appliedDamage?.uuid ?? "")?.[1];
+	return game.scenes?.get(sceneId)?.tokens.get(tokenId) ??
+		(canvas.scene?.tokens.get(tokenId) ?? null);
+}
+
 function installDamageTransactionHooks() {
 	if (damageTransactionState.hooksInstalled) return;
+	Hooks.on("renderChatMessageHTML", (message, html) => {
+		if (
+			foundry.utils.getProperty(message, `flags.${game.system.id}.context.type`) !== "damage-taken" ||
+			!(html instanceof HTMLElement)
+		) return;
+		const appliedDamage = foundry.utils.getProperty(
+			message,
+			`flags.${game.system.id}.appliedDamage`
+		);
+		const token = getDamageMessageToken(message, appliedDamage);
+		const targetName = html.querySelector(".damage-taken .statements .target-name");
+		if (token && targetName) targetName.textContent = token.name;
+	});
+
 	Hooks.on("preCreateChatMessage", (message, data) => {
 		const systemFlags = data.flags?.[game.system.id];
 		if (systemFlags?.context?.type !== "damage-taken") return;
 		const appliedDamage = systemFlags.appliedDamage;
 		const actorUuid = appliedDamage?.uuid;
 		const actorId = data.speaker?.actor ?? message.speaker?.actor;
+		const tokenId = getDamageMessageTokenId(message, data, appliedDamage);
 
 		const activeTransactions = [...damageTransactionState.active];
 		for (const transaction of activeTransactions) {
-			const pendingEffect = transaction.rootMessageId && [...transaction.pending].reverse().find(effect =>
-				(Boolean(actorUuid) && effect.actorUuid === actorUuid) ||
-				(Boolean(actorId) && effect.actorId === actorId)
-			);
+			const pendingEffects = transaction.rootMessageId
+				? [...transaction.pending].reverse().filter(effect =>
+					Boolean(tokenId) && effect.tokenId === tokenId
+				)
+				: [];
+			const actorMatches = !tokenId
+				? [...transaction.pending].reverse().filter(effect =>
+					Boolean(actorUuid) && effect.actorUuid === actorUuid ||
+					Boolean(actorId) && effect.actorId === actorId
+				)
+				: [];
+			const pendingEffect = pendingEffects.length === 1
+				? pendingEffects[0]
+				: pendingEffects.length === 0 && actorMatches.length === 1
+					? actorMatches[0]
+					: null;
 			if (pendingEffect) {
 				if (appliedDamage) {
 					const privateCard = pendingEffect.hidden || data.blind ||
@@ -66,8 +271,10 @@ function installDamageTransactionHooks() {
 
 		const unassignedTransactions = activeTransactions.filter(transaction => !transaction.rootMessageId);
 		const rootCandidates = unassignedTransactions.filter(transaction =>
-			((Boolean(actorUuid) && transaction.rootActorUuid === actorUuid) ||
-				(Boolean(actorId) && transaction.rootActorId === actorId))
+			(Boolean(tokenId) && transaction.rootTokenId === tokenId) ||
+			(!tokenId &&
+				((Boolean(actorUuid) && transaction.rootActorUuid === actorUuid) ||
+					(Boolean(actorId) && transaction.rootActorId === actorId)))
 		);
 		const transaction = rootCandidates.length === 1
 			? rootCandidates[0]
@@ -94,9 +301,11 @@ function installDamageTransactionHooks() {
 		);
 		const actorUuid = appliedDamage?.uuid;
 		const actorId = message.speaker?.actor;
-		const rootCandidates = activeTransactions.filter(transaction =>
-			((Boolean(actorUuid) && transaction.rootActorUuid === actorUuid) ||
-				(Boolean(actorId) && transaction.rootActorId === actorId))
+		const tokenId = getDamageMessageTokenId(message, message, appliedDamage);
+		const rootCandidates = activeTransactions.filter(transaction => tokenId
+			? transaction.rootTokenId === tokenId
+			: (Boolean(actorUuid) && transaction.rootActorUuid === actorUuid) ||
+				(Boolean(actorId) && transaction.rootActorId === actorId)
 		);
 		const transaction = rootCandidates.length === 1
 			? rootCandidates[0]
@@ -114,14 +323,61 @@ function installDamageTransactionHooks() {
 }
 
 async function finalizeDamageTransaction(transaction) {
-	for (const finalizer of damageTransactionState.finalizers) {
+	const applyFinalizers = [...damageTransactionState.finalizers].sort((left, right) =>
+		(damageTransactionState.finalizerOrder.get(left) ?? 0) -
+		(damageTransactionState.finalizerOrder.get(right) ?? 0)
+	);
+	for (let pass = 0; pass < 2; pass++) {
+		for (const finalizer of applyFinalizers) {
+			try {
+				await finalizer(transaction);
+			} catch (error) {
+				console.error(`${MODULE_ID} | Failed to apply a grouped damage effect`, error);
+			}
+		}
+		if (pass === 0 && !transaction.collateralApplications?.length &&
+			!transaction.damageReturnRequests?.length && !transaction.lifestealRequests?.length &&
+			!transaction.damageApplications?.length) {
+			break;
+		}
+	}
+
+	await Promise.all([...damageTransactionState.renderFinalizers].map(async finalizer => {
 		try {
 			await finalizer(transaction);
 		} catch (error) {
 			console.error(`${MODULE_ID} | Failed to finalize a grouped damage card`, error);
 		}
-	}
+	}));
 }
+
+registerDamageTransactionFinalizer(finalizeQueuedDamageApplications, "apply");
+
+async function finalizeLifestealHealing(transaction) {
+	if (!transaction.lifestealRequests?.length) return;
+
+	const requestsByActor = new Map();
+	for (const request of transaction.lifestealRequests.splice(0)) {
+		const requests = requestsByActor.get(request.attacker.uuid) ?? [];
+		requests.push(request);
+		requestsByActor.set(request.attacker.uuid, requests);
+	}
+
+	await Promise.all([...requestsByActor.values()].map(async requests => {
+		const attacker = requests[0].attacker;
+		const healing = requests.reduce((total, request) => total + request.healing, 0);
+		const sources = requests.flatMap(request => request.sources);
+		const modifiers = [...new Set(requests.flatMap(request => request.modifiers))];
+		await runDamageTransactionActorOperation(transaction.rootParams, attacker, () =>
+			healDamageDealer(attacker, healing, transaction.rootParams, sources, {
+				findCard: false,
+				modifiers
+			})
+		);
+	}));
+}
+
+registerDamageTransactionFinalizer(finalizeLifestealHealing, "heal");
 
 function registerLifestealLocalization() {
 	const translations = game.i18n?.translations;
@@ -201,7 +457,21 @@ function currentHealthPool(actor) {
 	return Number(hp.value ?? 0) + Number(hp.temp ?? 0) + stamina;
 }
 
+function isAtFullHealth(actor) {
+	const hp = actor?.attributes?.hp;
+	if (!hp || Number(hp.value ?? 0) < Number(hp.max ?? 0)) return false;
+	const staminaEnabled =
+		game[game.system.id]?.settings?.variants?.stamina ?? game.pf2e?.settings?.variants?.stamina;
+	return !staminaEnabled || !hp.sp ||
+		Number(hp.sp.value ?? 0) >= Number(hp.sp.max ?? Number.NaN);
+}
+
 export function getDamageSelectors(damage, item = null) {
+	const cached = damage && typeof damage === "object"
+		? damageSelectorCache.get(damage)
+		: null;
+	if (cached?.item === item) return new Set(cached.selectors);
+
 	const selectors = new Set(["damage-received"]);
 	if (item?.isOfType?.("weapon", "melee")) selectors.add("strike-damage");
 	const modifiers = damage?.options?.damage?.modifiers;
@@ -213,17 +483,23 @@ export function getDamageSelectors(damage, item = null) {
 		}
 	}
 
-	const messages = [...(game.messages?.contents ?? [])];
-	const sourceMessage = messages.find(message => message.rolls?.includes(damage)) ??
-		(item?.uuid
-			? messages
-				.filter(message => {
-					const messageItem = message.item;
-					return messageItem?.uuid === item.uuid &&
-						message.rolls?.some(roll => roll?.constructor === damage?.constructor);
-				})
-				.sort((left, right) => right.timestamp - left.timestamp)[0]
-			: null);
+	let sourceMessage = null;
+	let latestMatchingMessage = null;
+	for (const message of game.messages?.contents ?? []) {
+		if (message.rolls?.includes(damage)) {
+			sourceMessage = message;
+			break;
+		}
+		if (
+			item?.uuid &&
+			message.item?.uuid === item.uuid &&
+			message.rolls?.some(roll => roll?.constructor === damage?.constructor) &&
+			(!latestMatchingMessage || message.timestamp > latestMatchingMessage.timestamp)
+		) {
+			latestMatchingMessage = message;
+		}
+	}
+	sourceMessage ??= latestMatchingMessage;
 	const domains = foundry.utils.getProperty(
 		sourceMessage,
 		`flags.${game.system.id}.context.domains`
@@ -232,6 +508,9 @@ export function getDamageSelectors(damage, item = null) {
 		for (const selector of domains) selectors.add(selector);
 	}
 
+	if (sourceMessage && damage && typeof damage === "object") {
+		damageSelectorCache.set(damage, { item, selectors: new Set(selectors) });
+	}
 	return selectors;
 }
 
@@ -252,6 +531,19 @@ export function getDamageRollOptions(damage, rollOptions) {
 		}
 	}
 	return options;
+}
+
+export function getDamageModifierBreakdown(damageRoll, fallback = []) {
+	const breakdown = damageRoll?.options?.damage?.breakdown;
+	if (!breakdown || typeof breakdown !== "object") return fallback;
+	const degree = damageRoll.options.degreeOfSuccess;
+	const outcome = ["criticalFailure", "failure", "success", "criticalSuccess"][degree] ?? "success";
+	const entries = breakdown[outcome] ?? breakdown.success ?? [];
+	if (!Array.isArray(entries)) return fallback;
+	const modifiers = entries.filter(entry =>
+		typeof entry === "string" && entry.trim() && !/^\(?\d*d\d+/i.test(entry.trim())
+	);
+	return modifiers.length ? modifiers : fallback;
 }
 
 function hasSpecialDamageOption(options) {
@@ -423,25 +715,53 @@ async function addLifestealTooltip(message, sources) {
 	await message.update({ content: container.innerHTML });
 }
 
-async function healDamageDealer(attacker, amount, parentParams, sources) {
+async function healDamageDealer(
+	attacker,
+	amount,
+	parentParams,
+	sources,
+	{ findCard = true, modifiers = [] } = {}
+) {
 	const hp = attacker?.attributes?.hp;
 	if (!hp || !Number.isFinite(amount) || amount <= 0) return { healing: 0, card: null };
 
 	const token = attacker.token ?? attacker.getActiveTokens?.()[0]?.document;
 	if (!token || typeof attacker.applyDamage !== "function") {
 		const healing = Math.min(amount, Math.max(hp.max - hp.value, 0));
-		if (healing <= 0) return { healing: 0, card: null };
+		if (healing <= 0) {
+			if (isAtFullHealth(attacker)) {
+				const effect = {
+					type: "lifesteal",
+					label: sources.map(source => source.label).join(", "),
+					amount: 0,
+					sources: sources.map(source => ({ ...source, healing: 0 })),
+					targetName: attacker.name,
+					actorUuid: attacker.uuid,
+					actorId: attacker.id,
+					tokenId: null,
+					fullHealth: true,
+					modifiers
+				};
+				const transaction = damageTransactionState.params.get(parentParams);
+				if (transaction) transaction.effects.push(effect);
+			}
+			return { healing: 0, card: null };
+		}
 		await attacker.update({ "system.attributes.hp.value": hp.value + healing });
 		return { healing, card: null };
 	}
 
 	const healthBefore = currentHealthPool(attacker);
-	const previousMessageIds = new Set((game.messages?.contents ?? []).map(message => message.id));
+	const previousMessageIds = findCard
+		? new Set((game.messages?.contents ?? []).map(message => message.id))
+		: null;
 	const effect = {
 		type: "lifesteal",
 		label: sources.map(source => source.label).join(", "),
 		amount,
-		targetName: attacker.name
+		sources: sources.map(source => ({ ...source })),
+		targetName: token.name,
+		modifiers
 	};
 	await applyDamageInTransaction(attacker, {
 		damage: -amount,
@@ -453,7 +773,27 @@ async function healDamageDealer(attacker, amount, parentParams, sources) {
 		? Math.max(0, healthAfter - healthBefore)
 		: 0;
 	effect.amount = healing;
-	return { healing, card: findHealingCard(previousMessageIds, attacker) };
+	effect.fullHealth = healing === 0 && isAtFullHealth(attacker);
+	if (effect.fullHealth) effect.appliedDamage = null;
+	let remainingHealing = healing;
+	effect.sources = sources
+		.map(source => {
+			const sourceHealing = Math.min(source.healing, remainingHealing);
+			remainingHealing -= sourceHealing;
+			return { ...source, healing: sourceHealing };
+		})
+		.filter(source => source.healing > 0);
+	if (effect.fullHealth) {
+		effect.sources = sources.map(source => ({ ...source, healing: 0 }));
+		const transaction = damageTransactionState.params.get(parentParams);
+		if (transaction && !transaction.effects.includes(effect)) {
+			effect.actorUuid = attacker.uuid;
+			effect.actorId = attacker.id;
+			effect.tokenId = token.document?.id ?? token.id ?? null;
+			transaction.effects.push(effect);
+		}
+	}
+	return { healing, card: previousMessageIds ? findHealingCard(previousMessageIds, attacker) : null };
 }
 
 async function applyLifesteal(actor, wrapped, args) {
@@ -488,7 +828,17 @@ async function applyLifesteal(actor, wrapped, args) {
 			rollOptions,
 			selectors
 		);
-		const { healing: healed, card } = await healDamageDealer(attacker, healing, params, sources);
+		if (healing <= 0) return result;
+
+		const modifiers = getDamageModifierBreakdown(params.damage, params.vursDamageModifiers);
+		const transaction = damageTransactionState.params.get(params);
+		if (transaction) {
+			transaction.lifestealRequests ??= [];
+			transaction.lifestealRequests.push({ attacker, healing, sources, modifiers });
+			return result;
+		}
+
+		const { healing: healed, card } = await healDamageDealer(attacker, healing, params, sources, { modifiers });
 		if (healed > 0 && card) {
 			let remainingHealing = healed;
 			const appliedSources = sources
@@ -517,14 +867,18 @@ function applyDamageHandlers(actor, wrapped, args) {
 	const isRoot = !transaction;
 	if (isRoot && params && typeof params === "object") {
 		const rootActor = params.token?.actor ?? actor;
+		const rootTokenId = params.token?.document?.id ?? params.token?.id ?? null;
 		transaction = {
 			rootActorUuid: rootActor?.uuid,
 			rootActorId: rootActor?.id,
+			rootTokenId,
 			rootMessageId: null,
 			rootMessagePending: false,
 			primaryDamage: null,
 			pending: [],
-			effects: []
+			effects: [],
+			rootParams: params,
+			lifestealRequests: []
 		};
 		damageTransactionState.params.set(params, transaction);
 		damageTransactionState.active.add(transaction);

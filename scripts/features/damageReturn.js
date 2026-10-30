@@ -1,7 +1,11 @@
 import {
 	applyDamageInTransaction,
 	getDamageRollOptions,
-	getDamageSelectors
+	getDamageSelectors,
+	getDamageModifierBreakdown,
+	queueDamageTransactionApplication,
+	queueDamageTransactionRequest,
+	registerDamageTransactionFinalizer
 } from "./lifesteal.js";
 
 const MODULE_ID = "vurs-pf2e";
@@ -227,6 +231,16 @@ function getReturnedDamageOptions(actor) {
 	return new Set(actor.getSelfRollOptions?.() ?? []);
 }
 
+async function finalizeDamageReturnRequests(transaction) {
+	for (const request of (transaction.damageReturnRequests ?? []).splice(0)) {
+		if (!queueDamageTransactionApplication(transaction.rootParams, request)) {
+			console.error(`${MODULE_ID} | Could not queue ${RULE_KEY} damage for ${request.actor.name}`);
+		}
+	}
+}
+
+registerDamageTransactionFinalizer(finalizeDamageReturnRequests, "prepare");
+
 function findDamageReturnCard(previousMessageIds, actor) {
 	return [...(game.messages?.contents ?? [])]
 		.filter(message => {
@@ -321,18 +335,28 @@ async function applyDamageReturn(actor, wrapped, args) {
 			return result;
 		}
 
-		const previousMessageIds = new Set((game.messages?.contents ?? []).map(message => message.id));
 		const effect = {
 			type: "damage-return",
 			label: sources.map(source => source.label).join(", "),
 			amount,
-			targetName: damageDealer.name
+			sources: sources.map(source => ({ ...source })),
+			targetName: token.name,
+			modifiers: getDamageModifierBreakdown(params.damage, params.vursDamageModifiers)
 		};
-		await applyDamageInTransaction(damageDealer, {
+		const damageParams = {
 			damage: returnedDamage,
 			token,
-			rollOptions: getReturnedDamageOptions(damageDealer)
-		}, params, effect);
+			rollOptions: getReturnedDamageOptions(damageDealer),
+			vursDamageModifiers: effect.modifiers
+		};
+		if (queueDamageTransactionRequest(params, "damageReturnRequests", {
+			actor: damageDealer,
+			damageParams,
+			effect
+		})) return result;
+
+		const previousMessageIds = new Set((game.messages?.contents ?? []).map(message => message.id));
+		await applyDamageInTransaction(damageDealer, damageParams, params, effect);
 		const card = findDamageReturnCard(previousMessageIds, damageDealer);
 		if (card) await addDamageReturnTooltip(card, sources);
 		return result;

@@ -1,0 +1,40 @@
+.chat-message .message-content .damage-taken .vurs-damage-effects > ul,
+.chat-message .message-content .damage-taken .vurs-damage-effects ul {
+	list-style: none;
+	margin-block: 0.25em;
+	padding-inline-start: 1em;
+}
+
+.chat-message .message-content .damage-taken .vurs-damage-effects > ul {
+	padding-inline-start: 0;
+}
+
+.chat-message .message-content .damage-taken .vurs-primary-damage-row {
+	align-items: center;
+	display: flex;
+	gap: 4px;
+}
+
+.chat-message .message-content .damage-taken .vurs-primary-damage-row > .statements {
+	flex: 1 1 auto;
+}
+
+.chat-message .message-content .damage-taken .vurs-primary-damage-row > .statements.vurs-nested-damage-reverted {
+	text-decoration: line-through;
+}
+
+.chat-message .message-content .damage-taken .vurs-damage-effect-row {
+	align-items: center;
+	display: flex;
+	gap: 4px;
+}
+
+.chat-message .message-content .damage-taken .vurs-damage-effect-label {
+	flex: 0 1 auto;
+}
+
+.chat-message .message-content .damage-taken .vurs-damage-effect-indicator {
+	cursor: help;
+	margin-left: auto;
+	white-space: nowrap;
+}
