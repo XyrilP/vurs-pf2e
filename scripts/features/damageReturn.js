@@ -1,4 +1,8 @@
-import { getDamageRollOptions, getDamageSelectors } from "./lifesteal.js";
+import {
+	applyDamageInTransaction,
+	getDamageRollOptions,
+	getDamageSelectors
+} from "./lifesteal.js";
 
 const MODULE_ID = "vurs-pf2e";
 const RULE_KEY = "Damage Return";
@@ -318,11 +322,17 @@ async function applyDamageReturn(actor, wrapped, args) {
 		}
 
 		const previousMessageIds = new Set((game.messages?.contents ?? []).map(message => message.id));
-		await damageDealer.applyDamage({
+		const effect = {
+			type: "damage-return",
+			label: sources.map(source => source.label).join(", "),
+			amount,
+			targetName: damageDealer.name
+		};
+		await applyDamageInTransaction(damageDealer, {
 			damage: returnedDamage,
 			token,
 			rollOptions: getReturnedDamageOptions(damageDealer)
-		});
+		}, params, effect);
 		const card = findDamageReturnCard(previousMessageIds, damageDealer);
 		if (card) await addDamageReturnTooltip(card, sources);
 		return result;

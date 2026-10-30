@@ -3,7 +3,7 @@
 	"title": "Vionheart Universe Roleplaying System for Pf2E/Sf2E",
 	"manifest": "https://raw.githubusercontent.com/XyrilP/vurs-pf2e/refs/heads/main/module.json",
 	"download": "https://github.com/XyrilP/vurs-pf2e/archive/refs/heads/main.zip",
-	"version": "13.5.1",
+	"version": "13.6",
 	"compatibility": {
 		"minimum": "14",
 		"verified": "14",
@@ -496,6 +496,7 @@
 		"scripts/features/diceless.js",
 		"scripts/features/lifesteal.js",
 		"scripts/features/damageReturn.js",
+		"scripts/features/collateralDamage.js",
 		"scripts/generalChanges.js"
 	]
 }

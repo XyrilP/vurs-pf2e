@@ -3,7 +3,125 @@ const RULE_KEY = "Lifesteal";
 const registeredDamageTargets = new Set();
 const activeDamageParams = new WeakSet();
 const damageHandlers = globalThis[Symbol.for(`${MODULE_ID}.applyDamageHandlers`)] ??= new Set();
+const damageTransactionState = globalThis[Symbol.for(`${MODULE_ID}.damageTransactions`)] ??= {
+	params: new WeakMap(),
+	active: new Set(),
+	finalizers: new Set(),
+	hooksInstalled: false
+};
 let LifestealRuleElement = null;
+
+export function registerDamageTransactionFinalizer(finalizer) {
+	damageTransactionState.finalizers.add(finalizer);
+}
+
+export async function applyDamageInTransaction(actor, damageParams, parentParams, effect) {
+	const transaction = damageTransactionState.params.get(parentParams);
+	if (!transaction?.rootMessageId) return actor.applyDamage(damageParams);
+
+	const pendingEffect = Object.assign(effect, {
+		actorUuid: actor.uuid,
+		actorId: actor.id,
+		appliedDamage: null
+	});
+	transaction.pending.push(pendingEffect);
+	damageTransactionState.params.set(damageParams, transaction);
+	try {
+		return await actor.applyDamage(damageParams);
+	} finally {
+		damageTransactionState.params.delete(damageParams);
+		const index = transaction.pending.indexOf(pendingEffect);
+		if (index >= 0) transaction.pending.splice(index, 1);
+	}
+}
+
+function installDamageTransactionHooks() {
+	if (damageTransactionState.hooksInstalled) return;
+	Hooks.on("preCreateChatMessage", (message, data) => {
+		const systemFlags = data.flags?.[game.system.id];
+		if (systemFlags?.context?.type !== "damage-taken") return;
+		const appliedDamage = systemFlags.appliedDamage;
+		const actorUuid = appliedDamage?.uuid;
+		const actorId = data.speaker?.actor ?? message.speaker?.actor;
+
+		const activeTransactions = [...damageTransactionState.active];
+		for (const transaction of activeTransactions) {
+			const pendingEffect = transaction.rootMessageId && [...transaction.pending].reverse().find(effect =>
+				(Boolean(actorUuid) && effect.actorUuid === actorUuid) ||
+				(Boolean(actorId) && effect.actorId === actorId)
+			);
+			if (pendingEffect) {
+				if (appliedDamage) {
+					const privateCard = pendingEffect.hidden || data.blind ||
+						(Array.isArray(data.whisper) && data.whisper.length > 0);
+					if (privateCard) {
+						pendingEffect.hidden = true;
+					}
+					pendingEffect.appliedDamage = foundry.utils.deepClone(appliedDamage);
+					transaction.effects.push(pendingEffect);
+				}
+				return false;
+			}
+		}
+
+		const unassignedTransactions = activeTransactions.filter(transaction => !transaction.rootMessageId);
+		const rootCandidates = unassignedTransactions.filter(transaction =>
+			((Boolean(actorUuid) && transaction.rootActorUuid === actorUuid) ||
+				(Boolean(actorId) && transaction.rootActorId === actorId))
+		);
+		const transaction = rootCandidates.length === 1
+			? rootCandidates[0]
+			: rootCandidates.length === 0 && unassignedTransactions.length === 1
+				? unassignedTransactions[0]
+				: null;
+		if (transaction) {
+			transaction.rootMessageId = message.id ?? data._id;
+			transaction.rootMessagePending = true;
+			transaction.primaryDamage = appliedDamage ? foundry.utils.deepClone(appliedDamage) : null;
+		}
+	});
+
+	Hooks.on("createChatMessage", message => {
+		if (foundry.utils.getProperty(message, `flags.${game.system.id}.context.type`) !== "damage-taken") return;
+		const activeTransactions = [...damageTransactionState.active].filter(transaction =>
+			transaction.rootMessagePending
+		);
+		if (!activeTransactions.length) return;
+
+		const appliedDamage = foundry.utils.getProperty(
+			message,
+			`flags.${game.system.id}.appliedDamage`
+		);
+		const actorUuid = appliedDamage?.uuid;
+		const actorId = message.speaker?.actor;
+		const rootCandidates = activeTransactions.filter(transaction =>
+			((Boolean(actorUuid) && transaction.rootActorUuid === actorUuid) ||
+				(Boolean(actorId) && transaction.rootActorId === actorId))
+		);
+		const transaction = rootCandidates.length === 1
+			? rootCandidates[0]
+			: rootCandidates.length === 0 && activeTransactions.length === 1
+				? activeTransactions[0]
+				: null;
+		if (!transaction) return;
+
+		transaction.rootMessageId = message.id;
+		transaction.rootMessagePending = false;
+		transaction.primaryDamage = appliedDamage ? foundry.utils.deepClone(appliedDamage) : null;
+	});
+
+	damageTransactionState.hooksInstalled = true;
+}
+
+async function finalizeDamageTransaction(transaction) {
+	for (const finalizer of damageTransactionState.finalizers) {
+		try {
+			await finalizer(transaction);
+		} catch (error) {
+			console.error(`${MODULE_ID} | Failed to finalize a grouped damage card`, error);
+		}
+	}
+}
 
 function registerLifestealLocalization() {
 	const translations = game.i18n?.translations;
@@ -305,7 +423,7 @@ async function addLifestealTooltip(message, sources) {
 	await message.update({ content: container.innerHTML });
 }
 
-async function healDamageDealer(attacker, amount) {
+async function healDamageDealer(attacker, amount, parentParams, sources) {
 	const hp = attacker?.attributes?.hp;
 	if (!hp || !Number.isFinite(amount) || amount <= 0) return { healing: 0, card: null };
 
@@ -317,17 +435,24 @@ async function healDamageDealer(attacker, amount) {
 		return { healing, card: null };
 	}
 
-	const hpBefore = Number(hp.value);
+	const healthBefore = currentHealthPool(attacker);
 	const previousMessageIds = new Set((game.messages?.contents ?? []).map(message => message.id));
-	await attacker.applyDamage({
+	const effect = {
+		type: "lifesteal",
+		label: sources.map(source => source.label).join(", "),
+		amount,
+		targetName: attacker.name
+	};
+	await applyDamageInTransaction(attacker, {
 		damage: -amount,
 		token,
 		skipIWR: true
-	});
-	const hpAfter = Number(attacker.attributes?.hp?.value);
-	const healing = Number.isFinite(hpBefore) && Number.isFinite(hpAfter)
-		? Math.max(0, hpAfter - hpBefore)
+	}, parentParams, effect);
+	const healthAfter = currentHealthPool(attacker);
+	const healing = healthBefore !== null && healthAfter !== null
+		? Math.max(0, healthAfter - healthBefore)
 		: 0;
+	effect.amount = healing;
 	return { healing, card: findHealingCard(previousMessageIds, attacker) };
 }
 
@@ -363,7 +488,7 @@ async function applyLifesteal(actor, wrapped, args) {
 			rollOptions,
 			selectors
 		);
-		const { healing: healed, card } = await healDamageDealer(attacker, healing);
+		const { healing: healed, card } = await healDamageDealer(attacker, healing, params, sources);
 		if (healed > 0 && card) {
 			let remainingHealing = healed;
 			const appliedSources = sources
@@ -385,16 +510,54 @@ damageHandlers.add(applyLifesteal);
 
 function applyDamageHandlers(actor, wrapped, args) {
 	const handlers = [...damageHandlers];
+	const params = args[0];
+	let transaction = params && typeof params === "object"
+		? damageTransactionState.params.get(params)
+		: null;
+	const isRoot = !transaction;
+	if (isRoot && params && typeof params === "object") {
+		const rootActor = params.token?.actor ?? actor;
+		transaction = {
+			rootActorUuid: rootActor?.uuid,
+			rootActorId: rootActor?.id,
+			rootMessageId: null,
+			rootMessagePending: false,
+			primaryDamage: null,
+			pending: [],
+			effects: []
+		};
+		damageTransactionState.params.set(params, transaction);
+		damageTransactionState.active.add(transaction);
+	}
 	const dispatch = (index, forwardedArgs) => {
 		const handler = handlers[index];
 		return handler
 			? handler(actor, (...nextArgs) => dispatch(index + 1, nextArgs), forwardedArgs)
 			: wrapped(...forwardedArgs);
 	};
-	return dispatch(0, args);
+	let result;
+	try {
+		result = dispatch(0, args);
+	} catch (error) {
+		if (isRoot && transaction) {
+			damageTransactionState.active.delete(transaction);
+			damageTransactionState.params.delete(params);
+		}
+		throw error;
+	}
+	if (!isRoot || !transaction) return result;
+	return Promise.resolve(result).finally(async () => {
+		try {
+			await finalizeDamageTransaction(transaction);
+		} finally {
+			damageTransactionState.active.delete(transaction);
+			damageTransactionState.params.delete(params);
+		}
+	});
 }
 
 function installLifestealDamageHandling() {
+	installDamageTransactionHooks();
 	const config = getSystemConfig();
 	const actorClasses = config?.Actor?.documentClasses ?? {};
 	const actorClass = CONFIG.Actor?.documentClass;
