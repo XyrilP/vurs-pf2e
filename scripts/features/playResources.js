@@ -679,26 +679,34 @@ function getSystemModeForPlayResource(actor) {
 async function regenerateActorAtTurnStart(actor) {
 	if (!actorUsesVursSystem(actor)) return;
 	const resources = foundry.utils.getProperty(actor, PLAY_RESOURCES_PATH) ?? {};
+	const resourceEntries = new Map(
+		getPlayResourceEntries(actor).map(entry => [entry.key, entry])
+	);
 	const updates = {};
 	for (const definition of PLAY_RESOURCE_DEFINITIONS) {
 		const resource = resources[definition.key];
 		if (!resource || typeof resource !== "object") continue;
 		const regeneration = getPlayResourceRegeneration(actor, definition.key, resource);
 		if (!regeneration) continue;
-		const entry = getPlayResourceEntries(actor).find(candidate => candidate.key === definition.key);
+		const entry = resourceEntries.get(definition.key);
 		if (!entry) continue;
 		const current = finiteResourceNumber(resource.value);
-		updates[`${PLAY_RESOURCES_PATH}.${definition.key}.value`] = Math.clamp(current + regeneration, 0, entry.max);
+		const next = Math.clamp(current + regeneration, 0, entry.max);
+		if (next !== current) {
+			updates[`${PLAY_RESOURCES_PATH}.${definition.key}.value`] = next;
+		}
 	}
 
 	const hp = actor.system?.attributes?.hp;
 	const hpRegeneration = finiteResourceNumber(foundry.utils.getProperty(actor, "flags.vurs.hp.regeneration"));
 	if (hp && hpRegeneration) {
-		updates["system.attributes.hp.value"] = Math.clamp(
-			finiteResourceNumber(hp.value) + hpRegeneration,
+		const current = finiteResourceNumber(hp.value);
+		const next = Math.clamp(
+			current + hpRegeneration,
 			0,
 			finiteResourceNumber(hp.max)
 		);
+		if (next !== current) updates["system.attributes.hp.value"] = next;
 	}
 	if (Object.keys(updates).length) await actor.update(updates, { render: true });
 }
