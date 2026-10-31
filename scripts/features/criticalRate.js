@@ -8,6 +8,9 @@ import { MODIFIER_TYPES, selectTypedModifiers } from "./typedModifiers.js";
 const MODULE_ID = "vurs-pf2e";
 const RULE_KEY = "Critical Rate";
 const OUTCOMES = ["criticalFailure", "failure", "success", "criticalSuccess"];
+const TOTAL_OPTION_PATTERN = /^check:total:(-?\d+(?:\.\d+)?)$/;
+const MARGIN_OPTION_PATTERN = /^check:total:delta:(-?\d+(?:\.\d+)?)$/;
+const NATURAL_OPTION_PATTERN = /^check:total:natural:(-?\d+|null)$/;
 let CriticalRateRuleElement = null;
 
 function registerCriticalRateLocalization() {
@@ -113,6 +116,14 @@ function getCriticalRate(actor, domains, rollOptions) {
 	return selectTypedModifiers(matching);
 }
 
+function hasCriticalRateAdjustments(adjustments) {
+	if (!adjustments) return false;
+	for (const selector in adjustments) {
+		if (Object.hasOwn(adjustments, selector) && adjustments[selector]?.length > 0) return true;
+	}
+	return false;
+}
+
 function getCriticalProtection(actor, { domains, rollOptions, total, dc, natural }) {
 	const protections = actor?.synthetics?.criticalProtections ?? [];
 	if (protections.length === 0) return [];
@@ -138,16 +149,6 @@ function getBaseDegreeOfSuccess(total, dc, natural, criticalThreshold = 10) {
 	if (natural === 20) degree = Math.min(3, degree + 1);
 	else if (natural === 1) degree = Math.max(0, degree - 1);
 	return degree;
-}
-
-function getRollOptionNumber(options, pattern) {
-	for (const option of options ?? []) {
-		const match = pattern.exec(option);
-		if (!match) continue;
-		const value = Number(match[1]);
-		if (Number.isFinite(value)) return value;
-	}
-	return null;
 }
 
 function getExistingDegreeAdjustments(entries, postRollOptions, rollOptions) {
@@ -299,14 +300,27 @@ function createCriticalAdjustmentEntry({
 	let combinedAdjustments = {};
 	const predicate = {
 		test(postRollOptions) {
-			const total = getRollOptionNumber(postRollOptions, /^check:total:(-?\d+(?:\.\d+)?)$/);
-			const margin = getRollOptionNumber(postRollOptions, /^check:total:delta:(-?\d+(?:\.\d+)?)$/);
-			const naturalToken = [...postRollOptions]
-				.map(option => /^check:total:natural:(-?\d+|null)$/.exec(option))
-				.find(Boolean);
-			if (total === null || margin === null || !naturalToken) return false;
+			let total = null;
+			let margin = null;
+			let naturalToken = null;
+			for (const option of postRollOptions ?? []) {
+				let match = TOTAL_OPTION_PATTERN.exec(option);
+				if (match && total === null) {
+					total = Number(match[1]);
+					continue;
+				}
+				match = MARGIN_OPTION_PATTERN.exec(option);
+				if (match && margin === null) {
+					margin = Number(match[1]);
+					continue;
+				}
+				match = NATURAL_OPTION_PATTERN.exec(option);
+				if (match && naturalToken === null) naturalToken = match[1];
+				if (total !== null && margin !== null && naturalToken !== null) break;
+			}
+			if (total === null || margin === null || naturalToken === null) return false;
 
-			const natural = naturalToken[1] === "null" ? null : Number(naturalToken[1]);
+			const natural = naturalToken === "null" ? null : Number(naturalToken);
 			const protectionAdjustments = getCriticalProtection(target, {
 				domains,
 				rollOptions,
@@ -378,11 +392,22 @@ function installCriticalRateCheckWrapper({ quiet = false } = {}) {
 	}
 	const wrapper = async function (wrapped, check, options = {}, event = null, callback) {
 		const actor = getCheckActor(check, options);
-		const domains = options.domains ?? [];
-		const rollOptions = options.options instanceof Set ? options.options : new Set(options.options ?? []);
-		const rateAdjustments = getCriticalRate(actor, domains, rollOptions);
 		const target = options.target?.actor ?? null;
-		if (rateAdjustments.length === 0 && !target?.synthetics?.criticalProtections?.length) {
+		const criticalRates = actor?.synthetics?.criticalRates;
+		const hasRateEntries = hasCriticalRateAdjustments(criticalRates);
+		const hasProtections = (target?.synthetics?.criticalProtections?.length ?? 0) > 0;
+		if (!hasRateEntries && !hasProtections) {
+			return wrapped(check, options, event, callback);
+		}
+
+		const domains = options.domains ?? [];
+		const rollOptions = options.options instanceof Set
+			? options.options
+			: hasRateEntries
+				? new Set(options.options ?? [])
+				: options.options ?? [];
+		const rateAdjustments = hasRateEntries ? getCriticalRate(actor, domains, rollOptions) : [];
+		if (rateAdjustments.length === 0 && !hasProtections) {
 			return wrapped(check, options, event, callback);
 		}
 

@@ -64,8 +64,8 @@ function registerCriticalProtectionRuleElement({ quiet = false } = {}) {
 
 			const value = Number(this.resolveValue(this.value));
 			const type = this.type ?? "untyped";
-			if (!Number.isInteger(value) || value < 0 || !MODIFIER_TYPES.includes(type)) {
-				this.failValidation("value must resolve to a non-negative integer and type must be valid");
+			if (!Number.isInteger(value) || !MODIFIER_TYPES.includes(type)) {
+				this.failValidation("value must resolve to an integer and type must be valid");
 				return;
 			}
 			if (value === 0) return;
