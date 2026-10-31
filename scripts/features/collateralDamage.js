@@ -245,8 +245,57 @@ function getPlacementGeometries(placement, sourceToken, targetToken) {
 	return corners.map(({ x, y }) => ({ x, y, rotation }));
 }
 
-function getAreaShape(rule, geometry, originToken) {
-	const distance = Number(rule.resolveValue(rule.distance, 5));
+function resolveCollateralDistance(rule, damageItem, damageSource) {
+	const expression = String(rule.distance);
+	if (!/\b(?:range-increment|range|reach)\b/.test(expression)) {
+		return Number(rule.resolveValue(rule.distance, rule.type === "bounce" ? 0 : 5));
+	}
+
+	const range = damageItem?.range ?? damageItem?.system?.range;
+	const variables = {
+		range: range?.max,
+		"range-increment": range?.increment,
+		reach: damageSource?.getReach?.({ action: "attack", weapon: damageItem })
+	};
+	let missingVariable = null;
+	const substitutedExpression = expression.replace(
+		/(^|[^A-Za-z0-9_@.-])(range-increment|range|reach)(?=$|[^A-Za-z0-9_.-])/g,
+		(match, prefix, variable) => {
+			const value = Number(variables[variable]);
+			if (!Number.isFinite(value) || value <= 0) {
+				console.error(`${MODULE_ID} | Skipping ${RULE_KEY} on ${rule.item?.name ?? "unknown item"}: the damage source's ${variable} is unavailable or not positive`);
+				missingVariable = variable;
+				return match;
+			}
+			return `${prefix}${value}`;
+		}
+	);
+	if (missingVariable) return null;
+
+	const resolvedExpression = rule.resolveValue(substitutedExpression, null);
+	if (typeof resolvedExpression === "number") {
+		if (!Number.isFinite(resolvedExpression) || resolvedExpression <= 0) {
+			console.error(`${MODULE_ID} | Skipping ${RULE_KEY} on ${rule.item?.name ?? "unknown item"}: distance must resolve to a positive number`);
+			return null;
+		}
+		return resolvedExpression;
+	}
+	if (typeof resolvedExpression !== "string") return null;
+
+	try {
+		const distance = Number(Roll.safeEval(resolvedExpression));
+		if (!Number.isFinite(distance) || distance <= 0) {
+			console.error(`${MODULE_ID} | Skipping ${RULE_KEY} on ${rule.item?.name ?? "unknown item"}: distance must resolve to a positive number`);
+			return null;
+		}
+		return distance;
+	} catch (error) {
+		console.error(`${MODULE_ID} | Skipping ${RULE_KEY} on ${rule.item?.name ?? "unknown item"}: could not evaluate distance formula`, error);
+		return null;
+	}
+}
+
+function getAreaShape(rule, geometry, originToken, distance) {
 	const width = rule.width === undefined || rule.width === null
 		? canvas.dimensions.distance
 		: Number(rule.resolveValue(rule.width, canvas.dimensions.distance));
@@ -360,10 +409,9 @@ function getTokenDistanceWithElevation(originToken, targetToken) {
 	return Number.isFinite(distance) ? distance : Infinity;
 }
 
-function getAreaTargets(region, sourceToken, primaryToken, placementToken, rule) {
+function getAreaTargets(region, sourceToken, primaryToken, placementToken, rule, maxDistance) {
 	const source = normalizeToken(sourceToken);
 	const primary = normalizeToken(primaryToken);
-	const maxDistance = Number(rule.resolveValue(rule.distance, 5));
 	const targets = [];
 	for (const token of region.parent.tokens) {
 		if (token.id === primary?.id) continue;
@@ -1107,8 +1155,7 @@ async function applyPreparedCollateralDamageBatch(applications, sourceParams) {
 	}));
 }
 
-function prepareBounceDamage(rule, scene, sourceToken, primaryToken, amount, damageRoll, sourceParams) {
-	const maxDistance = Number(rule.resolveValue(rule.distance, 0));
+function prepareBounceDamage(rule, scene, sourceToken, primaryToken, maxDistance, amount, damageRoll, sourceParams) {
 	const bounceShots = Number(rule.resolveValue(rule.bounceShots ?? 1, 1));
 	const bounceCount = Number(rule.resolveValue(rule.bounceCount ?? 1, 1));
 	const bounceLimit = Number(rule.bounceLimit ?? 1);
@@ -1446,9 +1493,12 @@ async function applyCollateralDamage(actor, params, beforeReduction, afterReduct
 		const amount = calculateCollateralAmount(rule, beforeReduction, afterReduction);
 		if (amount <= 0) continue;
 
+		const distance = resolveCollateralDistance(rule, params.item, damageDealer);
+		if (distance === null) continue;
+
 		if (rule.type === "bounce") {
 			const bounce = prepareBounceDamage(
-				rule, scene, sourceToken, targetToken, amount, params.damage, params
+				rule, scene, sourceToken, targetToken, distance, amount, params.damage, params
 			);
 			paths.push(...bounce.paths);
 			applications.push(...bounce.applications);
@@ -1464,7 +1514,7 @@ async function applyCollateralDamage(actor, params, beforeReduction, afterReduct
 		const originToken = rule.placement === "self" ? sourceToken : targetToken;
 		const shapeGeometries = rule.type === "emanation" ? geometries.slice(0, 1) : geometries;
 		const areaShapes = shapeGeometries
-			.map(geometry => getAreaShape(rule, geometry, originToken))
+			.map(geometry => getAreaShape(rule, geometry, originToken, distance))
 			.filter(Boolean);
 		if (!areaShapes.length) continue;
 		const region = getRegionForShapes(scene, areaShapes);
@@ -1472,7 +1522,7 @@ async function applyCollateralDamage(actor, params, beforeReduction, afterReduct
 		shapes.push(...areaShapes);
 		if (slug) seenSlugs.add(slug);
 
-		const targets = getAreaTargets(region, sourceToken, targetToken, originToken, rule);
+		const targets = getAreaTargets(region, sourceToken, targetToken, originToken, rule, distance);
 		if (!targets.length) continue;
 		const amounts = rule.divided ? splitAmount(amount, targets.length) : targets.map(() => amount);
 		const sourceLabel = rule.item?.name ?? rule.label ?? RULE_KEY;
