@@ -140,10 +140,12 @@ function getBaseDegreeOfSuccess(total, dc, natural, criticalThreshold = 10) {
 	return degree;
 }
 
-function getRollOptionNumber(options, expression) {
-	for (const option of options) {
-		const match = expression.exec(option);
-		if (match) return Number(match[1]);
+function getRollOptionNumber(options, pattern) {
+	for (const option of options ?? []) {
+		const match = pattern.exec(option);
+		if (!match) continue;
+		const value = Number(match[1]);
+		if (Number.isFinite(value)) return value;
 	}
 	return null;
 }
@@ -185,6 +187,106 @@ function applyDegreeAdjustment(degree, adjustment) {
 	return Math.clamp(degree + adjustment.amount, 0, 3);
 }
 
+function getCriticalTooltipSources(context) {
+	const directSources = context?.vursCriticalTooltipSources;
+	if (Array.isArray(directSources) && directSources.length > 0) return directSources;
+
+	const adjustments = context?.dosAdjustments;
+	if (!adjustments || typeof adjustments !== "object") return [];
+	return Object.values(adjustments)
+		.flatMap(adjustment => Array.isArray(adjustment?.tooltipSources) ? adjustment.tooltipSources : []);
+}
+
+function deferNativeAdjustmentTooltip(element) {
+	if (element.dataset.vursDeferredTooltip) return;
+	const text = element.dataset.tooltip;
+	if (!text) return;
+
+	element.dataset.vursDeferredTooltip = text;
+	element.removeAttribute("data-tooltip");
+	let timeout;
+	element.addEventListener("pointerenter", () => {
+		window.clearTimeout(timeout);
+		timeout = window.setTimeout(() => {
+			if (element.matches(":hover") && game.tooltip) {
+				game.tooltip.activate(element, { text });
+			}
+		}, 600);
+	});
+	element.addEventListener("pointerleave", () => {
+		window.clearTimeout(timeout);
+		if (game.tooltip?.element === element) game.tooltip.deactivate();
+	});
+}
+
+function updateCriticalSourceTooltip(message, html) {
+	const root = html instanceof HTMLElement ? html : html?.[0];
+	if (!root) return;
+
+	const context = message?.flags?.[game.system.id]?.context;
+	const sources = getCriticalTooltipSources(context);
+	for (const result of root.querySelectorAll(".target-dc-result .result.degree-of-success")) {
+		for (const adjusted of result.querySelectorAll(".adjusted[data-tooltip]")) {
+			if (sources.length > 0) {
+				adjusted.removeAttribute("data-tooltip");
+				delete adjusted.dataset.vursDeferredTooltip;
+			} else {
+				deferNativeAdjustmentTooltip(adjusted);
+			}
+		}
+	}
+	if (sources.length === 0) return;
+
+	const jq = globalThis.jQuery ?? globalThis.$;
+	if (typeof jq !== "function" || typeof jq.fn?.tooltipster !== "function") return;
+
+	for (const result of root.querySelectorAll(".target-dc-result .result.degree-of-success")) {
+		if (result.classList.contains("tooltipstered")) continue;
+
+		const tooltip = document.createElement("div");
+		tooltip.className = "hover-content modifiers-tooltip vurs-modifier-tooltip";
+		const title = document.createElement("div");
+		title.className = "sidebar_title";
+		const heading = document.createElement("h2");
+		heading.textContent = "Critical Threshold";
+		title.append(heading);
+		tooltip.append(title);
+
+		const list = document.createElement("ul");
+		list.className = "modifier-list";
+		for (const source of sources) {
+			const item = document.createElement("li");
+			item.className = "item";
+			if (Number.isFinite(Number(source.value))) {
+				const amount = document.createElement("span");
+				amount.className = "data";
+				const delta = Number(source.value) * (source.group === "protection" ? -1 : 1);
+				amount.textContent = `${delta >= 0 ? "+" : ""}${delta}`;
+				item.append(amount);
+			}
+			const sourceLabel = document.createElement("span");
+			sourceLabel.className = "label";
+			sourceLabel.textContent = source.label ?? "";
+			const type = document.createElement("small");
+			type.className = "tag-legacy";
+			type.textContent = game.i18n.localize(`PF2E.ModifierType.${source.type ?? "untyped"}`);
+			item.append(sourceLabel, type);
+			list.append(item);
+		}
+		tooltip.append(list);
+
+		jq(result).tooltipster({
+			trigger: "hover",
+			arrow: false,
+			contentAsHTML: true,
+			debug: false,
+			side: ["top", "bottom"],
+			theme: "crb-hover",
+			content: tooltip
+		});
+	}
+}
+
 function createCriticalAdjustmentEntry({
 	dc,
 	domains,
@@ -212,6 +314,20 @@ function createCriticalAdjustmentEntry({
 				dc,
 				natural
 			});
+			const criticalSources = [
+				...rateAdjustments.map(source => ({
+					group: "rate",
+					value: source.value,
+					type: source.type ?? "untyped",
+					label: source.label
+				})),
+				...protectionAdjustments.map(source => ({
+					group: "protection",
+					value: source.value,
+					type: source.type ?? "untyped",
+					label: source.label
+				}))
+			];
 			const rate = rateAdjustments.reduce((sum, adjustment) => sum + adjustment.value, 0);
 			const protection = protectionAdjustments.reduce((sum, adjustment) => sum + adjustment.value, 0);
 			const netRate = rate - protection;
@@ -234,27 +350,12 @@ function createCriticalAdjustmentEntry({
 			const rateCounteracted = rateAdjustedDegree !== baseDegree && netAdjustedDegree === baseDegree;
 			if (adjustedDegree === currentDegree && !rateCounteracted) return false;
 
-			const rateSources = [...new Set(rateAdjustments.map(adjustment => adjustment.label).filter(Boolean))];
-			const protectionSources = [...new Set(protectionAdjustments.map(adjustment => adjustment.label).filter(Boolean))];
-			const sources = [
-				...rateAdjustments.map(({ label, type, value }) => ({ label, type: type ?? "untyped", value })),
-				...protectionAdjustments.map(({ label, type, value }) => ({ label, type: type ?? "untyped", value: -value }))
-			].filter(source => source.label);
-			tooltipSources.splice(0, tooltipSources.length, ...sources);
-			const formatSources = sources => sources.length > 1
-				? `(${sources.join(", ")})`
-				: sources[0] ?? null;
-			const sourceCredit = [
-				formatSources(rateSources),
-				formatSources(protectionSources)
-			].filter(Boolean).join(" - ");
-			const labels = [currentAdjustment?.label, sourceCredit].filter(Boolean);
-
+			tooltipSources.splice(0, tooltipSources.length, ...criticalSources);
 			combinedAdjustments = {
 				all: {
-					label: labels.join(" / "),
+					label: "Critical Threshold",
 					amount: OUTCOMES[adjustedDegree],
-					tooltipSources
+					tooltipSources: criticalSources
 				}
 			};
 			return true;
@@ -289,11 +390,10 @@ function installCriticalRateCheckWrapper({ quiet = false } = {}) {
 		if (!Number.isFinite(dc)) return wrapped(check, options, event, callback);
 
 		const existingAdjustments = [...(options.dosAdjustments ?? [])];
-		const tooltipSources = [];
 		const contextOptions = {
 			...options,
 			dosAdjustments: [...existingAdjustments],
-			vursCriticalTooltipSources: tooltipSources
+			vursCriticalTooltipSources: []
 		};
 		contextOptions.dosAdjustments.push(createCriticalAdjustmentEntry({
 			dc,
@@ -302,108 +402,12 @@ function installCriticalRateCheckWrapper({ quiet = false } = {}) {
 			target,
 			rollOptions,
 			existingAdjustments,
-			tooltipSources
+			tooltipSources: contextOptions.vursCriticalTooltipSources
 		}));
 		return wrapped(check, contextOptions, event, callback);
 	};
 
 	registerCheckRollWrapper("critical-rate", wrapper, { quiet });
-}
-
-function updateCriticalSourceTooltip(message, html) {
-	const root = html instanceof HTMLElement ? html : html?.[0];
-	const jq = globalThis.jQuery ?? globalThis.$;
-	const context = message.flags?.pf2e?.context;
-	let sources = context?.vursCriticalTooltipSources ?? context?.dosAdjustments?.all?.tooltipSources;
-	const result = root?.querySelector(".target-dc-result .result.degree-of-success");
-	if (!result || !Array.isArray(sources) || sources.length === 0 ||
-		typeof jq !== "function" || typeof jq.fn?.tooltipster !== "function" ||
-		result.classList.contains("tooltipstered")) return;
-
-	if (sources.some(source => !Number.isFinite(source.value))) {
-		const actor = game.actors.get(context.actor) ?? globalThis.fromUuidSync?.(context.origin?.actor);
-		const target = context.target?.actor ? globalThis.fromUuidSync?.(context.target.actor) : null;
-		const domains = context.domains ?? [];
-		const rollOptions = new Set(context.options ?? []);
-		const rateSources = getCriticalRate(actor, domains, rollOptions)
-			.map(({ label, type, value }) => ({ label, type: type ?? "untyped", value }));
-		const postRollOptions = context.contextualOptions?.postRoll ?? [];
-		const total = getRollOptionNumber(postRollOptions, /^check:total:(-?\d+(?:\.\d+)?)$/);
-		const natural = getRollOptionNumber(postRollOptions, /^check:total:natural:(-?\d+)$/);
-		const dc = Number(context.dc?.value);
-		const protectionSources = target && Number.isFinite(total) && Number.isFinite(dc)
-			? getCriticalProtection(target, {
-				domains,
-				rollOptions,
-				total,
-				dc,
-				natural
-			}).map(({ label, type, value }) => ({ label, type: type ?? "untyped", value: -value }))
-			: [];
-		const resolvedSources = [...rateSources, ...protectionSources];
-		sources = sources.map(source => {
-			const index = resolvedSources.findIndex(candidate =>
-				candidate.label === source.label && candidate.type === (source.type ?? "untyped")
-			);
-			return index >= 0 ? resolvedSources.splice(index, 1)[0] : source;
-		});
-	}
-	sources = sources.filter(source => Number.isFinite(source.value));
-	if (sources.length === 0) return;
-
-	const tooltip = document.createElement("div");
-	tooltip.className = "hover-content modifiers-tooltip vurs-modifier-tooltip";
-	const title = document.createElement("div");
-	title.className = "sidebar_title";
-	const heading = document.createElement("h2");
-	heading.textContent = `${game.i18n.localize("PF2E.RuleElement.Critical Rate")} / ${game.i18n.localize("PF2E.RuleElement.Critical Protection")}`;
-	title.append(heading);
-	const list = document.createElement("ul");
-	list.className = "modifier-list";
-	for (const source of sources) {
-		const entry = document.createElement("li");
-		entry.className = "item";
-		const amount = document.createElement("span");
-		amount.className = "data";
-		amount.textContent = `${source.value >= 0 ? "+" : ""}${source.value}`;
-		const label = document.createElement("span");
-		label.className = "label";
-		label.textContent = source.label === RULE_KEY || source.label === "Critical Protection"
-			? game.i18n.localize(`PF2E.RuleElement.${source.label}`)
-			: source.label;
-		const type = document.createElement("small");
-		type.className = "tag-legacy";
-		const typeKey = `PF2E.ModifierType.${source.type ?? "untyped"}`;
-		type.textContent = game.i18n.localize(typeKey) === typeKey
-			? source.type ?? "untyped"
-			: game.i18n.localize(typeKey);
-		entry.append(amount, label, type);
-		list.append(entry);
-	}
-	tooltip.append(title, list);
-
-	jq(result).tooltipster({
-		trigger: "hover",
-		arrow: false,
-		contentAsHTML: true,
-		debug: false,
-		side: ["top", "bottom"],
-		theme: "crb-hover",
-		functionReady(instance, helper) {
-			expandCriticalTooltip(helper);
-		},
-		content: tooltip
-	});
-}
-
-function expandCriticalTooltip(helper) {
-	const root = helper.tooltip instanceof HTMLElement ? helper.tooltip : helper.tooltip?.[0];
-	if (!root) return;
-	for (const element of [root, ...root.querySelectorAll(".tooltipster-box, .tooltipster-content")]) {
-		element.style.setProperty("max-height", "none", "important");
-		element.style.setProperty("height", "auto", "important");
-		element.style.setProperty("overflow", "visible", "important");
-	}
 }
 
 function initializeCriticalRate() {
