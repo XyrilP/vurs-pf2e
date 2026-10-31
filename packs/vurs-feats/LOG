@@ -3,3 +3,9 @@
 2026/10/31-06:20:04.848 1b88 Level-0 table #1492: 34466 bytes OK
 2026/10/31-06:20:04.956 1b88 Delete type=0 #1489
 2026/10/31-06:20:04.956 1b88 Delete type=3 #1488
+2026/10/31-10:24:19.221 29bc Compacting 1@0 + 1@1 files
+2026/10/31-10:24:19.322 29bc Generated table #1494@0: 239 keys, 178293 bytes
+2026/10/31-10:24:19.322 29bc Compacted 1@0 + 1@1 files => 178293 bytes
+2026/10/31-10:24:19.362 29bc compacted to: files[ 0 1 0 0 0 0 0 ]
+2026/10/31-10:24:19.363 29bc Delete type=2 #1490
+2026/10/31-10:24:19.391 29bc Delete type=2 #1492
