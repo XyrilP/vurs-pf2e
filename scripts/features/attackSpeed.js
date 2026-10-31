@@ -1,16 +1,9 @@
+import { registerCheckRollWrapper } from "./checkRollWrappers.js";
+import { MODIFIER_TYPES, selectTypedModifiers } from "./typedModifiers.js";
+
 const MODULE_ID = "vurs-pf2e";
 const RULE_KEY = "Attack Speed";
-const CHECK_WRAPPER = Symbol.for(`${MODULE_ID}.attackSpeedCheckWrapper`);
 const STRIKE_DISPLAY_WRAPPER = Symbol.for(`${MODULE_ID}.attackSpeedStrikeDisplayWrapper`);
-const MODIFIER_TYPES = Object.freeze([
-	"ability",
-	"circumstance",
-	"item",
-	"potency",
-	"proficiency",
-	"status",
-	"untyped"
-]);
 let AttackSpeedRuleElement = null;
 
 function registerAttackSpeedLocalization() {
@@ -104,36 +97,7 @@ function getAttackSpeedContributions(actor, domains, rollOptions) {
 		}
 	}
 
-	const selected = matching.filter(adjustment => adjustment.type === "untyped");
-	const typed = new Map();
-	for (const adjustment of matching) {
-		if (adjustment.type === "untyped") continue;
-		const buckets = typed.get(adjustment.type) ?? { positive: null, negative: null };
-		if (adjustment.type === "ability") {
-			if (!buckets.ability || adjustment.value > buckets.ability.value) {
-				buckets.ability = adjustment;
-			}
-		} else if (adjustment.value > 0) {
-			if (!buckets.positive || adjustment.value > buckets.positive.value) {
-				buckets.positive = adjustment;
-			}
-		} else if (adjustment.value < 0) {
-			if (!buckets.negative || adjustment.value < buckets.negative.value) {
-				buckets.negative = adjustment;
-			}
-		}
-		typed.set(adjustment.type, buckets);
-	}
-
-	for (const buckets of typed.values()) {
-		if (buckets.ability) {
-			selected.push(buckets.ability);
-		} else {
-			if (buckets.positive) selected.push(buckets.positive);
-			if (buckets.negative) selected.push(buckets.negative);
-		}
-	}
-	return selected;
+	return selectTypedModifiers(matching);
 }
 
 function getAttackSpeed(actor, domains, rollOptions) {
@@ -182,12 +146,6 @@ function installAttackSpeedCheckWrapper({ quiet = false } = {}) {
 		if (!quiet) console.error(`${MODULE_ID} | Could not apply spell Attack Speed: PF2E Check.roll is unavailable`);
 		return;
 	}
-	if (checkApi[CHECK_WRAPPER]) return;
-
-	if (typeof globalThis.libWrapper?.register !== "function") {
-		if (!quiet) console.error(`${MODULE_ID} | Could not apply spell Attack Speed: libWrapper is unavailable`);
-		return;
-	}
 
 	const wrapper = async function (wrapped, check, options = {}, event = null, callback) {
 		const item = options.item;
@@ -232,12 +190,7 @@ function installAttackSpeedCheckWrapper({ quiet = false } = {}) {
 		}
 	};
 
-	try {
-		globalThis.libWrapper.register(MODULE_ID, `game.${game.system.id}.Check.roll`, wrapper, "WRAPPER");
-		Object.defineProperty(checkApi, CHECK_WRAPPER, { value: true });
-	} catch (error) {
-		console.error(`${MODULE_ID} | Failed to apply spell Attack Speed`, error);
-	}
+	registerCheckRollWrapper("attack-speed", wrapper, { quiet });
 }
 
 function installAttackSpeedStrikeDisplayWrapper({ quiet = false } = {}) {
@@ -327,6 +280,83 @@ function installAttackSpeedStrikeDisplayWrapper({ quiet = false } = {}) {
 	}
 }
 
+function updateStrikeAttackSpeedTooltips(app, html) {
+	const root = html instanceof HTMLElement ? html : html?.[0];
+	const actor = app.actor ?? app.document?.actor;
+	if (!root || !actor) return;
+
+	const jq = globalThis.jQuery ?? globalThis.$;
+	if (typeof jq !== "function" || typeof jq.fn?.tooltipster !== "function") return;
+
+	for (const entry of root.querySelectorAll(".strikes-list > [data-strike][data-action-index]")) {
+		const strike = actor.system.actions?.[Number(entry.dataset.actionIndex)];
+		if (!strike || !Array.isArray(strike.domains)) continue;
+
+		const rollOptions = new Set([
+			...actor.getRollOptions?.(strike.domains) ?? [],
+			...strike.options ?? [],
+			...strike.item?.getRollOptions?.("item") ?? []
+		]);
+		const contributions = getAttackSpeedContributions(actor, strike.domains, rollOptions);
+		if (contributions.length === 0) continue;
+
+		for (const button of entry.querySelectorAll(
+			'button[data-action="strike-attack"][data-variant-index="1"], button[data-action="strike-attack"][data-variant-index="2"]'
+		)) {
+			if (button.classList.contains("tooltipstered")) continue;
+			const mapIncreases = Number(button.dataset.variantIndex);
+			const tooltip = document.createElement("div");
+			tooltip.className = "hover-content modifiers-tooltip vurs-modifier-tooltip";
+			const title = document.createElement("div");
+			title.className = "sidebar_title";
+			const heading = document.createElement("h2");
+			heading.textContent = RULE_KEY;
+			title.append(heading);
+			const list = document.createElement("ul");
+			list.className = "modifier-list";
+			for (const contribution of contributions) {
+				const source = document.createElement("li");
+				source.className = "item";
+				const value = contribution.value * mapIncreases;
+				const amount = document.createElement("span");
+				amount.className = "data";
+				amount.textContent = `${value >= 0 ? "+" : ""}${value}`;
+				const label = document.createElement("span");
+				label.className = "label";
+				label.textContent = contribution.label;
+				const type = document.createElement("small");
+				type.className = "tag-legacy";
+				type.textContent = game.i18n.localize(`PF2E.ModifierType.${contribution.type}`);
+				source.append(amount, label, type);
+				list.append(source);
+			}
+			tooltip.append(title, list);
+			jq(button).tooltipster({
+				trigger: "hover",
+				arrow: false,
+				contentAsHTML: true,
+				debug: false,
+				side: ["top", "bottom"],
+				theme: "crb-hover",
+				functionReady(instance, helper) {
+					expandAttackSpeedTooltip(helper);
+				},
+				content: tooltip
+			});
+		}
+	}
+}
+
+function expandAttackSpeedTooltip(helper) {
+	const root = helper.tooltip instanceof HTMLElement ? helper.tooltip : helper.tooltip?.[0];
+	if (!root) return;
+	for (const element of [root, ...root.querySelectorAll(".tooltipster-box, .tooltipster-content")]) {
+		element.style.setProperty("max-height", "none", "important");
+		element.style.setProperty("height", "auto", "important");
+		element.style.setProperty("overflow", "visible", "important");
+	}
+}
+
 function updateSpellAttackMapButtons(message, html) {
 	const root = html instanceof HTMLElement ? html : html?.[0];
 	const card = root?.querySelector(".chat-card.item-card[data-actor-id][data-item-id]");
@@ -381,4 +411,5 @@ Hooks.once("ready", () => {
 	installAttackSpeedCheckWrapper();
 	installAttackSpeedStrikeDisplayWrapper();
 });
+Hooks.on("renderActorSheet", updateStrikeAttackSpeedTooltips);
 Hooks.on("renderChatMessageHTML", updateSpellAttackMapButtons);

@@ -1,0 +1,4 @@
+.crb-hover .tooltipster-box .tooltipster-content:has(.vurs-modifier-tooltip) {
+	max-height: none !important;
+	overflow: visible !important;
+}

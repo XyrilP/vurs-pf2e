@@ -1,3 +1,5 @@
+import { MODIFIER_TYPES } from "./typedModifiers.js";
+
 const MODULE_ID = "vurs-pf2e";
 const RULE_KEY = "Critical Protection";
 let CriticalProtectionRuleElement = null;
@@ -32,6 +34,12 @@ function registerCriticalProtectionRuleElement({ quiet = false } = {}) {
 			return {
 				...super.defineSchema(),
 				value: new ResolvableValueField({ required: true, nullable: false }),
+				type: new foundry.data.fields.StringField({
+					required: false,
+					nullable: false,
+					choices: MODIFIER_TYPES,
+					initial: "untyped"
+				}),
 				definition: new PredicateField({ required: false, initial: undefined })
 			};
 		}
@@ -40,8 +48,9 @@ function registerCriticalProtectionRuleElement({ quiet = false } = {}) {
 			if (this.ignored) return;
 
 			const value = Number(this.resolveValue(this.value));
-			if (!Number.isInteger(value) || value < 0) {
-				this.failValidation("value must resolve to a non-negative integer");
+			const type = this.type ?? "untyped";
+			if (!Number.isInteger(value) || value < 0 || !MODIFIER_TYPES.includes(type)) {
+				this.failValidation("value must resolve to a non-negative integer and type must be valid");
 				return;
 			}
 			if (value === 0) return;
@@ -51,6 +60,7 @@ function registerCriticalProtectionRuleElement({ quiet = false } = {}) {
 				: null;
 			(this.actor.synthetics.criticalProtections ??= []).push({
 				value,
+				type,
 				label: this.label || this.item.name,
 				definition
 			});

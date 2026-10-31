@@ -1,5 +1,6 @@
 import { actorHasDicelessFlag, actorUsesDicelessRolls, getSystemMode, isFullVursMode } from "./systemModes.js";
 import { createVursPlayCostElement } from "./playCostIcons.js";
+import { registerCheckRollWrapper } from "./checkRollWrappers.js";
 
 const MODULE_ID = "vurs-pf2e";
 const VURS_DIE_RESULT = Symbol("vurs-pf2e.fixedDieResult");
@@ -124,7 +125,7 @@ export function installActorDamageActionContext(actor) {
 }
 
 function installVursCheckRoll() {
-	const checkApi = game.pf2e?.Check;
+	const checkApi = (game[game.system.id] ?? game.pf2e)?.Check;
 	if (!checkApi || typeof checkApi.roll !== "function" || checkApi.__vursCheckRollInstalled) return;
 
 	const wrapper = async function (wrapped, check, options = {}, event = null, callback) {
@@ -154,15 +155,8 @@ function installVursCheckRoll() {
 			if (index >= 0) activeVursCheckRolls.splice(index, 1);
 		}
 	};
-	if (typeof globalThis.libWrapper?.register !== "function") {
-		console.warn(`${MODULE_ID} | libWrapper is unavailable; skipping the VURS Check.roll wrapper`);
-		return;
-	}
-	try {
-		globalThis.libWrapper.register(MODULE_ID, "game.pf2e.Check.roll", wrapper, "WRAPPER");
+	if (registerCheckRollWrapper("diceless", wrapper, { quiet: true })) {
 		Object.defineProperty(checkApi, "__vursCheckRollInstalled", { value: true });
-	} catch (error) {
-		console.error(`${MODULE_ID} | Failed to register libWrapper for game.pf2e.Check.roll`, error);
 	}
 }
 
