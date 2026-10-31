@@ -1,6 +1,7 @@
 const MODULE_ID = "vurs-pf2e";
 const COOLDOWN_TRAIT = /^cooldown-(\d+)$/;
 const processingMessages = new Set();
+const processingItems = new Set();
 
 Hooks.on("createChatMessage", message => {
   if (!game.user.isGM || game.system.id !== "pf2e" || !game.combat?.started) return;
@@ -38,30 +39,41 @@ async function applyCooldownFromMessage(message) {
 
     const actor = combatant.actor;
     const effectKey = "cooldownMessageId";
-    if (actor.itemTypes.effect.some(effect => effect.getFlag(MODULE_ID, effectKey) === messageId)) return;
+    const sourceItemUuid = item.uuid;
+    if (actor.itemTypes.effect.some(effect =>
+      effect.getFlag(MODULE_ID, "sourceItemUuid") === sourceItemUuid
+    )) return;
 
-    const effect = {
-      name: `Cooldown: ${item.name}`,
-      type: "effect",
-      img: item.img || "icons/svg/daze.svg",
-      system: {
-        description: { value: `<p>${item.name} is cooling down and cannot be used for ${rounds} round${rounds === 1 ? "" : "s"}.</p>` },
-        duration: { value: rounds, unit: "rounds", expiry: "turn-end" },
-        start: { value: game.time.worldTime, initiative: combatant.initiative ?? 0 },
-        tokenIcon: { show: true },
-        rules: [],
-        traits: { value: [], otherTags: [] }
-      },
-      flags: {
-        [MODULE_ID]: {
-          [effectKey]: messageId,
-          sourceItemUuid: item.uuid
+    const processingItemKey = `${actor.uuid}:${sourceItemUuid}`;
+    if (processingItems.has(processingItemKey)) return;
+    processingItems.add(processingItemKey);
+
+    try {
+      const effect = {
+        name: `Cooldown: ${item.name}`,
+        type: "effect",
+        img: item.img || "icons/svg/daze.svg",
+        system: {
+          description: { value: `<p>${item.name} is cooling down and cannot be used for ${rounds} round${rounds === 1 ? "" : "s"}.</p>` },
+          duration: { value: rounds, unit: "rounds", expiry: "turn-end" },
+          start: { value: game.time.worldTime, initiative: combatant.initiative ?? 0 },
+          tokenIcon: { show: true },
+          rules: [],
+          traits: { value: [], otherTags: [] }
+        },
+        flags: {
+          [MODULE_ID]: {
+            [effectKey]: messageId,
+            sourceItemUuid
+          }
         }
-      }
-    };
+      };
 
-    await actor.createEmbeddedDocuments("Item", [effect]);
-    await message.setFlag(MODULE_ID, "cooldownApplied", true);
+      await actor.createEmbeddedDocuments("Item", [effect]);
+      await message.setFlag(MODULE_ID, "cooldownApplied", true);
+    } finally {
+      processingItems.delete(processingItemKey);
+    }
   } finally {
     processingMessages.delete(messageId);
   }

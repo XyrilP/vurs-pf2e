@@ -6,6 +6,7 @@ const MODULE_ID = "vurs-pf2e";
 const RULE_KEY = "Healing Effectiveness";
 const ROLL_MESSAGE_WRAPPER = Symbol.for(`${MODULE_ID}.healingEffectivenessRollMessageWrapper`);
 const CHAT_CREATE_WRAPPER = Symbol.for(`${MODULE_ID}.healingEffectivenessChatCreateWrapper`);
+const REDUCTION_ACTOR_OPTION = "vurs:healing-effectiveness-reduction-actor";
 const activeHealingParams = new WeakSet();
 const damageHandlers = globalThis[Symbol.for(`${MODULE_ID}.applyDamageHandlers`)] ??= new Set();
 let HealingEffectivenessRuleElement = null;
@@ -319,6 +320,25 @@ function applyHealingEffectivenessToRoll(roll, actor, messageData) {
 	roll._total = originalRollTotal + Math.max(-baseHealing, total);
 	roll._formula = `{${pool?.terms.join(", ") ?? roll.formula}}`;
 	roll.options.vursHealingEffectivenessApplied = true;
+	if (
+		typeof actor?.uuid === "string" &&
+		sources.some(source => source.bonus < 0)
+	) {
+		roll.options[REDUCTION_ACTOR_OPTION] = actor.uuid;
+		foundry.utils.setProperty(
+			messageData,
+			`flags.${MODULE_ID}.healingEffectivenessReductionActorUuid`,
+			actor.uuid
+		);
+		const contextOptions = foundry.utils.getProperty(
+			messageData,
+			"flags.pf2e.context.options"
+		);
+		const options = Array.isArray(contextOptions) ? contextOptions : [];
+		const option = `${REDUCTION_ACTOR_OPTION}:${actor.uuid}`;
+		if (!options.includes(option)) options.push(option);
+		foundry.utils.setProperty(messageData, "flags.pf2e.context.options", options);
+	}
 	return sources;
 }
 
@@ -338,19 +358,53 @@ function getHealingApplicationContext(healingRoll, params, actor) {
 	}
 
 	const itemUuid = params.item?.uuid;
+	let sourceMessage = null;
 	if (itemUuid) {
-		const sourceMessage = [...(game.messages?.contents ?? [])]
-			.filter(message => message.item?.uuid === itemUuid)
+		sourceMessage = [...(game.messages?.contents ?? [])]
+			.filter(message =>
+				message.item?.uuid === itemUuid ||
+				message.flags?.pf2e?.origin?.uuid === itemUuid ||
+				message.flags?.pf2e?.origin?.itemUuid === itemUuid
+			)
 			.filter(message => message.rolls?.some(roll =>
 				roll.instances?.some(instance => instance.kinds?.has?.("healing"))
 			))
 			.sort((left, right) => right.timestamp - left.timestamp)[0];
-		const context = sourceMessage?.flags?.[game.system.id]?.context;
-		for (const selector of context?.domains ?? []) selectors.add(selector);
-		for (const option of context?.options ?? []) rollOptions.add(option);
 	}
+	sourceMessage ??= findHealingSourceMessage(healingRoll);
+	const context = sourceMessage?.flags?.[game.system.id]?.context;
+	for (const selector of context?.domains ?? []) selectors.add(selector);
+	for (const option of context?.options ?? []) rollOptions.add(option);
 
-	return { rollOptions, selectors };
+	return {
+		rollOptions,
+		selectors,
+		reductionActorUuid: sourceMessage?.flags?.[MODULE_ID]?.healingEffectivenessReductionActorUuid
+	};
+}
+
+function findHealingSourceMessage(healingRoll) {
+	if (!healingRoll || typeof healingRoll !== "object") return null;
+	const rollId = healingRoll.id ?? healingRoll._id;
+	const rollInstances = getHealingRollInstances(healingRoll);
+
+	return [...(game.messages?.contents ?? [])]
+		.filter(message =>
+			message.rolls?.some(roll =>
+				getHealingRollInstances(roll).length > 0 &&
+				(roll === healingRoll ||
+					(rollId && (roll.id ?? roll._id) === rollId) ||
+					(roll.total === healingRoll.total &&
+						roll.formula === healingRoll.formula &&
+						rollInstances.length > 0 &&
+						rollInstances.every((instance, index) => {
+							const candidate = getHealingRollInstances(roll)[index];
+							return candidate?.total === instance.total &&
+								candidate.formula === instance.formula;
+						})))
+			)
+		)
+		.sort((left, right) => right.timestamp - left.timestamp)[0] ?? null;
 }
 
 async function applyReceivedHealingEffectiveness(actor, wrapped, args) {
@@ -370,7 +424,16 @@ async function applyReceivedHealingEffectiveness(actor, wrapped, args) {
 
 	activeHealingParams.add(params);
 	try {
-		const { rollOptions, selectors } = getHealingApplicationContext(healingRoll, params, actor);
+		const { rollOptions, selectors, reductionActorUuid } =
+			getHealingApplicationContext(healingRoll, params, actor);
+		if (
+			reductionActorUuid === actor.uuid ||
+			healingRoll?.options?.[REDUCTION_ACTOR_OPTION] === actor.uuid ||
+			params.rollOptions?.has?.(`${REDUCTION_ACTOR_OPTION}:${actor.uuid}`) ||
+			params.rollOptions?.includes?.(`${REDUCTION_ACTOR_OPTION}:${actor.uuid}`)
+		) {
+			return await wrapped(...args);
+		}
 		const { total, sources } = getHealingEffectiveness(
 			actor,
 			Math.abs(damage),
