@@ -175,6 +175,8 @@ for (const hook of ["createItem", "updateItem", "deleteItem"]) {
 }
 Hooks.on("updateItem", refreshBrokenStateFromItem);
 Hooks.on("updateCombat", refreshCooldownChargeUpStateForOpenSheets);
+Hooks.on("createCombat", refreshCooldownChargeUpStateForOpenSheets);
+Hooks.on("deleteCombat", refreshCooldownChargeUpStateForOpenSheets);
 // Register this before the first ApplicationV2 render. The builder may be
 // opened before ready-time actor preparation finishes.
 
@@ -939,7 +941,8 @@ function applyCooldownChargeUpState(root, actor) {
 			.map(effect => effect.getFlag?.("vurs-pf2e", "sourceItemUuid"))
 			.filter(Boolean)
 	);
-	const currentRound = game.combat?.started ? game.combat.round : 0;
+	const combat = game.combat;
+	const currentRound = combat?.started ? combat.round : 0;
 	for (const { element, item } of getDisableableActionItems(root, actor)) {
 		const traits = foundry.utils.getProperty(item, "system.traits.value");
 		const chargeUpTrait = Array.isArray(traits)
@@ -950,7 +953,7 @@ function applyCooldownChargeUpState(root, actor) {
 		setConditionDisabled(
 			element,
 			"chargeUp",
-			Number.isInteger(chargeUpRound) && currentRound <= chargeUpRound
+			Boolean(combat) && Number.isInteger(chargeUpRound) && currentRound <= chargeUpRound
 		);
 	}
 }

@@ -9,6 +9,7 @@ const CHAT_CREATE_WRAPPER = Symbol.for(`${MODULE_ID}.healingEffectivenessChatCre
 const REDUCTION_ACTOR_OPTION = "vurs:healing-effectiveness-reduction-actor";
 const activeHealingParams = new WeakSet();
 const damageHandlers = globalThis[Symbol.for(`${MODULE_ID}.applyDamageHandlers`)] ??= new Set();
+let healingModifierTermConstructors = null;
 let HealingEffectivenessRuleElement = null;
 
 function registerHealingEffectivenessLocalization() {
@@ -207,14 +208,18 @@ function getHealingRollInstances(roll) {
 		: [];
 }
 
+function hasHealingEffectivenessRules(actor) {
+	return actor?.rules?.some(rule => rule.key === RULE_KEY && !rule.ignored) ?? false;
+}
+
 function getRollActor(messageData) {
-	const actorId = messageData?.flags?.pf2e?.context?.actor ??
+	const actorId = messageData?.flags?.[game.system.id]?.context?.actor ??
 		messageData?.speaker?.actor;
 	return typeof actorId === "string" ? game.actors?.get(actorId) ?? null : null;
 }
 
 function getHealingRollContext(roll, messageData, actor) {
-	const context = messageData?.flags?.pf2e?.context ?? {};
+	const context = messageData?.flags?.[game.system.id]?.context ?? {};
 	const actorOptions = actor?.getRollOptions?.("all") ?? [];
 	const selfOptions = actor?.getSelfRollOptions?.() ?? [];
 	const options = new Set([
@@ -233,11 +238,17 @@ function getHealingRollContext(roll, messageData, actor) {
 
 function addHealingRollModifier(instance, amount) {
 	const originalTotal = instance.total;
-	const DamageRoll = CONFIG.Dice?.rolls?.find(rollClass => rollClass.name === "DamageRoll");
-	const template = DamageRoll?.parse("{(1d2+1)[healing]}")?.[0]?.rolls?.[0];
-	const templateGroup = template?.terms?.find(term => term.term);
-	const expressionConstructor = templateGroup?.term?.constructor;
-	const groupConstructor = templateGroup?.constructor;
+	if (!healingModifierTermConstructors) {
+		const DamageRoll = CONFIG.Dice?.rolls?.find(rollClass => rollClass.name === "DamageRoll");
+		const template = DamageRoll?.parse("{(1d2+1)[healing]}")?.[0]?.rolls?.[0];
+		const templateGroup = template?.terms?.find(term => term.term);
+		const expressionConstructor = templateGroup?.term?.constructor;
+		const groupConstructor = templateGroup?.constructor;
+		if (typeof expressionConstructor === "function" && typeof groupConstructor === "function") {
+			healingModifierTermConstructors = { expressionConstructor, groupConstructor };
+		}
+	}
+	const { expressionConstructor, groupConstructor } = healingModifierTermConstructors ?? {};
 	if (typeof expressionConstructor !== "function" || typeof groupConstructor !== "function") {
 		console.error(`${MODULE_ID} | Could not add ${RULE_KEY} to the healing roll: PF2E roll terms are unavailable`);
 		return false;
@@ -283,7 +294,11 @@ function appendHealingModifierLabels(flavor, sources) {
 }
 
 function applyHealingEffectivenessToRoll(roll, actor, messageData) {
-	if (roll.options?.vursHealingEffectivenessApplied) return [];
+	const options = roll.options ??= {};
+	if (options.vursHealingEffectivenessProcessed || options.vursHealingEffectivenessApplied) return [];
+	options.vursHealingEffectivenessProcessed = true;
+	if (!hasHealingEffectivenessRules(actor)) return [];
+
 	const instances = getHealingRollInstances(roll);
 	if (instances.length === 0) return [];
 
@@ -319,12 +334,12 @@ function applyHealingEffectivenessToRoll(roll, actor, messageData) {
 	}
 	roll._total = originalRollTotal + Math.max(-baseHealing, total);
 	roll._formula = `{${pool?.terms.join(", ") ?? roll.formula}}`;
-	roll.options.vursHealingEffectivenessApplied = true;
+	options.vursHealingEffectivenessApplied = true;
 	if (
 		typeof actor?.uuid === "string" &&
 		sources.some(source => source.bonus < 0)
 	) {
-		roll.options[REDUCTION_ACTOR_OPTION] = actor.uuid;
+		options[REDUCTION_ACTOR_OPTION] = actor.uuid;
 		foundry.utils.setProperty(
 			messageData,
 			`flags.${MODULE_ID}.healingEffectivenessReductionActorUuid`,
@@ -332,12 +347,12 @@ function applyHealingEffectivenessToRoll(roll, actor, messageData) {
 		);
 		const contextOptions = foundry.utils.getProperty(
 			messageData,
-			"flags.pf2e.context.options"
+			`flags.${game.system.id}.context.options`
 		);
 		const options = Array.isArray(contextOptions) ? contextOptions : [];
 		const option = `${REDUCTION_ACTOR_OPTION}:${actor.uuid}`;
 		if (!options.includes(option)) options.push(option);
-		foundry.utils.setProperty(messageData, "flags.pf2e.context.options", options);
+		foundry.utils.setProperty(messageData, `flags.${game.system.id}.context.options`, options);
 	}
 	return sources;
 }
@@ -442,17 +457,24 @@ async function applyReceivedHealingEffectiveness(actor, wrapped, args) {
 	const healingRoll = params.damage;
 	const damage = typeof healingRoll === "number" ? healingRoll : healingRoll?.total;
 	if (typeof damage !== "number" || damage >= 0) return wrapped(...args);
+	const reductionOption = `${REDUCTION_ACTOR_OPTION}:${actor.uuid}`;
+	if (
+		healingRoll?.options?.[REDUCTION_ACTOR_OPTION] === actor.uuid ||
+		params.rollOptions?.has?.(reductionOption) ||
+		params.rollOptions?.includes?.(reductionOption)
+	) {
+		return wrapped(...args);
+	}
+
+	if (!actor.rules?.some(rule => rule.key === RULE_KEY && !rule.ignored)) {
+		return wrapped(...args);
+	}
 
 	activeHealingParams.add(params);
 	try {
 		const { rollOptions, selectors, reductionActorUuid } =
 			getHealingApplicationContext(healingRoll, params, actor);
-		if (
-			reductionActorUuid === actor.uuid ||
-			healingRoll?.options?.[REDUCTION_ACTOR_OPTION] === actor.uuid ||
-			params.rollOptions?.has?.(`${REDUCTION_ACTOR_OPTION}:${actor.uuid}`) ||
-			params.rollOptions?.includes?.(`${REDUCTION_ACTOR_OPTION}:${actor.uuid}`)
-		) {
+		if (reductionActorUuid === actor.uuid) {
 			return await wrapped(...args);
 		}
 		const { total, sources } = getHealingEffectiveness(
@@ -492,6 +514,12 @@ function installHealingEffectivenessRollWrapper() {
 	}
 
 	DamageRoll.prototype.toMessage = async function (messageData = {}, options = {}) {
+		const actor = getRollActor(messageData);
+		const hasHealingInstance = this.instances?.some(instance => instance.kinds?.has?.("healing"));
+		if (!actor || !hasHealingInstance || !hasHealingEffectivenessRules(actor)) {
+			return originalToMessage.call(this, messageData, options);
+		}
+
 		if (!this._evaluated) {
 			let messageMode = options.messageMode;
 			if (!messageMode && options.rollMode) {
@@ -501,12 +529,9 @@ function installHealingEffectivenessRollWrapper() {
 				allowInteractive: (messageMode ?? game.settings.get("core", "messageMode")) !== "blind"
 			});
 		}
-		const actor = getRollActor(messageData);
-		if (actor) {
-			const sources = applyHealingEffectivenessToRoll(this, actor, messageData);
-			if (sources.length > 0) {
-				messageData.flavor = appendHealingModifierLabels(messageData.flavor, sources);
-			}
+		const sources = applyHealingEffectivenessToRoll(this, actor, messageData);
+		if (sources.length > 0) {
+			messageData.flavor = appendHealingModifierLabels(messageData.flavor, sources);
 		}
 		return originalToMessage.call(this, messageData, options);
 	};
