@@ -323,3 +323,36 @@ body.vurs-disabled-features-unenforced .tab.character .subsection.speeds:hover::
 body.vurs-disabled-features-unenforced .sidebar .subsection.speeds:hover::after {
   display: none;
 }
+
+.actions-list > .item:is([data-vurs-cooldown="true"], [data-vurs-charge-up="true"]),
+.feats-list [data-item-id]:is([data-vurs-cooldown="true"], [data-vurs-charge-up="true"]),
+.spell-list > .spell:is([data-vurs-cooldown="true"], [data-vurs-charge-up="true"]) {
+  position: relative;
+}
+
+.actions-list > .item:is([data-vurs-cooldown="true"], [data-vurs-charge-up="true"]) > *,
+.feats-list [data-item-id]:is([data-vurs-cooldown="true"], [data-vurs-charge-up="true"]) > *,
+.spell-list > .spell:is([data-vurs-cooldown="true"], [data-vurs-charge-up="true"]) > * {
+  filter: blur(2px);
+}
+
+.actions-list > .item:is([data-vurs-cooldown="true"], [data-vurs-charge-up="true"])::after,
+.feats-list [data-item-id]:is([data-vurs-cooldown="true"], [data-vurs-charge-up="true"])::after,
+.spell-list > .spell:is([data-vurs-cooldown="true"], [data-vurs-charge-up="true"])::after {
+  align-items: center;
+  backdrop-filter: blur(3px);
+  background: rgba(25, 25, 25, 0.24);
+  color: white;
+  content: attr(data-vurs-condition-label);
+  display: flex;
+  font-size: 0.8rem;
+  font-weight: 700;
+  inset: 0;
+  justify-content: center;
+  letter-spacing: 0.08em;
+  pointer-events: none;
+  position: absolute;
+  text-shadow: 0 1px 3px black;
+  text-transform: uppercase;
+  z-index: 2;
+}

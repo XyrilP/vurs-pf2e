@@ -1,4 +1,8 @@
 import { registerCheckRollWrapper } from "./checkRollWrappers.js";
+import {
+	getRuleElementPredicateOptions,
+	resolveRuleElementValue
+} from "./ruleElementResolvers.js";
 import { MODIFIER_TYPES, selectTypedModifiers } from "./typedModifiers.js";
 
 const MODULE_ID = "vurs-pf2e";
@@ -32,6 +36,17 @@ function registerCriticalRateRuleElement({ quiet = false } = {}) {
 	}
 
 	CriticalRateRuleElement = class CriticalRateRuleElement extends RuleElement {
+		resolveValue(value, fallback = 0, options = {}) {
+			return resolveRuleElementValue(
+				this,
+				(value, fallbackValue, resolveOptions) =>
+					super.resolveValue(value, fallbackValue, resolveOptions),
+				value,
+				fallback,
+				options
+			);
+		}
+
 		static defineSchema() {
 			const fields = foundry.data.fields;
 			return {
@@ -64,8 +79,7 @@ function registerCriticalRateRuleElement({ quiet = false } = {}) {
 				predicate ??= new Predicate(
 					this.resolveInjectedProperties(foundry.utils.deepClone([...(this.predicate ?? [])]))
 				);
-				const options = rollOptions instanceof Set ? [...rollOptions] : rollOptions ?? [];
-				return predicate.test([...options, ...this.item.getRollOptions("parent")]);
+				return predicate.test(getRuleElementPredicateOptions(this.item, rollOptions));
 			};
 
 			(this.actor.synthetics.criticalRates ??= {})[selector] ??= [];
@@ -113,7 +127,8 @@ function getCriticalProtection(actor, { domains, rollOptions, total, dc, natural
 	options.add(`check:total:delta:${total - dc}`);
 
 	return selectTypedModifiers(protections.filter(protection =>
-		!protection.definition || protection.definition.test(options)
+		protection.test?.(options) ??
+			(!protection.definition || protection.definition.test(options))
 	));
 }
 

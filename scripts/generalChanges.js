@@ -171,8 +171,10 @@ Hooks.on("canvasReady", () => {
 });
 for (const hook of ["createItem", "updateItem", "deleteItem"]) {
 	Hooks.on(hook, syncVursConditionFlagsFromItem);
+	Hooks.on(hook, refreshCooldownChargeUpStateFromItem);
 }
 Hooks.on("updateItem", refreshBrokenStateFromItem);
+Hooks.on("updateCombat", refreshCooldownChargeUpStateForOpenSheets);
 // Register this before the first ApplicationV2 render. The builder may be
 // opened before ready-time actor preparation finishes.
 
@@ -484,6 +486,7 @@ Hooks.on("updateActor", (actor, changes, options = {}) => {
 		applyActingStatusState(root, actor, "petrified");
 		applyActingStatusState(root, actor, "stunned");
 		applyBrokenState(root, actor);
+		applyCooldownChargeUpState(root, actor);
 
 		// Refresh only applications already identified as VURS actor sheets.
 		if (
@@ -560,6 +563,7 @@ function applyActorSheetPresentation(app, element) {
 	applyActingStatusState(root, actor, "petrified");
 	applyActingStatusState(root, actor, "stunned");
 	applyBrokenState(root, actor);
+	applyCooldownChargeUpState(root, actor);
 	replaceVursPlayResourceTokens(root, actor);
 	replaceVursPlayCostTokensOnActorSheet(root, actor);
 	if (!root.dataset.vursPlayResourceTokenObserver) {
@@ -581,6 +585,7 @@ function applyActorSheetPresentation(app, element) {
 			applyActingStatusState(root, actor, "petrified");
 			applyActingStatusState(root, actor, "stunned");
 			applyBrokenState(root, actor);
+			applyCooldownChargeUpState(root, actor);
 			replaceVursPlayResourceTokens(root, actor);
 			replaceVursPlayCostTokensOnActorSheet(root, actor);
 		});
@@ -928,6 +933,70 @@ function applyBrokenState(root, actor) {
 	}
 }
 
+function applyCooldownChargeUpState(root, actor) {
+	const cooldownItemUuids = new Set(
+		(actor.itemTypes?.effect ?? [])
+			.map(effect => effect.getFlag?.("vurs-pf2e", "sourceItemUuid"))
+			.filter(Boolean)
+	);
+	const currentRound = game.combat?.started ? game.combat.round : 0;
+	for (const { element, item } of getDisableableActionItems(root, actor)) {
+		const traits = foundry.utils.getProperty(item, "system.traits.value");
+		const chargeUpTrait = Array.isArray(traits)
+			? traits.find(trait => /^charge-up-\d+$/.test(trait))
+			: null;
+		const chargeUpRound = chargeUpTrait ? Number(chargeUpTrait.match(/\d+$/)?.[0]) : null;
+		setConditionDisabled(element, "cooldown", cooldownItemUuids.has(item.uuid));
+		setConditionDisabled(
+			element,
+			"chargeUp",
+			Number.isInteger(chargeUpRound) && currentRound <= chargeUpRound
+		);
+	}
+}
+
+function getDisableableActionItems(root, actor) {
+	const itemSelector = actor.isOfType?.("character") || actor.type === "character"
+		? [
+			'.tab.actions[data-tab="actions"] .actions-list > .item[data-item-id]',
+			'.tab.feats[data-tab="feats"] .feats-list [data-item-id]',
+			'.tab.spellcasting[data-tab="spellcasting"] .spell-list > .spell[data-item-id]'
+		].join(", ")
+		: [
+			".actions.section-container .actions-list > .item[data-item-id]",
+			".passives.section-container .actions-list > .item[data-item-id]",
+			'.tab.spells[data-tab="spells"] .spell-list > .spell[data-item-id]'
+		].join(", ");
+
+	return [...root.querySelectorAll(itemSelector)].flatMap(element => {
+		const item = actor.items?.get(element.dataset.itemId);
+		return item ? [{ element, item }] : [];
+	});
+}
+
+function refreshCooldownChargeUpStateFromItem(item) {
+	const actor = item?.actor ?? item?.parent;
+	if (!isSupportedVursActor(actor)) return;
+	refreshCooldownChargeUpState(actor);
+}
+
+function refreshCooldownChargeUpStateForOpenSheets() {
+	const actors = new Set([
+		...(game.actors?.contents ?? []),
+		...(game.combat?.combatants?.contents ?? []).map(combatant => combatant.actor),
+		...(canvas.tokens?.placeables ?? []).map(token => token.actor)
+	].filter(Boolean));
+	for (const actor of actors) refreshCooldownChargeUpState(actor);
+}
+
+function refreshCooldownChargeUpState(actor) {
+	if (!isSupportedVursActor(actor)) return;
+	for (const app of Object.values(actor.apps ?? {})) {
+		const root = app?.element instanceof HTMLElement ? app.element : app?.element?.[0];
+		if (root) applyCooldownChargeUpState(root, actor);
+	}
+}
+
 function itemIgnoresBroken(item) {
 	const otherTags = [
 		foundry.utils.getProperty(item, "_source.system.traits.otherTags"),
@@ -1070,9 +1139,9 @@ function ruleEnablesVursCondition(rule, actor, condition) {
 function setConditionDisabled(element, condition, isDisabled, disableInteraction = true) {
 	if (!element) return;
 	element.dataset[`vurs${condition[0].toUpperCase()}${condition.slice(1)}`] = String(isDisabled);
-	const activeConditions = ["Cursed", "Muted", "Disarmed", "Silenced", "Confused", "Fatigued", "Rooted", "Immobilized", "Incapacitated", "Paralyzed", "Petrified", "Prone", "Restrained", "Staggered", "Stunned", "Unconscious", "CantAct", "Broken"]
+	const activeConditions = ["Cursed", "Muted", "Disarmed", "Silenced", "Confused", "Fatigued", "Rooted", "Immobilized", "Incapacitated", "Paralyzed", "Petrified", "Prone", "Restrained", "Staggered", "Stunned", "Unconscious", "CantAct", "Broken", "Cooldown", "ChargeUp"]
 		.filter(name => element.dataset[`vurs${name}`] === "true")
-		.map(name => name === "CantAct" ? "Can't Act" : name);
+		.map(name => name === "CantAct" ? "Can't Act" : name === "ChargeUp" ? "Charge Up" : name);
 	element.dataset.vursConditionLabel = activeConditions.join(" · ");
 	const disabled = areDisabledFeaturesEnforced() && disableInteraction && activeConditions.length > 0;
 	element.inert = disabled;

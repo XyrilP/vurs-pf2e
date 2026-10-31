@@ -7,6 +7,10 @@ import {
 	queueDamageTransactionRequest,
 	registerDamageTransactionFinalizer
 } from "./lifesteal.js";
+import {
+	resolveRuleElementValue,
+	testRuleElementPredicate
+} from "./ruleElementResolvers.js";
 
 const MODULE_ID = "vurs-pf2e";
 const RULE_KEY = "Damage Return";
@@ -42,6 +46,17 @@ function registerDamageReturnRuleElement({ quiet = false } = {}) {
 	}
 
 	DamageReturnRuleElement = class DamageReturnRuleElement extends RuleElement {
+		resolveValue(value, fallback = 0, options = {}) {
+			return resolveRuleElementValue(
+				this,
+				(value, fallbackValue, resolveOptions) =>
+					super.resolveValue(value, fallbackValue, resolveOptions),
+				value,
+				fallback,
+				options
+			);
+		}
+
 		static defineSchema() {
 			const fields = foundry.data.fields;
 			return {
@@ -129,7 +144,7 @@ function getDamageReturnAmount(actor, damageBeforeReduction, damageAfterReductio
 			rule.key !== RULE_KEY ||
 			rule.ignored ||
 			!selectorMatches ||
-			!(rule.predicate?.test?.(rollOptions) ?? true)
+			!testRuleElementPredicate(rule, rollOptions)
 		) {
 			continue;
 		}

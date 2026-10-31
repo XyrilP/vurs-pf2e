@@ -1,3 +1,9 @@
+import { getLifestealHealingEffectiveness } from "./healingEffectiveness.js";
+import {
+	resolveRuleElementValue,
+	testRuleElementPredicate
+} from "./ruleElementResolvers.js";
+
 const MODULE_ID = "vurs-pf2e";
 const RULE_KEY = "Lifesteal";
 const registeredDamageTargets = new Set();
@@ -263,7 +269,9 @@ function installDamageTransactionHooks() {
 						pendingEffect.hidden = true;
 					}
 					pendingEffect.appliedDamage = foundry.utils.deepClone(appliedDamage);
-					transaction.effects.push(pendingEffect);
+					if (!transaction.effects.includes(pendingEffect)) {
+						transaction.effects.push(pendingEffect);
+					}
 				}
 				return false;
 			}
@@ -368,10 +376,12 @@ async function finalizeLifestealHealing(transaction) {
 		const healing = requests.reduce((total, request) => total + request.healing, 0);
 		const sources = requests.flatMap(request => request.sources);
 		const modifiers = [...new Set(requests.flatMap(request => request.modifiers))];
+		const healingEffectiveness = requests.flatMap(request => request.healingEffectiveness ?? []);
 		await runDamageTransactionActorOperation(transaction.rootParams, attacker, () =>
 			healDamageDealer(attacker, healing, transaction.rootParams, sources, {
 				findCard: false,
-				modifiers
+				modifiers,
+				healingEffectiveness
 			})
 		);
 	}));
@@ -411,6 +421,17 @@ function registerLifestealRuleElement({ quiet = false } = {}) {
 	}
 
 	LifestealRuleElement = class LifestealRuleElement extends RuleElement {
+		resolveValue(value, fallback = 0, options = {}) {
+			return resolveRuleElementValue(
+				this,
+				(value, fallbackValue, resolveOptions) =>
+					super.resolveValue(value, fallbackValue, resolveOptions),
+				value,
+				fallback,
+				options
+			);
+		}
+
 		static defineSchema() {
 			const fields = foundry.data.fields;
 			return {
@@ -591,7 +612,7 @@ function getLifestealHealing(attacker, damageRoll, damage, rollOptions, selector
 			rule.key !== RULE_KEY ||
 			rule.ignored ||
 			!selectorMatches ||
-			!(rule.predicate?.test?.(rollOptions) ?? true)
+			!testRuleElementPredicate(rule, rollOptions)
 		) {
 			continue;
 		}
@@ -678,7 +699,7 @@ function findHealingCard(previousMessageIds, attacker) {
 		.sort((left, right) => right.timestamp - left.timestamp)[0] ?? null;
 }
 
-async function addLifestealTooltip(message, sources) {
+async function addLifestealTooltip(message, sources, healingEffectiveness = []) {
 	const container = document.createElement("div");
 	container.innerHTML = message.content ?? "";
 	const damageTaken = container.querySelector(".damage-taken");
@@ -704,6 +725,11 @@ async function addLifestealTooltip(message, sources) {
 		entry.textContent = `${source.label}: +${source.healing}`;
 		tooltip.append(entry);
 	}
+	for (const source of healingEffectiveness) {
+		const entry = document.createElement("li");
+		entry.textContent = `${source.label} ${source.bonus > 0 ? "+" : ""}${source.bonus}`;
+		tooltip.append(entry);
+	}
 	indicator.dataset.tooltipHtml = tooltip.outerHTML;
 	const revertButton = damageTaken.querySelector(".revert-damage");
 	if (revertButton) {
@@ -720,34 +746,60 @@ async function healDamageDealer(
 	amount,
 	parentParams,
 	sources,
-	{ findCard = true, modifiers = [] } = {}
+	{ findCard = true, modifiers = [], healingEffectiveness = [] } = {}
 ) {
 	const hp = attacker?.attributes?.hp;
-	if (!hp || !Number.isFinite(amount) || amount <= 0) return { healing: 0, card: null };
+	if (!hp || !Number.isFinite(amount) || amount < 0) return { healing: 0, card: null };
 
 	const token = attacker.token ?? attacker.getActiveTokens?.()[0]?.document;
 	if (!token || typeof attacker.applyDamage !== "function") {
 		const healing = Math.min(amount, Math.max(hp.max - hp.value, 0));
 		if (healing <= 0) {
-			if (isAtFullHealth(attacker)) {
+			if (isAtFullHealth(attacker) || healingEffectiveness.length > 0) {
 				const effect = {
 					type: "lifesteal",
 					label: sources.map(source => source.label).join(", "),
 					amount: 0,
 					sources: sources.map(source => ({ ...source, healing: 0 })),
+					healingEffectiveness,
 					targetName: attacker.name,
 					actorUuid: attacker.uuid,
 					actorId: attacker.id,
 					tokenId: null,
-					fullHealth: true,
+					fullHealth: isAtFullHealth(attacker),
 					modifiers
 				};
 				const transaction = damageTransactionState.params.get(parentParams);
-				if (transaction) transaction.effects.push(effect);
+				if (transaction && !transaction.effects.includes(effect)) transaction.effects.push(effect);
 			}
 			return { healing: 0, card: null };
 		}
 		await attacker.update({ "system.attributes.hp.value": hp.value + healing });
+		if (healingEffectiveness.length > 0) {
+			const transaction = damageTransactionState.params.get(parentParams);
+			if (transaction) {
+				let remainingHealing = healing;
+				const appliedSources = sources
+					.map(source => {
+						const sourceHealing = Math.min(source.healing, remainingHealing);
+						remainingHealing -= sourceHealing;
+						return { ...source, healing: sourceHealing };
+					})
+					.filter(source => source.healing > 0);
+				transaction.effects.push({
+					type: "lifesteal",
+					label: sources.map(source => source.label).join(", "),
+					amount: healing,
+					sources: appliedSources,
+					healingEffectiveness,
+					targetName: attacker.name,
+					actorUuid: attacker.uuid,
+					actorId: attacker.id,
+					tokenId: null,
+					modifiers
+				});
+			}
+		}
 		return { healing, card: null };
 	}
 
@@ -760,13 +812,23 @@ async function healDamageDealer(
 		label: sources.map(source => source.label).join(", "),
 		amount,
 		sources: sources.map(source => ({ ...source })),
+		healingEffectiveness,
 		targetName: token.name,
 		modifiers
 	};
+	const transaction = damageTransactionState.params.get(parentParams);
+	if (
+		healingEffectiveness.length > 0 &&
+		transaction &&
+		!transaction.effects.includes(effect)
+	) {
+		transaction.effects.push(effect);
+	}
 	await applyDamageInTransaction(attacker, {
 		damage: -amount,
 		token,
-		skipIWR: true
+		skipIWR: true,
+		vursHealingEffectivenessApplied: true
 	}, parentParams, effect);
 	const healthAfter = currentHealthPool(attacker);
 	const healing = healthBefore !== null && healthAfter !== null
@@ -830,15 +892,38 @@ async function applyLifesteal(actor, wrapped, args) {
 		);
 		if (healing <= 0) return result;
 
+		const healingEffectiveness = getLifestealHealingEffectiveness(
+			attacker,
+			healing,
+			rollOptions,
+			selectors
+		);
+		const healingEffectivenessSources = healingEffectiveness.sources.map(source => ({
+			label: source.label,
+			bonus: source.bonus
+		}));
+		const adjustedHealing = healingEffectiveness.total;
 		const modifiers = getDamageModifierBreakdown(params.damage, params.vursDamageModifiers);
 		const transaction = damageTransactionState.params.get(params);
 		if (transaction) {
 			transaction.lifestealRequests ??= [];
-			transaction.lifestealRequests.push({ attacker, healing, sources, modifiers });
+			transaction.lifestealRequests.push({
+				attacker,
+				healing: adjustedHealing,
+				sources,
+				modifiers,
+				healingEffectiveness: healingEffectivenessSources
+			});
 			return result;
 		}
 
-		const { healing: healed, card } = await healDamageDealer(attacker, healing, params, sources, { modifiers });
+		const { healing: healed, card } = await healDamageDealer(
+			attacker,
+			adjustedHealing,
+			params,
+			sources,
+			{ modifiers, healingEffectiveness: healingEffectivenessSources }
+		);
 		if (healed > 0 && card) {
 			let remainingHealing = healed;
 			const appliedSources = sources
@@ -848,7 +933,7 @@ async function applyLifesteal(actor, wrapped, args) {
 					return { ...source, healing };
 				})
 				.filter(source => source.healing > 0);
-			await addLifestealTooltip(card, appliedSources);
+			await addLifestealTooltip(card, appliedSources, healingEffectivenessSources);
 		}
 		return result;
 	} finally {

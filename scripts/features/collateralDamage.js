@@ -8,6 +8,10 @@ import {
 	registerDamageTransactionFinalizer,
 	runDamageTransactionActorOperation
 } from "./lifesteal.js";
+import {
+	resolveRuleElementValue,
+	testRuleElementPredicate
+} from "./ruleElementResolvers.js";
 
 const MODULE_ID = "vurs-pf2e";
 const RULE_KEY = "Collateral Damage";
@@ -59,6 +63,17 @@ function registerCollateralDamageRuleElement({ quiet = false } = {}) {
 	const damageTypes = CONFIG[game.system.id.toUpperCase()]?.damageTypes ?? CONFIG.PF2E?.damageTypes ?? {};
 	const damageTypeChoices = Object.fromEntries([...Object.keys(damageTypes), "untyped"].map(type => [type, type]));
 	CollateralDamageRuleElement = class CollateralDamageRuleElement extends RuleElement {
+		resolveValue(value, fallback = 0, options = {}) {
+			return resolveRuleElementValue(
+				this,
+				(value, fallbackValue, resolveOptions) =>
+					super.resolveValue(value, fallbackValue, resolveOptions),
+				value,
+				fallback,
+				options
+			);
+		}
+
 		static defineSchema() {
 			const fields = foundry.data.fields;
 			return {
@@ -611,21 +626,28 @@ function getDamageEffectTargetKey(effect) {
 }
 
 function getDamageEffectCauses(effect) {
+	const modifiers = [
+		...(effect.modifiers ?? []),
+		...(effect.healingEffectiveness ?? []).map(source =>
+			`${source.label} ${source.bonus > 0 ? "+" : ""}${source.bonus}`
+		)
+	];
 	if (Array.isArray(effect.sources)) {
 		if (effect.fullHealth) {
 			return effect.sources.map(source => ({
 				label: `${source.label || effect.label || getEffectName(effect.type)}: Full HP`,
-				modifiers: effect.modifiers ?? []
+				modifiers
 			}));
 		}
 		const isHealing = effect.appliedDamage?.isHealing || effect.type === "lifesteal";
 		const amountKey = isHealing ? "healing" : "damage";
-		return effect.sources.map(source => ({
+		const causes = effect.sources.map(source => ({
 			label: `${source.label || effect.label || getEffectName(effect.type)} ${
 				isHealing ? "+" : "-"
 			}${source[amountKey] ?? source.amount ?? 0}`,
-			modifiers: effect.modifiers ?? []
+			modifiers
 		}));
+		if (causes.length > 0 || !effect.healingEffectiveness?.length) return causes;
 	}
 	return [{
 		label: `${effect.label || getEffectName(effect.type)} ${
@@ -633,7 +655,7 @@ function getDamageEffectCauses(effect) {
 				? ": Full HP"
 				: `${effect.appliedDamage?.isHealing || effect.type === "lifesteal" ? "+" : "-"}${effect.amount}`
 		}`,
-		modifiers: effect.modifiers ?? []
+		modifiers
 	}];
 }
 
@@ -671,7 +693,8 @@ function getVisibleGroupedDamageEntries(entries, primaryTokenId) {
 			entry.tokenId === primaryTokenId &&
 			getGroupedEntryEffects(entry).every(effect =>
 				(effect.appliedDamage?.isHealing || effect.type === "lifesteal") &&
-				!effect.fullHealth
+				!effect.fullHealth &&
+				!effect.healingEffectiveness?.length
 			)
 		))
 		.filter(({ entry }) => getGroupedEntryEffects(entry).length > 0);
@@ -816,8 +839,9 @@ async function finalizeGroupedDamageCard(transaction) {
 		return;
 	}
 	const effects = transaction.effects.filter(effect =>
-		(effect.appliedDamage || effect.fullHealth) &&
-		!(effect.type === "lifesteal" && effect.amount <= 0 && !effect.fullHealth) &&
+		(effect.appliedDamage || effect.fullHealth || effect.healingEffectiveness?.length > 0) &&
+		!(effect.type === "lifesteal" && effect.amount <= 0 && !effect.fullHealth &&
+			!effect.healingEffectiveness?.length) &&
 		!(effect.tokenId === transaction.rootTokenId && effect.appliedDamage?.isHealing)
 	);
 	if (!effects.length) return;
@@ -1485,7 +1509,7 @@ async function applyCollateralDamage(actor, params, beforeReduction, afterReduct
 			rule.key !== RULE_KEY ||
 			rule.ignored ||
 			!selectorMatches(rule, selectors, rollOptions) ||
-			!(rule.predicate?.test?.(rollOptions) ?? true)
+			!testRuleElementPredicate(rule, rollOptions)
 		) continue;
 
 		const slug = typeof rule.slug === "string" ? rule.slug.trim() : "";

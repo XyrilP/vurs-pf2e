@@ -1,4 +1,8 @@
 import { MODIFIER_TYPES } from "./typedModifiers.js";
+import {
+	getRuleElementPredicateOptions,
+	resolveRuleElementValue
+} from "./ruleElementResolvers.js";
 
 const MODULE_ID = "vurs-pf2e";
 const RULE_KEY = "Critical Protection";
@@ -30,6 +34,17 @@ function registerCriticalProtectionRuleElement({ quiet = false } = {}) {
 	}
 
 	CriticalProtectionRuleElement = class CriticalProtectionRuleElement extends RuleElement {
+		resolveValue(value, fallback = 0, options = {}) {
+			return resolveRuleElementValue(
+				this,
+				(value, fallbackValue, resolveOptions) =>
+					super.resolveValue(value, fallbackValue, resolveOptions),
+				value,
+				fallback,
+				options
+			);
+		}
+
 		static defineSchema() {
 			return {
 				...super.defineSchema(),
@@ -58,11 +73,15 @@ function registerCriticalProtectionRuleElement({ quiet = false } = {}) {
 			const definition = this.definition
 				? this.resolveInjectedProperties(this.definition)
 				: null;
+			const test = definition
+				? options => definition.test(getRuleElementPredicateOptions(this.item, options))
+				: null;
 			(this.actor.synthetics.criticalProtections ??= []).push({
 				value,
 				type,
 				label: this.label || this.item.name,
-				definition
+				definition,
+				test
 			});
 		}
 	};

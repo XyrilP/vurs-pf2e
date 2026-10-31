@@ -501,6 +501,7 @@
 		"scripts/features/criticalRate.js",
 		"scripts/features/criticalProtection.js",
 		"scripts/features/lifesteal.js",
+		"scripts/features/healingEffectiveness.js",
 		"scripts/features/damageReturn.js",
 		"scripts/features/collateralDamage.js",
 		"scripts/generalChanges.js"
