@@ -174,7 +174,7 @@ function normalizeToken(token) {
 	return token?.document ?? token ?? null;
 }
 
-function getTokenCenter(token) {
+export function getTokenCenter(token) {
 	const document = normalizeToken(token);
 	if (!document) return null;
 	const center = document.object?.getCenterPoint?.() ?? document.getCenterPoint?.();
@@ -205,7 +205,7 @@ function getSceneTokenForActor(actor, scene, nearToken) {
 	})[0];
 }
 
-function getPlacementGeometries(placement, sourceToken, targetToken) {
+export function getPlacementGeometries(placement, sourceToken, targetToken) {
 	const sourceCenter = getTokenCenter(sourceToken);
 	const targetCenter = getTokenCenter(targetToken);
 	if (!sourceCenter || !targetCenter) return null;
@@ -535,7 +535,7 @@ function splitAmount(amount, count) {
 	return Array.from({ length: count }, (_, index) => base + (index < remainder ? 1 : 0));
 }
 
-function getTokenDistance(left, right) {
+export function getTokenDistance(left, right) {
 	const from = getTokenCenter(left);
 	const to = getTokenCenter(right);
 	if (!from || !to) return Infinity;
@@ -556,18 +556,30 @@ function getBounceTargets(scene, sourceToken, currentToken, rule, maxDistance, c
 	});
 }
 
-function getRegionForShapes(scene, shapes) {
+function getRegionForShapes(scene, shapes, name = "Collateral Damage") {
 	try {
 		return new CONFIG.Region.documentClass({
-			name: "Collateral Damage",
+			name,
 			shapes: Array.isArray(shapes) ? shapes : [shapes],
 			levels: [canvas.level.id],
 			elevation: { bottom: null, top: null, topInclusive: true }
 		}, { parent: scene });
 	} catch (error) {
-		console.error(`${MODULE_ID} | Could not create temporary ${RULE_KEY} area`, error);
+		console.error(`${MODULE_ID} | Could not create temporary ${name} area`, error);
 		return null;
 	}
+}
+
+export function getTokensInCollateralShape(shape) {
+	const scene = canvas.scene;
+	if (!scene) return [];
+	const region = getRegionForShapes(scene, shape, "Burst-Fire");
+	if (!region) return [];
+	return [...scene.tokens].filter(token =>
+		token.actor?.attributes?.hp &&
+		isTokenCenterInArea(region, token) &&
+		isTokenInAreaLevel(region, token)
+	);
 }
 
 function getEffectName(type) {
@@ -1372,67 +1384,61 @@ function drawOverlay({ id, sceneId, shapes, paths, durationMs, color }, remainin
 	}
 	if (validPaths.length) {
 		const ticker = canvas.app?.ticker;
-		for (const path of validPaths) {
-			const graphics = new PIXI.Graphics();
-			graphics.eventMode = "none";
-			canvas.interface.addChild(graphics);
-			const totalLength = path.slice(1).reduce((total, point, index) => {
-				const previous = path[index];
-				return total + Math.hypot(point.x - previous.x, point.y - previous.y);
-			}, 0);
-			const drawRemainingPath = removedLength => {
-				graphics.clear();
-				graphics.lineStyle({
-					width: Math.max(3, canvas.dimensions.uiScale * 3),
-					color: colorValue,
-					alpha: 0.95
-				});
-				let remainingToRemove = removedLength;
-				let started = false;
+		const graphics = new PIXI.Graphics();
+		graphics.eventMode = "none";
+		canvas.interface.addChild(graphics);
+		const pathLengths = validPaths.map(path =>
+			path.slice(1).reduce((total, point, index) =>
+				total + Math.hypot(point.x - path[index].x, point.y - path[index].y), 0)
+		);
+		const drawPathsFromOrigins = progress => {
+			graphics.clear();
+			graphics.lineStyle({
+				width: Math.max(3, canvas.dimensions.uiScale * 3),
+				color: colorValue,
+				alpha: 0.95
+			});
+			validPaths.forEach((path, pathIndex) => {
+				graphics.moveTo(path[0].x, path[0].y);
+				let remainingToDraw = pathLengths[pathIndex] * progress;
 				for (let index = 1; index < path.length; index++) {
 					const start = path[index - 1];
 					const end = path[index];
 					const segmentLength = Math.hypot(end.x - start.x, end.y - start.y);
-					if (remainingToRemove >= segmentLength) {
-						remainingToRemove -= segmentLength;
+					if (remainingToDraw >= segmentLength) {
+						graphics.lineTo(end.x, end.y);
+						remainingToDraw -= segmentLength;
 						continue;
 					}
-					const segmentStart = remainingToRemove > 0
-						? {
-							x: start.x + (end.x - start.x) * (remainingToRemove / segmentLength),
-							y: start.y + (end.y - start.y) * (remainingToRemove / segmentLength)
-						}
-						: start;
-					remainingToRemove = 0;
-					if (!started) {
-						graphics.moveTo(segmentStart.x, segmentStart.y);
-						started = true;
-					}
-					graphics.lineTo(end.x, end.y);
+					const segmentProgress = segmentLength > 0 ? remainingToDraw / segmentLength : 0;
+					graphics.lineTo(
+						start.x + (end.x - start.x) * segmentProgress,
+						start.y + (end.y - start.y) * segmentProgress
+					);
+					break;
 				}
+			});
+		};
+		let destroyed = false;
+		let animate;
+		const destroyPaths = () => {
+			if (destroyed) return;
+			destroyed = true;
+			if (animate && ticker) ticker.remove(animate);
+			graphics.parent?.removeChild(graphics);
+			graphics.destroy();
+		};
+		destroyers.push(destroyPaths);
+		if (ticker && duration > 0 && pathLengths.some(length => length > 0)) {
+			drawPathsFromOrigins(0);
+			const startTime = performance.now();
+			animate = () => {
+				const progress = Math.min(1, (performance.now() - startTime) / duration);
+				drawPathsFromOrigins(progress);
 			};
-			drawRemainingPath(0);
-
-			let destroyed = false;
-			let animate;
-			const destroyPath = () => {
-				if (destroyed) return;
-				destroyed = true;
-				if (animate && ticker) ticker.remove(animate);
-				graphics.parent?.removeChild(graphics);
-				graphics.destroy();
-			};
-			destroyers.push(destroyPath);
-			if (ticker && duration > 0 && totalLength > 0) {
-				const startTime = performance.now();
-				animate = () => {
-					const progress = Math.min(1, (performance.now() - startTime) / duration);
-					drawRemainingPath(totalLength * progress);
-				};
-				ticker.add(animate);
-			} else if (!ticker) {
-				console.error(`${MODULE_ID} | Could not animate the ${RULE_KEY} bounce path: the canvas ticker is unavailable`);
-			}
+			ticker.add(animate);
+		} else {
+			drawPathsFromOrigins(1);
 		}
 	}
 	if (!destroyers.length) return;
@@ -1482,6 +1488,14 @@ function displayArea(shapes, paths) {
 	};
 	drawOverlay(data);
 	game.socket?.emit(OVERLAY_CHANNEL, data);
+}
+
+export function displayCollateralPaths(paths) {
+	displayArea([], paths);
+}
+
+export function displayCollateralArea(shapes, paths) {
+	displayArea(shapes, paths);
 }
 
 async function applyCollateralDamage(actor, params, beforeReduction, afterReduction) {

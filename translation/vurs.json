@@ -32,6 +32,34 @@
         "Combat": "Encounter",
         "Combats": "Encounters"
     },
+    "VURS": {
+        "BurstFire": {
+            "Title": "Burst-Fire",
+            "RateOfFire": "Rate of Fire",
+            "Recoil": "Recoil",
+            "AtMAP": "at MAP {map}",
+            "Description": "<p><strong>Cost</strong> 2 actions</p><p>Fire an automatic weapon repeatedly. Rate of Fire is 3 + (5 - MAP), to a minimum of 0 shots, and is capped by available ammunition. Each projectile uses the selected Strike's MAP, then increases MAP normally for later projectiles. Each projectile is a separate Strike and uses normal range-increment penalties. Subsequent Strikes and all damage resolve automatically after the first Strike.</p><p>The Recoil Area is a cone aimed at the target, with a distance equal to half the weapon's maximum range. Its spread is 5 degrees plus 5 degrees per Recoil. Recoil is 10 minus the weapon's Bulk (minimum 0), halved and rounded down for a weapon listed as two-handed.</p><p>On a miss, the projectile diverts to the nearest other creature in the cone, including allies, and deals half damage. Each possible secondary target is selected once before the burst cycles back to previously selected targets. A critical miss deals no secondary damage.</p>",
+            "VariantLabel": "Burst-Fire (RoF {shots})",
+            "Warnings": {
+                "SelectTarget": "Select a target to direct the Burst-Fire cone.",
+                "NoSourceToken": "A source token is required to use Burst-Fire.",
+                "InvalidArea": "Could not determine the Burst-Fire cone. Check the weapon's range and the scene grid.",
+                "InvalidMAP": "Could not determine Rate of Fire from the weapon's MAP.",
+                "NoShots": "No Burst-Fire shots are available. Rate of Fire may be 0 or the weapon may have no ammunition.",
+                "AmmoChanged": "Burst-Fire ammunition changed before the projectile could be expended.",
+                "ChatFailed": "Could not create the Burst-Fire chat card.",
+                "DamageFailed": "Could not generate or apply Burst-Fire damage.",
+                "RollFailed": "Burst-Fire stopped because one of its Strikes could not be completed."
+            },
+            "Notes": {
+                "Shot": "Strike {number}: {outcome} — {target}",
+                "NoDamageTarget": "No damage target",
+                "HalfDamage": "Diverted; half damage",
+                "CriticalMiss": "Critical miss; no damage",
+                "NoSecondaryTarget": "No secondary target; no damage"
+            }
+        }
+    },
     "PF2E": {
         "AbilityBoost": "Attribute Boost",
         "AbilityBoostLevels": "Attribute Boost Levels",

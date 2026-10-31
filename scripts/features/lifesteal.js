@@ -45,6 +45,45 @@ export function queueDamageTransactionApplication(parentParams, application) {
 	return queueDamageTransactionRequest(parentParams, "damageApplications", application);
 }
 
+function createDamageTransaction(actor, params) {
+	const rootActor = params.token?.actor ?? actor;
+	return {
+		rootActorUuid: rootActor?.uuid,
+		rootActorId: rootActor?.id,
+		rootTokenId: params.token?.document?.id ?? params.token?.id ?? null,
+		rootMessageId: null,
+		rootMessagePending: false,
+		primaryDamage: null,
+		pending: [],
+		effects: [],
+		rootParams: params,
+		lifestealRequests: []
+	};
+}
+
+export async function runDamageTransaction(actor, rootParams, operation) {
+	if (!actor || !rootParams || typeof rootParams !== "object" || typeof operation !== "function") {
+		throw new TypeError("A damage actor, root parameters, and operation are required");
+	}
+
+	const existingTransaction = damageTransactionState.params.get(rootParams);
+	if (existingTransaction) return operation(rootParams, existingTransaction);
+
+	const transaction = createDamageTransaction(actor, rootParams);
+	damageTransactionState.params.set(rootParams, transaction);
+	damageTransactionState.active.add(transaction);
+	try {
+		return await operation(rootParams, transaction);
+	} finally {
+		try {
+			await finalizeDamageTransaction(transaction);
+		} finally {
+			damageTransactionState.active.delete(transaction);
+			damageTransactionState.params.delete(rootParams);
+		}
+	}
+}
+
 export function runDamageTransactionActorOperation(parentParams, actor, operation) {
 	const transaction = damageTransactionState.params.get(parentParams);
 	if (!transaction) return operation();
@@ -951,20 +990,7 @@ function applyDamageHandlers(actor, wrapped, args) {
 		: null;
 	const isRoot = !transaction;
 	if (isRoot && params && typeof params === "object") {
-		const rootActor = params.token?.actor ?? actor;
-		const rootTokenId = params.token?.document?.id ?? params.token?.id ?? null;
-		transaction = {
-			rootActorUuid: rootActor?.uuid,
-			rootActorId: rootActor?.id,
-			rootTokenId,
-			rootMessageId: null,
-			rootMessagePending: false,
-			primaryDamage: null,
-			pending: [],
-			effects: [],
-			rootParams: params,
-			lifestealRequests: []
-		};
+		transaction = createDamageTransaction(actor, params);
 		damageTransactionState.params.set(params, transaction);
 		damageTransactionState.active.add(transaction);
 	}

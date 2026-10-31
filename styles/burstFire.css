@@ -1,0 +1,13 @@
+.actor.sheet.character section.window-content .crb-style .sheet-body .sheet-content > .tab.active.actions ol.actions-list li.strike .vurs-burst-fire-usages,
+.actor.sheet.attack-popout section.window-content .tab.actions ol.actions-list li.strike .vurs-burst-fire-usages {
+	display: flex;
+	flex-basis: 100%;
+	flex-wrap: wrap;
+	gap: var(--space-4);
+	align-items: flex-start;
+}
+
+.actor.sheet.character section.window-content .crb-style .sheet-body .sheet-content > .tab.active.actions ol.actions-list li.strike .vurs-burst-fire-usages > .alt-usage,
+.actor.sheet.attack-popout section.window-content .tab.actions ol.actions-list li.strike .vurs-burst-fire-usages > .alt-usage {
+	flex: 0 1 auto;
+}

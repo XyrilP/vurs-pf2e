@@ -482,6 +482,7 @@
 		"styles/consolidatedSkills.css",
 		"styles/attackSpeedTooltips.css",
 		"styles/playResources.css",
+		"styles/burstFire.css",
 		"styles/collateralDamage.css",
 		"styles/conditions.css",
 		"styles/moduleSettings.css"
@@ -504,6 +505,7 @@
 		"scripts/features/healingEffectiveness.js",
 		"scripts/features/damageReturn.js",
 		"scripts/features/collateralDamage.js",
+		"scripts/features/burstFire.js",
 		"scripts/generalChanges.js"
 	]
 }

@@ -146,6 +146,28 @@ function getEffectiveAttackSpeedDelta(modifiers, contributions, mapIncreases, ro
 	return adjustedTotal - baseTotal;
 }
 
+export function getEffectiveStrikeMAP(strike, mapIncreases = 1, actorOverride = null) {
+	const penalty = Number(strike?.variants?.[mapIncreases]?.penalty);
+	if (!Number.isFinite(penalty)) return null;
+
+	const actor = actorOverride ?? strike.actor ?? strike.item?.actor ?? strike.item?.parent;
+	if (!actor) return Math.max(0, -penalty);
+	const domains = strike.domains ?? [];
+	const rollOptions = new Set([
+		...(actor.getRollOptions?.(domains) ?? []),
+		...(strike.options ?? []),
+		...(strike.item?.getRollOptions?.("item") ?? [])
+	]);
+	const contributions = getAttackSpeedContributions(actor, domains, rollOptions);
+	const delta = getEffectiveAttackSpeedDelta(
+		strike.modifiers ?? [],
+		contributions,
+		mapIncreases,
+		rollOptions
+	);
+	return Math.max(0, -(penalty + delta));
+}
+
 function getCheckMapModifier(check) {
 	return [...(check?.modifiers ?? [])].reverse().find(modifier =>
 		modifier.slug === "multiple-attack-penalty" ||
