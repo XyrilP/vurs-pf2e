@@ -4,7 +4,7 @@ const processingMessages = new Set();
 const processingItems = new Set();
 
 Hooks.on("createChatMessage", message => {
-  if (!game.user.isGM || game.system.id !== "pf2e" || !game.combat?.started) return;
+  if (!game.user.isGM || !game.system?.id || !game.combat?.started) return;
   if (game.users.activeGM && game.user.id !== game.users.activeGM.id) return;
   void applyCooldownFromMessage(message).catch(error => {
     console.error(`${MODULE_ID} | Failed to apply cooldown from chat message ${message.id}`, error);
@@ -18,7 +18,8 @@ async function applyCooldownFromMessage(message) {
   processingMessages.add(messageId);
 
   try {
-    const itemUuid = message.flags?.pf2e?.origin?.uuid;
+    const origin = message.flags?.[game.system.id]?.origin;
+    const itemUuid = origin?.uuid ?? origin?.itemUuid;
     if (!itemUuid) return;
 
     const speaker = message.speaker;

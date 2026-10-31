@@ -358,20 +358,7 @@ function getHealingApplicationContext(healingRoll, params, actor) {
 	}
 
 	const itemUuid = params.item?.uuid;
-	let sourceMessage = null;
-	if (itemUuid) {
-		sourceMessage = [...(game.messages?.contents ?? [])]
-			.filter(message =>
-				message.item?.uuid === itemUuid ||
-				message.flags?.pf2e?.origin?.uuid === itemUuid ||
-				message.flags?.pf2e?.origin?.itemUuid === itemUuid
-			)
-			.filter(message => message.rolls?.some(roll =>
-				roll.instances?.some(instance => instance.kinds?.has?.("healing"))
-			))
-			.sort((left, right) => right.timestamp - left.timestamp)[0];
-	}
-	sourceMessage ??= findHealingSourceMessage(healingRoll);
+	const sourceMessage = findHealingSourceMessage(healingRoll, itemUuid);
 	const context = sourceMessage?.flags?.[game.system.id]?.context;
 	for (const selector of context?.domains ?? []) selectors.add(selector);
 	for (const option of context?.options ?? []) rollOptions.add(option);
@@ -383,28 +370,62 @@ function getHealingApplicationContext(healingRoll, params, actor) {
 	};
 }
 
-function findHealingSourceMessage(healingRoll) {
-	if (!healingRoll || typeof healingRoll !== "object") return null;
-	const rollId = healingRoll.id ?? healingRoll._id;
-	const rollInstances = getHealingRollInstances(healingRoll);
+function findHealingSourceMessage(healingRoll, itemUuid) {
+	const hasHealingRollData = healingRoll !== null && typeof healingRoll === "object";
+	if (!hasHealingRollData && !itemUuid) return null;
 
-	return [...(game.messages?.contents ?? [])]
-		.filter(message =>
-			message.rolls?.some(roll =>
-				getHealingRollInstances(roll).length > 0 &&
+	const rollId = hasHealingRollData ? (healingRoll.id ?? healingRoll._id) : null;
+	const rollInstances = hasHealingRollData
+		? getHealingRollInstances(healingRoll)
+		: [];
+	let latestItemMessage = null;
+	let latestRollMessage = null;
+
+	for (const message of game.messages?.contents ?? []) {
+		const itemMatches = itemUuid && (
+			message.item?.uuid === itemUuid ||
+			message.flags?.[game.system.id]?.origin?.uuid === itemUuid ||
+			message.flags?.[game.system.id]?.origin?.itemUuid === itemUuid
+		);
+		let messageHasHealingRoll = false;
+
+		for (const roll of message.rolls ?? []) {
+			if (itemMatches) {
+				if (roll.instances?.some(instance => instance.kinds?.has?.("healing"))) {
+					messageHasHealingRoll = true;
+				}
+				continue;
+			}
+			if (!hasHealingRollData) continue;
+
+			const candidateInstances = getHealingRollInstances(roll);
+			if (candidateInstances.length === 0) continue;
+
+			if (
 				(roll === healingRoll ||
 					(rollId && (roll.id ?? roll._id) === rollId) ||
 					(roll.total === healingRoll.total &&
 						roll.formula === healingRoll.formula &&
 						rollInstances.length > 0 &&
 						rollInstances.every((instance, index) => {
-							const candidate = getHealingRollInstances(roll)[index];
+							const candidate = candidateInstances[index];
 							return candidate?.total === instance.total &&
 								candidate.formula === instance.formula;
-						})))
-			)
-		)
-		.sort((left, right) => right.timestamp - left.timestamp)[0] ?? null;
+						}))
+				) &&
+				(!latestRollMessage || message.timestamp > latestRollMessage.timestamp)
+			) {
+				latestRollMessage = message;
+			}
+		}
+
+		if (itemMatches && messageHasHealingRoll &&
+			(!latestItemMessage || message.timestamp > latestItemMessage.timestamp)) {
+			latestItemMessage = message;
+		}
+	}
+
+	return latestItemMessage ?? latestRollMessage;
 }
 
 async function applyReceivedHealingEffectiveness(actor, wrapped, args) {
