@@ -13,6 +13,7 @@ const STYLE_RANK_PHRASES = Object.freeze({
 const styleRankPhraseCache = new Map();
 const playResourceRenderRequests = new WeakMap();
 const playResourceRenderSignatures = new WeakMap();
+const playResourceDefaultUpdates = new WeakMap();
 const PLAY_RESOURCE_DEFINITIONS = Object.freeze([
 	{ key: "staminaPoints", label: "Stamina Points", icon: true },
 	{ key: "actionPoints", label: "Action Points", icon: true },
@@ -191,7 +192,9 @@ async function renderVursPlayResourcesNow(root, actor) {
 		return;
 	}
 
-	await ensurePlayResourceMaxDefaults(actor);
+	void ensurePlayResourceMaxDefaults(actor).catch(error =>
+		console.error(`vurs-pf2e | Failed to initialize Play resource defaults for ${actor.name}`, error)
+	);
 	const entries = getPlayResourceEntries(actor);
 
 	if (!entries.length) {
@@ -1461,7 +1464,23 @@ async function applyPlayResourceChanges(root, actor, section, button) {
 	}
 }
 
-async function ensurePlayResourceMaxDefaults(actor) {
+function ensurePlayResourceMaxDefaults(actor) {
+	if (!actor) return Promise.resolve();
+	const pending = playResourceDefaultUpdates.get(actor);
+	if (pending) return pending;
+
+	const update = Promise.resolve()
+		.then(() => updatePlayResourceMaxDefaults(actor))
+		.finally(() => {
+			if (playResourceDefaultUpdates.get(actor) === update) {
+				playResourceDefaultUpdates.delete(actor);
+			}
+		});
+	playResourceDefaultUpdates.set(actor, update);
+	return update;
+}
+
+async function updatePlayResourceMaxDefaults(actor) {
 	if (!actor) return;
 	const updates = {};
 	for (const definition of PLAY_RESOURCE_DEFINITIONS) {
