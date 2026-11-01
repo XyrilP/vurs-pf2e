@@ -3,7 +3,7 @@
 	"title": "Vionheart Universe Roleplaying System for Pf2E/Sf2E",
 	"manifest": "https://raw.githubusercontent.com/XyrilP/vurs-pf2e/refs/heads/main/module.json",
 	"download": "https://github.com/XyrilP/vurs-pf2e/archive/refs/heads/main.zip",
-	"version": "13.7.2",
+	"version": "13.8",
 	"compatibility": {
 		"minimum": "14",
 		"verified": "14",
@@ -87,7 +87,22 @@
 					"longhorn": "Longhorn",
 					"twinhorn": "Twinhorn",
 					"ax-bass": "Ax Bass",
-					"submachine-gun": "Submachine Gun"
+					"micro-submachine-gun": "Micro-Submachine Gun",
+					"submachine-gun": "Submachine Gun",
+					"service-rifle": "Service Rifle",
+					"assault-rifle": "Assault Rifle",
+					"battle-rifle": "Battle Rifle",
+					"semi-auto-pistol": "Semi-Auto Pistol",
+					"automatic-pistol": "Automatic Pistol",
+					"magnum-pistol": "Magnum Pistol",
+					"revolver": "Revolver",
+					"high-bore-revolver": "High-Bore Revolver",
+					"double-barrel-shotgun": "Double-Barrel Shotgun",
+					"pump-action-shotgun": "Pump-Action Shotgun",
+					"semi-auto-shotgun": "Semi-Auto Shotgun",
+					"bolt-action-rifle": "Bolt-Action Rifle",
+					"sniper-rifle": "Sniper Rifle",
+					"marksman-rifle": "Marksman Rifle"
 				},
 				"weaponTraits": {
 					"acquired": {

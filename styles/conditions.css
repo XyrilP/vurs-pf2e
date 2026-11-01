@@ -1,4 +1,4 @@
-.vurs-disarmed-strikes,
+.strikes-list[data-vurs-disarmed="true"],
 .attacks.section-container[data-vurs-disarmed="true"],
 .tab.spellcasting[data-vurs-silenced="true"],
 .tab.spells[data-vurs-silenced="true"],
@@ -37,9 +37,7 @@
 .tab.character .subsection.speeds[data-vurs-prone="true"],
 .sidebar .subsection.speeds[data-vurs-prone="true"],
 .strikes-list[data-vurs-restrained="true"],
-.vurs-disarmed-strikes[data-vurs-restrained="true"],
 .strikes-list[data-vurs-paralyzed="true"],
-.vurs-disarmed-strikes[data-vurs-paralyzed="true"],
 .attacks.section-container[data-vurs-paralyzed="true"],
 .actions-list > .item[data-vurs-paralyzed="true"],
 .spell-list > .spell[data-vurs-paralyzed="true"],
@@ -97,7 +95,7 @@
   position: relative;
 }
 
-.vurs-disarmed-strikes[data-vurs-disarmed="true"] > *,
+.strikes-list[data-vurs-disarmed="true"] > *,
 .attacks.section-container[data-vurs-disarmed="true"] > *,
 .tab.spellcasting[data-vurs-silenced="true"] > *,
 .tab.spells[data-vurs-silenced="true"] > *,
@@ -134,9 +132,7 @@
 .tab.character .subsection.speeds[data-vurs-prone="true"] > *,
 .sidebar .subsection.speeds[data-vurs-prone="true"] > *,
 .strikes-list[data-vurs-restrained="true"] > *,
-.vurs-disarmed-strikes[data-vurs-restrained="true"] > *,
 .strikes-list[data-vurs-paralyzed="true"] > *,
-.vurs-disarmed-strikes[data-vurs-paralyzed="true"] > *,
 .attacks.section-container[data-vurs-paralyzed="true"] > *,
 .actions-list > .item[data-vurs-paralyzed="true"] > *,
 .spell-list > .spell[data-vurs-paralyzed="true"] > *,
@@ -194,7 +190,7 @@
   filter: blur(2px);
 }
 
-.vurs-disarmed-strikes[data-vurs-disarmed="true"]::after,
+.strikes-list[data-vurs-disarmed="true"]::after,
 .attacks.section-container[data-vurs-disarmed="true"]::after,
 .tab.spellcasting[data-vurs-silenced="true"]::after,
 .tab.spells[data-vurs-silenced="true"]::after,
@@ -231,9 +227,7 @@
 .tab.character .subsection.speeds[data-vurs-prone="true"]::after,
 .sidebar .subsection.speeds[data-vurs-prone="true"]::after,
 .strikes-list[data-vurs-restrained="true"]::after,
-.vurs-disarmed-strikes[data-vurs-restrained="true"]::after,
 .strikes-list[data-vurs-paralyzed="true"]::after,
-.vurs-disarmed-strikes[data-vurs-paralyzed="true"]::after,
 .attacks.section-container[data-vurs-paralyzed="true"]::after,
 .actions-list > .item[data-vurs-paralyzed="true"]::after,
 .spell-list > .spell[data-vurs-paralyzed="true"]::after,

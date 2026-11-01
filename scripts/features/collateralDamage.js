@@ -29,8 +29,17 @@ let groupedDamageUndoInstalled = false;
 let elevationDistanceWarningShown = false;
 
 const OVERLAY_CHANNEL = `module.${MODULE_ID}`;
-const OVERLAY_DURATION = 2000;
+const DEFAULT_OVERLAY_DURATION = 2000;
+const MAX_OVERLAY_DURATION = 4000;
+export const DEFAULT_PATH_SPEED_PIXELS_PER_SECOND = 600;
+const PATH_LIFETIME_MS = 2000;
+const MAX_PATH_DELAY_MS = 4000;
 const AREA_TYPES = ["burst", "cone", "cube", "cylinder", "emanation", "line", "ring", "square"];
+
+function logBurstFireCollateral(stage, params, details = {}) {
+	if (!Number.isFinite(params?.vursBurstFireTraceSpeedPixelsPerSecond)) return;
+	console.debug(`${MODULE_ID} | Burst-Fire ${RULE_KEY}: ${stage}`, details);
+}
 
 function registerCollateralDamageLocalization() {
 	const translations = game.i18n?.translations;
@@ -203,6 +212,14 @@ function getSceneTokenForActor(actor, scene, nearToken) {
 		return Math.hypot(leftCenter.x - targetCenter.x, leftCenter.y - targetCenter.y) -
 			Math.hypot(rightCenter.x - targetCenter.x, rightCenter.y - targetCenter.y);
 	})[0];
+}
+
+function getDamageTargetToken(actor, token, scene) {
+	const providedToken = normalizeToken(token);
+	if (providedToken && providedToken.parent === scene && sameActor(providedToken.actor, actor)) {
+		return providedToken;
+	}
+	return getSceneTokenForActor(actor, scene, providedToken);
 }
 
 export function getPlacementGeometries(placement, sourceToken, targetToken) {
@@ -821,7 +838,7 @@ function renderGroupedDamageSection(container, group, wasOpen, sceneId) {
 		primaryRow.append(primaryStatement);
 	}
 	if (primaryStatement) {
-		const isReverted = Boolean(group.primaryTargetReverted || group.primaryReverted);
+		const isReverted = Boolean(group.primaryReverted);
 		primaryStatement.classList.toggle("vurs-nested-damage-reverted", isReverted);
 		primaryStatement.style.textDecorationLine = isReverted ? "line-through" : "";
 	}
@@ -1002,7 +1019,6 @@ async function undoGroupedDamage(message, entryIndex = null) {
 		entry.isReverted = getGroupedEntryEffects(entry).every(effect =>
 			effect.isReverted || !effect.appliedDamage
 		);
-		group.primaryTargetReverted ||= entry.isReverted;
 		await updateGroupedDamageState(message, group);
 		if (error) throw error;
 		return;
@@ -1151,14 +1167,14 @@ function prepareCollateralDamageForTarget(
 	return { actor: target.actor, damageParams, effect, secret, targetName: target.name };
 }
 
-async function applyPreparedCollateralDamage(application, sourceParams) {
+async function applyPreparedCollateralDamage(application, sourceParams, transactionParams) {
 	const { actor, damageParams, effect, secret, targetName } = application;
 	try {
 		const healthBefore = currentHealthPool(actor);
 		collateralDamageApplications.add(damageParams);
 		try {
 			await applySecretDamageCard(actor, secret, () =>
-				applyDamageInTransaction(actor, damageParams, sourceParams, effect)
+				applyDamageInTransaction(actor, damageParams, transactionParams, effect)
 			);
 			const healthAfter = currentHealthPool(actor);
 			if (healthBefore !== null && healthAfter !== null) {
@@ -1174,7 +1190,11 @@ async function applyPreparedCollateralDamage(application, sourceParams) {
 	}
 }
 
-async function applyPreparedCollateralDamageBatch(applications, sourceParams) {
+async function applyPreparedCollateralDamageBatch(
+	applications,
+	sourceParams,
+	transactionParams = sourceParams
+) {
 	const byActor = new Map();
 	for (const application of applications) {
 		const key = application.actor.uuid;
@@ -1184,18 +1204,31 @@ async function applyPreparedCollateralDamageBatch(applications, sourceParams) {
 	}
 	await Promise.all([...byActor.values()].map(async actorApplications => {
 		for (const application of actorApplications) {
-			await runDamageTransactionActorOperation(sourceParams, application.actor, () =>
-				applyPreparedCollateralDamage(application, sourceParams)
+			await runDamageTransactionActorOperation(transactionParams, application.actor, () =>
+				applyPreparedCollateralDamage(application, sourceParams, transactionParams)
 			);
 		}
 	}));
 }
 
-function prepareBounceDamage(rule, scene, sourceToken, primaryToken, maxDistance, amount, damageRoll, sourceParams) {
+function prepareBounceDamage(
+	rule,
+	scene,
+	damageDealerToken,
+	damageOriginToken,
+	maxDistance,
+	amount,
+	damageRoll,
+	sourceParams
+) {
 	const bounceShots = Number(rule.resolveValue(rule.bounceShots ?? 1, 1));
 	const bounceCount = Number(rule.resolveValue(rule.bounceCount ?? 1, 1));
 	const bounceLimit = Number(rule.bounceLimit ?? 1);
 	if (!Number.isFinite(maxDistance) || maxDistance <= 0) {
+		logBurstFireCollateral("invalid bounce distance", sourceParams, {
+			rule: rule.item?.name ?? rule.label ?? RULE_KEY,
+			maxDistance
+		});
 		console.error(`${MODULE_ID} | Skipping ${RULE_KEY} on ${rule.item?.name ?? "unknown item"}: distance must resolve to a positive number`);
 		return { paths: [], applications: [] };
 	}
@@ -1204,23 +1237,41 @@ function prepareBounceDamage(rule, scene, sourceToken, primaryToken, maxDistance
 		!Number.isInteger(bounceCount) || bounceCount < 0 ||
 		!Number.isInteger(bounceLimit) || bounceLimit < 0
 	) {
+		logBurstFireCollateral("invalid bounce configuration", sourceParams, {
+			rule: rule.item?.name ?? rule.label ?? RULE_KEY,
+			bounceShots,
+			bounceCount,
+			bounceLimit
+		});
 		console.error(`${MODULE_ID} | Skipping ${RULE_KEY} on ${rule.item?.name ?? "unknown item"}: bounceShots must be a positive integer; bounceCount and bounceLimit must be non-negative integers`);
 		return { paths: [], applications: [] };
 	}
 
 	const counts = new Map();
-	if (bounceLimit > 0) counts.set(primaryToken.id, 1);
+	if (bounceLimit > 0) counts.set(damageOriginToken.id, 1);
 	const initialTargets = new Set();
 	const paths = [];
 	const applications = [];
 	const sourceLabel = rule.item?.name ?? rule.label ?? RULE_KEY;
 	for (let shot = 0; shot < bounceShots; shot++) {
-		const path = [getTokenCenter(primaryToken)].filter(Boolean);
-		let currentToken = primaryToken;
+		const path = [getTokenCenter(damageOriginToken)].filter(Boolean);
+		let currentToken = damageOriginToken;
 		for (let bounce = 0; bounce < bounceCount; bounce++) {
-			let candidates = getBounceTargets(scene, sourceToken, currentToken, rule, maxDistance, counts, bounceLimit)
+			let candidates = getBounceTargets(scene, damageDealerToken, currentToken, rule, maxDistance, counts, bounceLimit)
 				.filter(token => bounce > 0 || !initialTargets.has(token.id));
-			if (!candidates.length) break;
+			if (!candidates.length) {
+				logBurstFireCollateral("no eligible bounce target", sourceParams, {
+					rule: rule.item?.name ?? rule.label ?? RULE_KEY,
+					damageDealerTokenId: damageDealerToken.id,
+					damageOriginTokenId: damageOriginToken.id,
+					currentTokenId: currentToken.id,
+					bounce,
+					maxDistance,
+					affects: rule.affects ?? "all",
+					sceneTokenIds: [...scene.tokens].map(token => token.id)
+				});
+				break;
+			}
 			let target;
 			if (rule.bounceNearest ?? true) {
 				candidates = candidates.sort((left, right) =>
@@ -1231,6 +1282,15 @@ function prepareBounceDamage(rule, scene, sourceToken, primaryToken, maxDistance
 			} else {
 				target = candidates[Math.floor(Math.random() * candidates.length)];
 			}
+			logBurstFireCollateral("selected bounce target", sourceParams, {
+				rule: rule.item?.name ?? rule.label ?? RULE_KEY,
+				damageDealerTokenId: damageDealerToken.id,
+				damageOriginTokenId: damageOriginToken.id,
+				currentTokenId: currentToken.id,
+				targetTokenId: target.id,
+				candidateTokenIds: candidates.map(token => token.id),
+				bounce
+			});
 			const application = prepareCollateralDamageForTarget(
 				target,
 				amount,
@@ -1310,7 +1370,10 @@ function addOverlayGraphics(graphics, destroyers) {
 function queuePendingOverlay(data) {
 	if (pendingOverlays.has(data.id)) return;
 	const receivedAt = performance.now();
-	const timeout = setTimeout(() => pendingOverlays.delete(data.id), data.durationMs);
+	const timeout = setTimeout(
+		() => pendingOverlays.delete(data.id),
+		data.durationMs + (Number(data.pathDelayMs) || 0)
+	);
 	pendingOverlays.set(data.id, { data, receivedAt, timeout });
 }
 
@@ -1319,15 +1382,33 @@ function drawPendingOverlays(sceneId) {
 		clearTimeout(pending.timeout);
 		pendingOverlays.delete(id);
 		if (pending.data.sceneId !== sceneId) continue;
-		const remaining = pending.data.durationMs - (performance.now() - pending.receivedAt);
-		if (remaining > 0) drawOverlay(pending.data, remaining);
+		const elapsed = performance.now() - pending.receivedAt;
+		const remaining = Math.max(
+			pending.data.durationMs,
+			(Number(pending.data.pathDelayMs) || 0) + PATH_LIFETIME_MS
+		) - elapsed;
+		if (remaining > 0) {
+			drawOverlay(pending.data, remaining, elapsed);
+		}
 	}
 }
 
-function drawOverlay({ id, sceneId, shapes, paths, durationMs, color }, remainingDuration = durationMs) {
+function drawOverlay(
+	{ id, sceneId, shapes, paths, durationMs, color, pathDelayMs = 0, pathSpeedPixelsPerSecond = DEFAULT_PATH_SPEED_PIXELS_PER_SECOND },
+	remainingDuration = durationMs,
+	elapsedDuration = 0
+) {
 	if ((canvas.scene && canvas.scene.id !== sceneId) || remainingDuration <= 0) return;
 	if (!canvas.ready) {
-		queuePendingOverlay({ id, sceneId, shapes, paths, durationMs: remainingDuration, color });
+		queuePendingOverlay({
+			id,
+			sceneId,
+			shapes,
+			paths,
+			durationMs: remainingDuration,
+			color,
+			pathDelayMs: Math.max(0, pathDelayMs - elapsedDuration)
+		});
 		return;
 	}
 	if (activeOverlays.has(id)) return;
@@ -1338,14 +1419,17 @@ function drawOverlay({ id, sceneId, shapes, paths, durationMs, color }, remainin
 			shape.type === type
 		)
 	);
-	const validPaths = (Array.isArray(paths) ? paths : []).filter(path =>
-		Array.isArray(path) && path.length > 1 &&
-		path.every(point => Number.isFinite(point?.x) && Number.isFinite(point?.y))
-	);
+	const validPaths = (Array.isArray(paths) ? paths : [])
+		.map(path => Array.isArray(path) ? { points: path } : path)
+		.filter(path =>
+			Array.isArray(path?.points) && path.points.length > 1 &&
+			path.points.every(point => Number.isFinite(point?.x) && Number.isFinite(point?.y))
+		);
 	if (!validShapes.length && !validPaths.length) return;
 	const colorValue = PIXI.utils.string2hex(color);
 	const destroyers = [];
-	const duration = Math.min(OVERLAY_DURATION, remainingDuration);
+	let duration = Math.min(MAX_OVERLAY_DURATION, remainingDuration);
+	const pathDelay = Math.max(0, pathDelayMs - elapsedDuration);
 	if (validShapes.length) {
 		const region = getRegionForShapes(canvas.scene, validShapes);
 		if (region) {
@@ -1387,20 +1471,35 @@ function drawOverlay({ id, sceneId, shapes, paths, durationMs, color }, remainin
 		const graphics = new PIXI.Graphics();
 		graphics.eventMode = "none";
 		canvas.interface.addChild(graphics);
-		const pathLengths = validPaths.map(path =>
-			path.slice(1).reduce((total, point, index) =>
-				total + Math.hypot(point.x - path[index].x, point.y - path[index].y), 0)
-		);
-		const drawPathsFromOrigins = progress => {
+		const pathData = validPaths.map(({ points }) => ({
+			points,
+			length: points.slice(1).reduce((total, point, index) =>
+				total + Math.hypot(point.x - points[index].x, point.y - points[index].y), 0),
+			delay: pathDelay,
+			travelMs: 0,
+			lifetimeMs: 0
+		}));
+		for (const path of pathData) {
+			path.travelMs = path.length / pathSpeedPixelsPerSecond * 1000;
+			path.lifetimeMs = Math.max(PATH_LIFETIME_MS, path.travelMs);
+		}
+		const pathsDuration = Math.max(...pathData.map(path => path.delay + path.lifetimeMs));
+		const renderDuration = Math.max(duration, pathsDuration);
+		const startTime = performance.now();
+		const drawPaths = () => {
 			graphics.clear();
-			graphics.lineStyle({
-				width: Math.max(3, canvas.dimensions.uiScale * 3),
-				color: colorValue,
-				alpha: 0.95
-			});
-			validPaths.forEach((path, pathIndex) => {
+			const now = performance.now();
+			for (const pathDataEntry of pathData) {
+				const pathElapsed = now - startTime - pathDataEntry.delay;
+				if (pathElapsed < 0 || pathElapsed > pathDataEntry.lifetimeMs) continue;
+				graphics.lineStyle({
+					width: Math.max(3, canvas.dimensions.uiScale * 3),
+					color: colorValue,
+					alpha: 0.95
+				});
+				const path = pathDataEntry.points;
 				graphics.moveTo(path[0].x, path[0].y);
-				let remainingToDraw = pathLengths[pathIndex] * progress;
+				let remainingToDraw = Math.min(pathDataEntry.length, pathElapsed * pathSpeedPixelsPerSecond / 1000);
 				for (let index = 1; index < path.length; index++) {
 					const start = path[index - 1];
 					const end = path[index];
@@ -1417,7 +1516,7 @@ function drawOverlay({ id, sceneId, shapes, paths, durationMs, color }, remainin
 					);
 					break;
 				}
-			});
+			}
 		};
 		let destroyed = false;
 		let animate;
@@ -1429,17 +1528,17 @@ function drawOverlay({ id, sceneId, shapes, paths, durationMs, color }, remainin
 			graphics.destroy();
 		};
 		destroyers.push(destroyPaths);
-		if (ticker && duration > 0 && pathLengths.some(length => length > 0)) {
-			drawPathsFromOrigins(0);
-			const startTime = performance.now();
+		if (ticker && renderDuration > 0 && pathData.some(path => path.length > 0)) {
 			animate = () => {
-				const progress = Math.min(1, (performance.now() - startTime) / duration);
-				drawPathsFromOrigins(progress);
+				drawPaths();
 			};
 			ticker.add(animate);
+			animate();
 		} else {
-			drawPathsFromOrigins(1);
+			for (const path of pathData) path.delay = 0;
+			drawPaths();
 		}
+		if (renderDuration > duration) duration = renderDuration;
 	}
 	if (!destroyers.length) return;
 
@@ -1462,7 +1561,16 @@ function installOverlaySocket() {
 			!/^#[\da-f]{6}$/i.test(data.color) ||
 			!Number.isFinite(data.durationMs) ||
 			data.durationMs <= 0 ||
-			data.durationMs > OVERLAY_DURATION ||
+			data.durationMs > MAX_OVERLAY_DURATION ||
+			(data.pathDelayMs !== undefined && (
+				!Number.isFinite(data.pathDelayMs) ||
+				data.pathDelayMs < 0 ||
+				data.pathDelayMs > MAX_PATH_DELAY_MS
+			)) ||
+			(data.pathSpeedPixelsPerSecond !== undefined && (
+				!Number.isFinite(data.pathSpeedPixelsPerSecond) ||
+				data.pathSpeedPixelsPerSecond <= 0
+			)) ||
 			data.senderId === game.user.id
 		) return;
 		try {
@@ -1474,7 +1582,13 @@ function installOverlaySocket() {
 	socketHandlerInstalled = true;
 }
 
-function displayArea(shapes, paths) {
+function displayArea(
+	shapes,
+	paths,
+	durationMs = DEFAULT_OVERLAY_DURATION,
+	pathDelayMs = 0,
+	pathSpeedPixelsPerSecond = DEFAULT_PATH_SPEED_PIXELS_PER_SECOND
+) {
 	if (!canvas.scene || (!shapes.length && !paths.length)) return;
 	const data = {
 		type: "collateral-damage-area",
@@ -1483,48 +1597,176 @@ function displayArea(shapes, paths) {
 		shapes: shapes.map(shape => foundry.utils.deepClone(shape)),
 		paths: paths.map(path => path.map(point => ({ ...point }))),
 		color: game.user.color.toString(),
-		durationMs: OVERLAY_DURATION,
+		durationMs: Math.min(MAX_OVERLAY_DURATION, Math.max(1, durationMs)),
+		pathDelayMs: Math.min(MAX_PATH_DELAY_MS, Math.max(0, pathDelayMs)),
+		pathSpeedPixelsPerSecond,
 		senderId: game.user.id
 	};
 	drawOverlay(data);
 	game.socket?.emit(OVERLAY_CHANNEL, data);
 }
 
-export function displayCollateralPaths(paths) {
-	displayArea([], paths);
+export function displayCollateralPaths(
+	paths,
+	durationMs = DEFAULT_OVERLAY_DURATION,
+	pathDelayMs = 0,
+	pathSpeedPixelsPerSecond = DEFAULT_PATH_SPEED_PIXELS_PER_SECOND
+) {
+	displayArea([], paths, durationMs, pathDelayMs, pathSpeedPixelsPerSecond);
 }
 
-export function displayCollateralArea(shapes, paths) {
-	displayArea(shapes, paths);
+export function displayCollateralArea(
+	shapes,
+	paths,
+	durationMs = DEFAULT_OVERLAY_DURATION,
+	pathDelayMs = 0,
+	pathSpeedPixelsPerSecond = DEFAULT_PATH_SPEED_PIXELS_PER_SECOND
+) {
+	displayArea(shapes, paths, durationMs, pathDelayMs, pathSpeedPixelsPerSecond);
+}
+
+export async function applyBurstFireCollateralDamage(
+	actor,
+	params,
+	healthBefore,
+	healthAfter,
+	transactionParams = params
+) {
+	const damage = typeof params.damage === "number" ? params.damage : params.damage?.total;
+	if (!Number.isFinite(damage) || damage <= 0) return;
+	if (healthBefore === null || healthAfter === null) {
+		logBurstFireCollateral("could not measure recipient health", params, {
+			healthBefore,
+			healthAfter,
+			recipientActorId: actor.id
+		});
+		return;
+	}
+
+	const damageApplied = Math.max(0, healthBefore - healthAfter);
+	logBurstFireCollateral("damage applied", params, {
+		recipientActorId: actor.id,
+		recipientTokenId: normalizeToken(params.token)?.id,
+		damage,
+		healthBefore,
+		healthAfter,
+		damageApplied
+	});
+	const { shapes, paths, applications } = await applyCollateralDamage(
+		actor,
+		params,
+		damage,
+		damageApplied
+	);
+	logBurstFireCollateral("prepared collateral effects", params, {
+		shapeCount: shapes.length,
+		pathCount: paths.length,
+		applicationCount: applications.length,
+		appliedImmediately: Boolean(applications.length)
+	});
+	if (applications.length) {
+		await applyPreparedCollateralDamageBatch(applications, params, transactionParams);
+	}
+
+	try {
+		const elapsedSinceBurstTrace = Number.isFinite(params.vursBurstFireTraceStartedAt)
+			? performance.now() - params.vursBurstFireTraceStartedAt
+			: 0;
+		const traceDelay = Math.max(
+			0,
+			(Number(params.vursBurstFireTraceDelayMs) || 0) - elapsedSinceBurstTrace
+		);
+		displayArea(
+			shapes,
+			paths,
+			DEFAULT_OVERLAY_DURATION,
+			traceDelay,
+			params.vursBurstFireTraceSpeedPixelsPerSecond ?? DEFAULT_PATH_SPEED_PIXELS_PER_SECOND
+		);
+	} catch (error) {
+		console.error(`${MODULE_ID} | Failed to display the temporary ${RULE_KEY} area`, error);
+	}
 }
 
 async function applyCollateralDamage(actor, params, beforeReduction, afterReduction) {
-	const damageDealer = params.item?.actor ?? params.item?.parent;
-	const targetToken = normalizeToken(params.token);
-	const scene = targetToken?.parent ?? canvas.scene;
-	if (!damageDealer || !targetToken || !scene || scene !== canvas.scene) {
+	const damageDealer = params.vursDamageDealer ?? params.item?.actor ?? params.item?.parent;
+	const providedTargetToken = normalizeToken(params.token);
+	const scene = canvas.scene;
+	if (!damageDealer || !scene) {
+		logBurstFireCollateral("missing damage dealer or active scene", params, {
+			hasDamageDealer: Boolean(damageDealer),
+			hasScene: Boolean(scene),
+			itemName: params.item?.name
+		});
 		return { shapes: [], paths: [] };
+	}
+	const targetToken = getDamageTargetToken(actor, providedTargetToken, scene);
+	if (!targetToken) {
+		logBurstFireCollateral("could not resolve damaged token", params, {
+			recipientActorId: actor.id,
+			recipientActorUuid: actor.uuid,
+			providedTokenId: providedTargetToken?.id,
+			sceneId: scene.id
+		});
+		console.error(`${MODULE_ID} | Could not apply ${RULE_KEY}: no token for the damage recipient in the current scene`);
+		return { shapes: [], paths: [] };
+	}
+	if (providedTargetToken && providedTargetToken !== targetToken) {
+		console.warn(
+			`${MODULE_ID} | ${RULE_KEY} received a damage token that does not match the Actor.applyDamage recipient in the current scene; using ${targetToken.name} instead`
+		);
 	}
 
 	const sourceToken = getSceneTokenForActor(damageDealer, scene, targetToken);
 	if (!sourceToken) {
+		logBurstFireCollateral("could not resolve source token", params, {
+			damageDealerId: damageDealer.id,
+			damageDealerUuid: damageDealer.uuid,
+			targetTokenId: targetToken.id,
+			sceneId: scene.id
+		});
 		console.error(`${MODULE_ID} | Could not apply ${RULE_KEY}: no source token for ${damageDealer.name} in the current scene`);
 		return { shapes: [], paths: [] };
 	}
-
 	const rollOptions = getDamageRollOptions(params.damage, params.rollOptions);
+	for (const option of params.item?.getRollOptions?.("item") ?? []) {
+		rollOptions.add(option);
+	}
 	const selectors = getDamageSelectors(params.damage, params.item);
+	const collateralRules = [...(damageDealer.rules ?? [])].filter(rule => rule.key === RULE_KEY);
+	logBurstFireCollateral("damage event", params, {
+		damageDealerId: damageDealer.id,
+		damageDealerName: damageDealer.name,
+		itemName: params.item?.name,
+		recipientActorId: actor.id,
+		recipientTokenId: targetToken.id,
+		providedTokenId: providedTargetToken?.id,
+		beforeReduction: beforeReduction,
+		afterReduction: afterReduction,
+		selectors: [...selectors],
+		collateralRuleCount: collateralRules.length,
+		bounceRuleCount: collateralRules.filter(rule => rule.type === "bounce").length,
+		rollOptions: [...rollOptions]
+	});
 	const seenSlugs = new Set();
 	const shapes = [];
 	const paths = [];
 	const applications = [];
 	for (const rule of damageDealer.rules ?? []) {
-		if (
-			rule.key !== RULE_KEY ||
-			rule.ignored ||
-			!selectorMatches(rule, selectors, rollOptions) ||
-			!testRuleElementPredicate(rule, rollOptions)
-		) continue;
+		if (rule.key !== RULE_KEY) continue;
+		const matchesSelector = selectorMatches(rule, selectors, rollOptions);
+		const matchesPredicate = testRuleElementPredicate(rule, rollOptions);
+		if (rule.type === "bounce") {
+			logBurstFireCollateral("bounce rule evaluation", params, {
+				rule: rule.item?.name ?? rule.label ?? RULE_KEY,
+				ignored: Boolean(rule.ignored),
+				matchesSelector,
+				matchesPredicate,
+				selector: rule.selector ?? null,
+				distance: rule.distance
+			});
+		}
+		if (rule.ignored || !matchesSelector || !matchesPredicate) continue;
 
 		const slug = typeof rule.slug === "string" ? rule.slug.trim() : "";
 		if (slug && seenSlugs.has(slug)) continue;
@@ -1532,11 +1774,24 @@ async function applyCollateralDamage(actor, params, beforeReduction, afterReduct
 		if (amount <= 0) continue;
 
 		const distance = resolveCollateralDistance(rule, params.item, damageDealer);
-		if (distance === null) continue;
+		if (distance === null) {
+			logBurstFireCollateral("bounce distance did not resolve", params, {
+				rule: rule.item?.name ?? rule.label ?? RULE_KEY,
+				distance: rule.distance
+			});
+			continue;
+		}
 
 		if (rule.type === "bounce") {
 			const bounce = prepareBounceDamage(
-				rule, scene, sourceToken, targetToken, distance, amount, params.damage, params
+				rule,
+				scene,
+				sourceToken,
+				targetToken,
+				distance,
+				amount,
+				params.damage,
+				params
 			);
 			paths.push(...bounce.paths);
 			applications.push(...bounce.applications);
@@ -1584,29 +1839,71 @@ async function applyCollateralDamage(actor, params, beforeReduction, afterReduct
 async function applyCollateralDamageHandler(actor, wrapped, args) {
 	const params = args[0];
 	if (params && collateralDamageApplications.has(params)) return wrapped(...args);
-	if (!params || typeof params !== "object" || activeDamageParams.has(params)) return wrapped(...args);
+	if (params?.vursBurstFireCollateralHandled) return wrapped(...args);
+	if (!params || typeof params !== "object") return wrapped(...args);
+	if (activeDamageParams.has(params)) {
+		logBurstFireCollateral("skipped re-entrant damage parameters", params, {
+			recipientActorId: actor.id,
+			recipientTokenId: normalizeToken(params.token)?.id
+		});
+		return wrapped(...args);
+	}
 	const damage = typeof params.damage === "number" ? params.damage : params.damage?.total;
-	if (typeof damage !== "number" || damage <= 0 || !params.item) return wrapped(...args);
+	if (typeof damage !== "number" || damage <= 0 || !params.item) {
+		logBurstFireCollateral("skipped damage event", params, {
+			damage,
+			hasItem: Boolean(params.item),
+			recipientActorId: actor.id,
+			recipientTokenId: normalizeToken(params.token)?.id
+		});
+		return wrapped(...args);
+	}
 
 	activeDamageParams.add(params);
 	try {
-		const targetActor = params.token?.actor ?? actor;
-		const healthBefore = currentHealthPool(targetActor);
+		const healthBefore = currentHealthPool(actor);
 		const result = await wrapped(...args);
-		const healthAfter = currentHealthPool(targetActor);
-		if (healthBefore === null || healthAfter === null) return result;
+		const healthAfter = currentHealthPool(actor);
+		if (healthBefore === null || healthAfter === null) {
+			logBurstFireCollateral("could not measure recipient health", params, {
+				healthBefore,
+				healthAfter,
+				recipientActorId: actor.id
+			});
+			return result;
+		}
 
 		const damageApplied = Math.max(0, healthBefore - healthAfter);
 		const { shapes, paths, applications } = await applyCollateralDamage(actor, params, damage, damageApplied);
-		if (applications.length && !queueDamageTransactionRequest(
+		const queued = applications.length && queueDamageTransactionRequest(
 			params,
 			"collateralApplications",
 			applications
-		)) {
+		);
+		logBurstFireCollateral("prepared collateral effects", params, {
+			shapeCount: shapes.length,
+			pathCount: paths.length,
+			applicationCount: applications.length,
+			queued: Boolean(queued)
+		});
+		if (applications.length && !queued) {
 			await applyPreparedCollateralDamageBatch(applications, params);
 		}
 		try {
-			displayArea(shapes, paths);
+			const elapsedSinceBurstTrace = Number.isFinite(params.vursBurstFireTraceStartedAt)
+				? performance.now() - params.vursBurstFireTraceStartedAt
+				: 0;
+			const traceDelay = Math.max(
+				0,
+				(Number(params.vursBurstFireTraceDelayMs) || 0) - elapsedSinceBurstTrace
+			);
+			displayArea(
+				shapes,
+				paths,
+				DEFAULT_OVERLAY_DURATION,
+				traceDelay,
+				params.vursBurstFireTraceSpeedPixelsPerSecond ?? DEFAULT_PATH_SPEED_PIXELS_PER_SECOND
+			);
 		} catch (error) {
 			console.error(`${MODULE_ID} | Failed to display the temporary ${RULE_KEY} area`, error);
 		}

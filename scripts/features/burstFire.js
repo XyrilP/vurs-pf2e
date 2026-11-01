@@ -2,24 +2,30 @@ import { getEffectiveStrikeMAP } from "./attackSpeed.js";
 import { applyDamageInTransaction, runDamageTransaction } from "./lifesteal.js";
 import { createVursPlayCostElement } from "./playCostIcons.js";
 import {
+	applyBurstFireCollateralDamage,
 	displayCollateralArea,
 	getTokenCenter,
 	getTokenDistance,
 	getPlacementGeometries,
-	getTokensInCollateralShape
+	getTokensInCollateralShape,
 } from "./collateralDamage.js";
 
 const MODULE_ID = "vurs-pf2e";
 const PREPARE_ATTACKS_WRAPPER = Symbol.for(`${MODULE_ID}.burstFirePrepareAttacks`);
 const AUTOMATIC_TRAIT = "automatic";
 const DEGREE_OF_SUCCESS = ["criticalFailure", "failure", "success", "criticalSuccess"];
+const preparedBurstFires = new Map();
+const actorSheetRoots = new WeakSet();
 
 const BURST_FIRE_TRANSLATIONS = {
 	Title: "Burst-Fire",
+	Prepared: "Burst-Fire prepared. Select this weapon's Strike and MAP to fire.",
+	MAPLabel: "Burst-Fire (MAP {modifier})",
+	RateOfFireShort: "RoF {shots}",
 	RateOfFire: "Rate of Fire",
 	Recoil: "Recoil",
 	AtMAP: "at MAP {map}",
-	Description: "<p><strong>Cost</strong> 2 actions</p><p>Fire an automatic weapon repeatedly. Rate of Fire is 3 + (5 - MAP), to a minimum of 0 shots, and is capped by available ammunition. Each projectile uses the selected Strike's MAP, then increases MAP normally for later projectiles. Each projectile is a separate Strike and uses normal range-increment penalties. Subsequent Strikes and all damage resolve automatically after the first Strike.</p><p>The Recoil Area is a cone aimed at the target, with a distance equal to half the weapon's maximum range. Its spread is 5 degrees plus 5 degrees per Recoil. Recoil is 10 minus the weapon's Bulk (minimum 0), halved and rounded down for a weapon listed as two-handed.</p><p>On a miss, the projectile diverts to the nearest other creature in the cone, including allies, and deals half damage. Each possible secondary target is selected once before the burst cycles back to previously selected targets. A critical miss deals no secondary damage.</p>",
+	Description: "<p><strong>Cost</strong> 2 actions</p><p>Click Burst-Fire to prepare it, then click this weapon's Strike at the desired MAP to fire. Click Burst-Fire again to cancel. Rate of Fire is 3 + (5 - MAP), to a minimum of 0 shots, and is capped by available ammunition. Each projectile uses the selected Strike's MAP, then increases MAP normally for later projectiles. Each projectile is a separate Strike and uses normal range-increment penalties. Subsequent Strikes and all damage resolve automatically after the first Strike.</p><p>The Recoil Area is a cone aimed at the target, with a distance equal to the weapon's maximum range. Its spread is 5 degrees plus 5 degrees per Recoil. Recoil is 10 minus the weapon's Bulk (minimum 0), halved and rounded down for a weapon listed as two-handed.</p><p>On a miss, the projectile diverts to the nearest other creature in the cone, including allies, and deals half damage. Each possible secondary target is selected once before the burst cycles back to previously selected targets. A critical miss deals no secondary damage.</p>",
 	VariantLabel: "Burst-Fire (RoF {shots})",
 	Warnings: {
 		SelectTarget: "Select a target to direct the Burst-Fire cone.",
@@ -53,6 +59,147 @@ function registerBurstFireLocalization() {
 		}
 	};
 	register(BURST_FIRE_TRANSLATIONS, "VURS.BurstFire");
+}
+
+function updatePreparedBurstFireButton(root, strikeElement, isPrepared, actor) {
+	if (!root?.isConnected || !strikeElement?.isConnected) return;
+	const button = strikeElement.querySelector(".vurs-burst-fire-trigger")
+		?? root.querySelector(
+			`.vurs-burst-fire-trigger[data-action-index="${strikeElement.dataset.actionIndex}"]`
+		);
+	if (button) {
+		button.classList.toggle("vurs-burst-fire-prepared", isPrepared);
+		button.setAttribute("aria-pressed", String(isPrepared));
+		if (isPrepared) button.dataset.tooltip = game.i18n.localize("VURS.BurstFire.Prepared");
+		else delete button.dataset.tooltip;
+	}
+	if (actor?.type === "npc") return;
+
+	const attackGroup = strikeElement.querySelector(":scope > section > .button-group.tags")
+		?? strikeElement.querySelector(":scope > .button-group");
+	if (!attackGroup) return;
+	attackGroup.classList.toggle("vurs-burst-fire-armed", isPrepared);
+	for (const attackButton of attackGroup.querySelectorAll('button[data-action="strike-attack"]')) {
+		if (!attackButton.dataset.vursOriginalLabel) {
+			attackButton.dataset.vursOriginalLabel = attackButton.innerHTML;
+			attackButton.dataset.vursOriginalAriaLabelSet = String(attackButton.hasAttribute("aria-label"));
+			if (attackButton.hasAttribute("aria-label")) {
+				attackButton.dataset.vursOriginalAriaLabel = attackButton.getAttribute("aria-label");
+			}
+		}
+		const variantIndex = Number(attackButton.dataset.variantIndex ?? 0);
+		if (!isPrepared) {
+			attackButton.innerHTML = attackButton.dataset.vursOriginalLabel;
+			attackButton.classList.remove("vurs-burst-fire-variant");
+			if (attackButton.dataset.vursOriginalAriaLabelSet === "true") {
+				attackButton.setAttribute("aria-label", attackButton.dataset.vursOriginalAriaLabel);
+			} else {
+				attackButton.removeAttribute("aria-label");
+			}
+			continue;
+		}
+
+		const actionIndex = Number(strikeElement.dataset.actionIndex);
+		const strike = actor?.system?.actions?.[actionIndex];
+		const variant = strike?.variants?.[variantIndex];
+		const baseLabel = game.i18n.localize("PF2E.WeaponStrikeLabel");
+		const labelRemainder = String(variant?.label ?? "").replace(baseLabel, "").trim();
+		const modifier = labelRemainder.match(/^[+-]?\d+/)?.[0] ?? labelRemainder;
+		const effectiveMAP = variantIndex > 0
+			? getEffectiveStrikeMAP(strike, variantIndex, actor)
+			: 0;
+		const label = variantIndex === 0
+			? game.i18n.localize("VURS.BurstFire.Title")
+			: game.i18n.format("VURS.BurstFire.MAPLabel", {
+				modifier: effectiveMAP === 0 ? "0" : `-${effectiveMAP}`
+			});
+		attackButton.replaceChildren();
+		if (variantIndex === 0) {
+			const name = document.createElement("span");
+			name.className = "name";
+			name.textContent = label;
+			const glyph = document.createElement("span");
+			glyph.className = "action-glyph";
+			glyph.textContent = "2";
+			attackButton.append(name, document.createTextNode(" "), glyph, document.createTextNode(` ${modifier}`));
+		} else {
+			attackButton.textContent = `${modifier} ${label}`;
+		}
+		attackButton.classList.add("vurs-burst-fire-variant");
+		attackButton.setAttribute("aria-label", `${label} ${modifier}`);
+	}
+}
+
+function clearPreparedBurstFire(key) {
+	const prepared = preparedBurstFires.get(key);
+	if (!prepared) return false;
+	preparedBurstFires.delete(key);
+	updatePreparedBurstFireButton(prepared.root, prepared.strikeElement, false, prepared.actor);
+	return true;
+}
+
+function prepareBurstFire(actor, strike, root, strikeElement) {
+	const key = actor.uuid ?? actor.id;
+	const current = preparedBurstFires.get(key);
+	if (current?.itemId === strike.item.id) {
+		clearPreparedBurstFire(key);
+		updatePreparedBurstFireButton(root, strikeElement, false, actor);
+		return;
+	}
+	if (current) clearPreparedBurstFire(key);
+	preparedBurstFires.set(key, { itemId: strike.item.id, actor, root, strikeElement });
+	updatePreparedBurstFireButton(root, strikeElement, true, actor);
+}
+
+function clearPreparedBurstFireForItem(item) {
+	const actor = item?.actor ?? item?.parent;
+	if (!actor) return;
+	const key = actor.uuid ?? actor.id;
+	if (preparedBurstFires.get(key)?.itemId === item.id) clearPreparedBurstFire(key);
+}
+
+function handleBurstFireSheetClick(actor, root, event) {
+	const button = event.target?.closest?.(
+		"button.vurs-burst-fire-trigger, button[data-action='strike-attack']"
+	);
+	if (!button || !root.contains(button)) return;
+	const strikeElement = button.classList.contains("vurs-burst-fire-trigger")
+		? button.closest(
+			'li.strike[data-action-index], li.item.action[data-strike][data-action-index]'
+		) ?? root.querySelector(
+			`li.item.action[data-strike][data-action-index="${button.dataset.actionIndex}"]`
+		)
+		: button.closest(
+			'li.strike[data-action-index], li.item.action[data-strike][data-action-index]'
+		);
+	if (!strikeElement) return;
+	const actionIndex = Number(strikeElement.dataset.actionIndex);
+	const strike = actor.system?.actions?.[actionIndex];
+	if (!strike) return;
+
+	if (button.classList.contains("vurs-burst-fire-trigger")) {
+		event.preventDefault();
+		event.stopImmediatePropagation();
+		prepareBurstFire(actor, strike, root, strikeElement);
+		return;
+	}
+	const key = actor.uuid ?? actor.id;
+	const prepared = preparedBurstFires.get(key);
+	if (!prepared || button.hasAttribute("data-alt-usage")) return;
+	if (prepared.itemId !== strike.item?.id) {
+		clearPreparedBurstFire(key);
+		return;
+	}
+
+	event.preventDefault();
+	event.stopImmediatePropagation();
+	clearPreparedBurstFire(key);
+	updatePreparedBurstFireButton(root, strikeElement, false, actor);
+	const variantIndex = Number(button.dataset.variantIndex ?? 0);
+	void rollBurstFire(actor, strike, variantIndex, { event }).catch(error => {
+		console.error(`${MODULE_ID} | Could not confirm prepared Burst-Fire for ${strike.item.name}`, error);
+		ui.notifications.error(game.i18n.localize("VURS.BurstFire.Warnings.RollFailed"));
+	});
 }
 
 function getTokenDocument(token) {
@@ -90,7 +237,10 @@ function getAutomaticRollEvent(type) {
 }
 
 function getRateOfFire(actor, strike) {
-	const effectiveMAP = getEffectiveStrikeMAP(strike, 1, actor);
+	const mapIndex = Math.min(1, (strike?.variants?.length ?? 0) - 1);
+	const effectiveMAP = mapIndex >= 0
+		? getEffectiveStrikeMAP(strike, mapIndex, actor)
+		: null;
 	if (!Number.isFinite(effectiveMAP)) return null;
 	return Math.max(0, Math.floor(3 + (5 - effectiveMAP)));
 }
@@ -103,6 +253,13 @@ function getWeaponMaxRange(weapon) {
 		Number(weapon.system.range?.value ?? weapon.system.range) * 6
 	];
 	return values.map(Number).find(value => Number.isFinite(value) && value > 0) ?? null;
+}
+
+function getBurstFirePathSpeed(weapon) {
+	const maxRange = getWeaponMaxRange(weapon);
+	const distancePixels = Number(canvas.dimensions?.distancePixels);
+	if (!maxRange || !Number.isFinite(distancePixels) || distancePixels <= 0) return null;
+	return (maxRange * distancePixels) / 2;
 }
 
 function getRecoil(weapon) {
@@ -142,7 +299,7 @@ function getBurstFireShapes(sourceToken, targetToken, weapon) {
 		type: "cone",
 		x: geometry.x,
 		y: geometry.y,
-		radius: (maxRange / 2) * distancePixels,
+		radius: maxRange * distancePixels,
 		angle: 5 + (5 * recoil),
 		rotation: geometry.rotation,
 		curvature: "round"
@@ -211,6 +368,14 @@ function createPath(
 	return path;
 }
 
+function getBurstFireTraceDelay(sourceToken, targetToken, pathSpeedPixelsPerSecond) {
+	const source = getTokenCenter(sourceToken);
+	const target = getTokenCenter(targetToken);
+	if (!source || !target || !Number.isFinite(pathSpeedPixelsPerSecond) || pathSpeedPixelsPerSecond <= 0) return 0;
+	return Math.hypot(target.x - source.x, target.y - source.y) /
+		pathSpeedPixelsPerSecond * 1000;
+}
+
 function getOutcomeLabel(outcome) {
 	const keys = {
 		criticalSuccess: "PF2E.Check.Result.Degree.Attack.criticalSuccess",
@@ -237,7 +402,10 @@ function collectRollOptions(rollOrOptions, result = new Set(), depth = 0) {
 
 function getSuccessfulHitContext(checkContext) {
 	if (!checkContext) return null;
-	const options = (checkContext.options ?? []).filter(option =>
+	const existingOptions = checkContext.options instanceof Set
+		? [...checkContext.options]
+		: Array.isArray(checkContext.options) ? checkContext.options : [];
+	const options = existingOptions.filter(option =>
 		typeof option !== "string" || !option.startsWith("check:outcome:")
 	);
 	options.push("check:outcome:success");
@@ -250,13 +418,16 @@ function getSuccessfulHitContext(checkContext) {
 }
 
 async function applyStrikeDamage(
+	actor,
 	strike,
 	target,
 	mapIncreases,
 	outcome,
 	halfDamage,
 	event,
-	checkContext
+	checkContext,
+	traceDelayMs = 0,
+	traceSpeedPixelsPerSecond
 ) {
 	const damageCheckContext = halfDamage
 		? getSuccessfulHitContext(checkContext)
@@ -294,9 +465,14 @@ async function applyStrikeDamage(
 		damage: damageRoll,
 		token: target,
 		item: strike.item,
+		vursDamageDealer: actor,
 		rollOptions: collectRollOptions(damageCheckContext, collectRollOptions(damageRoll)),
-		outcome
+		outcome,
+		checkContext: damageCheckContext,
+		vursBurstFireDivertedDamage: halfDamage
 	};
+	damageParams.vursBurstFireTraceDelayMs = traceDelayMs;
+	damageParams.vursBurstFireTraceSpeedPixelsPerSecond = traceSpeedPixelsPerSecond;
 	const targetName = targetToken?.name ?? targetActor.name;
 	return {
 		damageRoll,
@@ -327,19 +503,30 @@ async function applyBurstFireDamage(applications) {
 	if (applications.length === 0) return;
 	const [root, ...nested] = applications;
 	await runDamageTransaction(root.actor, root.damageParams, async rootParams => {
-		await root.actor.applyDamage(rootParams);
-		for (const application of nested) {
+		for (const [index, application] of [root, ...nested].entries()) {
 			const healthBefore = getCurrentHealthPool(application.actor);
-			await applyDamageInTransaction(
-				application.actor,
-				application.damageParams,
-				rootParams,
-				application.effect
-			);
+			application.damageParams.vursBurstFireCollateralHandled = true;
+			if (index === 0) {
+				await application.actor.applyDamage(application.damageParams);
+			} else {
+				await applyDamageInTransaction(
+					application.actor,
+					application.damageParams,
+					rootParams,
+					application.effect
+				);
+			}
 			const healthAfter = getCurrentHealthPool(application.actor);
 			if (healthBefore !== null && healthAfter !== null) {
 				application.effect.amount = Math.max(0, healthBefore - healthAfter);
 			}
+			await applyBurstFireCollateralDamage(
+				application.actor,
+				application.damageParams,
+				healthBefore,
+				healthAfter,
+				rootParams
+			);
 		}
 	});
 }
@@ -408,16 +595,17 @@ async function createBurstFireChatMessage(actor, sourceToken, weapon, results) {
 	});
 }
 
-async function consumeOneRound(weapon) {
+async function consumeRounds(weapon, amount) {
+	if (amount < 1) return true;
 	const ammo = getWeaponAmmo(weapon);
 	if (!ammo) return true;
-	if (getAmmoCount(weapon) < 1) return false;
+	if (getAmmoCount(weapon) < amount) return false;
 	if (typeof ammo.consume === "function") {
-		await ammo.consume(1);
+		await ammo.consume(amount);
 		return true;
 	}
 	if (ammo.type === "weapon" && typeof ammo.update === "function") {
-		await ammo.update({ "system.quantity": Math.max(0, Number(ammo.quantity) - 1) });
+		await ammo.update({ "system.quantity": Math.max(0, Number(ammo.quantity) - amount) });
 		return true;
 	}
 	console.error(`${MODULE_ID} | Could not consume Burst-Fire ammunition: unsupported ammunition item`, ammo);
@@ -458,15 +646,22 @@ async function rollBurstFire(actor, strike, startingMAP, options = {}) {
 		ui.notifications.warn(game.i18n.localize("VURS.BurstFire.Warnings.NoShots"));
 		return null;
 	}
+	const pathSpeedPixelsPerSecond = getBurstFirePathSpeed(weapon);
+	if (!pathSpeedPixelsPerSecond) {
+		ui.notifications.error(game.i18n.localize("VURS.BurstFire.Warnings.InvalidArea"));
+		console.error(`${MODULE_ID} | Could not calculate Burst-Fire line speed for ${weapon.name}`);
+		return null;
+	}
 
 	const visited = new Set();
 	let secondaryTargets = null;
 	const paths = [];
 	const shotResults = [];
 	const damageApplications = [];
+	let roundsFired = 0;
 	try {
 		for (let shot = 0; shot < shotCount; shot++) {
-			if (getAmmoCount(weapon) < 1) {
+			if (roundsFired >= getAmmoCount(weapon)) {
 				ui.notifications.warn(game.i18n.localize("VURS.BurstFire.Warnings.NoShots"));
 				break;
 			}
@@ -495,11 +690,7 @@ async function rollBurstFire(actor, strike, startingMAP, options = {}) {
 			if (!checkContext) {
 				console.error(`${MODULE_ID} | Burst-Fire Strike did not provide its check context; on-hit damage effects may not resolve for ${weapon.name}`);
 			}
-			if (!await consumeOneRound(weapon)) {
-				ui.notifications.error(game.i18n.localize("VURS.BurstFire.Warnings.AmmoChanged"));
-				console.error(`${MODULE_ID} | Burst-Fire projectile was rolled but ammunition could not be consumed`);
-				break;
-			}
+			roundsFired++;
 
 			const degree = attackRoll.degreeOfSuccess ?? attackRoll.options?.degreeOfSuccess;
 			const outcome = Number.isInteger(degree) ? DEGREE_OF_SUCCESS[degree] : degree;
@@ -513,13 +704,16 @@ async function rollBurstFire(actor, strike, startingMAP, options = {}) {
 			if (outcome === "success" || outcome === "criticalSuccess") {
 				damageTarget = primaryToken;
 				const damageResult = await applyStrikeDamage(
+					actor,
 					strike,
 					damageTarget,
 					mapIndex,
 					outcome,
 					false,
 					getAutomaticRollEvent("damage"),
-					checkContext
+					checkContext,
+					getBurstFireTraceDelay(sourceToken, damageTarget, pathSpeedPixelsPerSecond),
+					pathSpeedPixelsPerSecond
 				);
 				damageRoll = damageResult?.damageRoll ?? null;
 				damageApplication = damageResult?.application ?? null;
@@ -530,9 +724,9 @@ async function rollBurstFire(actor, strike, startingMAP, options = {}) {
 				const secondary = getNextSecondaryTarget(secondaryTargets, visited);
 				const criticalMiss = outcome === "criticalFailure";
 				if (secondary) damageTarget = secondary.object ?? secondary;
-				const path = createPath(sourceToken, primaryToken, null, shapes, {
-					continueToEdge: true,
-					extendToEdge: true
+				const path = createPath(sourceToken, secondary ?? primaryToken, null, shapes, {
+					continueToEdge: criticalMiss || !secondary,
+					extendToEdge: criticalMiss || !secondary
 				});
 				if (path) paths.push(path);
 
@@ -542,13 +736,16 @@ async function rollBurstFire(actor, strike, startingMAP, options = {}) {
 					note = "VURS.BurstFire.Notes.CriticalMiss";
 				} else {
 					const damageResult = await applyStrikeDamage(
+						actor,
 						strike,
 						damageTarget,
 						mapIndex,
 						"success",
 						true,
 						getAutomaticRollEvent("damage"),
-						checkContext
+						checkContext,
+						getBurstFireTraceDelay(sourceToken, damageTarget, pathSpeedPixelsPerSecond),
+						pathSpeedPixelsPerSecond
 					);
 					damageRoll = damageResult?.damageRoll ?? null;
 					damageApplication = damageResult?.application ?? null;
@@ -569,7 +766,22 @@ async function rollBurstFire(actor, strike, startingMAP, options = {}) {
 		console.error(`${MODULE_ID} | Burst-Fire stopped after an error for ${weapon.name}`, error);
 		ui.notifications.error(game.i18n.localize("VURS.BurstFire.Warnings.RollFailed"));
 	} finally {
-		if (paths.length > 0 || shapes.length > 0) displayCollateralArea(shapes, paths);
+		if (paths.length > 0 || shapes.length > 0) {
+			const traceStartedAt = performance.now();
+			displayCollateralArea(shapes, paths, 4000, 0, pathSpeedPixelsPerSecond);
+			for (const application of damageApplications) {
+				application.damageParams.vursBurstFireTraceStartedAt = traceStartedAt;
+			}
+		}
+	}
+	try {
+		if (!await consumeRounds(weapon, roundsFired)) {
+			ui.notifications.error(game.i18n.localize("VURS.BurstFire.Warnings.AmmoChanged"));
+			console.error(`${MODULE_ID} | Could not consume ${roundsFired} Burst-Fire rounds; ammunition changed during the burst`);
+		}
+	} catch (error) {
+		console.error(`${MODULE_ID} | Could not consume Burst-Fire ammunition for ${weapon.name}`, error);
+		ui.notifications.error(game.i18n.localize("VURS.BurstFire.Warnings.AmmoChanged"));
 	}
 	try {
 		const shotHtml = await Promise.all(shotResults.map((result, index) =>
@@ -612,6 +824,11 @@ async function rollBurstFire(actor, strike, startingMAP, options = {}) {
 function isAutomaticWeapon(item) {
 	const traits = item?.system?.traits?.value ?? item?.traits?.value ?? [];
 	return item?.type === "weapon" && traits.includes(AUTOMATIC_TRAIT);
+}
+
+function isAutomaticStrike(strike) {
+	const traits = strike?.item?.system?.traits?.value ?? strike?.item?.traits?.value ?? [];
+	return strike?.type === "strike" && traits.includes(AUTOMATIC_TRAIT);
 }
 
 function getWeaponRateOfFire(item) {
@@ -664,9 +881,93 @@ function addBurstFireItemStats(app, element) {
 }
 
 function markBurstFireAlternateUsage(app, element) {
-	const actor = app?.actor ?? app?.object;
+	const actor = app?.actor ?? app?.document?.actor ?? app?.object;
 	const root = element instanceof HTMLElement ? element : element?.[0];
 	if (!actor || !root) return;
+	const key = actor.uuid ?? actor.id;
+	const prepared = preparedBurstFires.get(key);
+	if (prepared && !actor.items?.get(prepared.itemId)) clearPreparedBurstFire(key);
+	if (!actorSheetRoots.has(root)) {
+		root.addEventListener("click", event => handleBurstFireSheetClick(actor, root, event), true);
+		actorSheetRoots.add(root);
+	}
+
+	if (actor.type === "npc") {
+		const strikeList = root.querySelector(".attacks ol.strikes-list");
+		if (!strikeList) return;
+		let burstFireActions = strikeList.parentElement.querySelector(
+			":scope > .vurs-npc-burst-fire-actions"
+		);
+		const automaticStrikes = [];
+		for (const strikeElement of root.querySelectorAll(
+			"li.item.action[data-strike][data-action-index]"
+		)) {
+			const strike = actor.system?.actions?.[Number(strikeElement.dataset.actionIndex)];
+			if (!isAutomaticStrike(strike)) continue;
+			automaticStrikes.push({ strike, strikeElement });
+			if (prepared?.itemId === strike.item?.id) {
+				prepared.root = root;
+				prepared.strikeElement = strikeElement;
+			}
+		}
+
+		if (automaticStrikes.length === 0) {
+			burstFireActions?.remove();
+			return;
+		}
+		if (!burstFireActions) {
+			burstFireActions = document.createElement("div");
+			burstFireActions.className = "button-group vurs-npc-burst-fire-actions";
+			const attackSubsection = document.createElement("div");
+			attackSubsection.className = "subsection attack";
+			burstFireActions.append(attackSubsection);
+			strikeList.after(burstFireActions);
+		}
+		let attackSubsection = burstFireActions.querySelector(":scope > .subsection.attack");
+		if (!attackSubsection) {
+			attackSubsection = document.createElement("div");
+			attackSubsection.className = "subsection attack";
+			burstFireActions.append(attackSubsection);
+		}
+		attackSubsection.replaceChildren();
+		for (const { strike, strikeElement } of automaticStrikes) {
+			const button = document.createElement("button");
+			button.type = "button";
+			button.className = "attack-button vurs-burst-fire-trigger";
+			button.dataset.action = "strike-attack";
+			button.dataset.variantIndex = "0";
+			button.dataset.actionIndex = strikeElement.dataset.actionIndex;
+			const rateOfFire = getRateOfFire(actor, strike) ?? 0;
+			const label = game.i18n.localize("VURS.BurstFire.Title");
+			const rateLabel = game.i18n.format("VURS.BurstFire.RateOfFireShort", {
+				shots: rateOfFire
+			});
+			const name = document.createElement("span");
+			name.className = "name";
+			name.textContent = label;
+			const glyph = document.createElement("span");
+			glyph.className = "action-glyph";
+			glyph.textContent = "2";
+			button.append(name, document.createTextNode(" "), glyph, document.createTextNode(" "));
+			const rate = document.createElement("span");
+			rate.className = "vurs-burst-fire-rate-of-fire";
+			rate.textContent = `(${rateLabel})`;
+			button.append(rate);
+			button.setAttribute(
+				"aria-label",
+				`${label} 2 (${rateLabel}) — ${strike.item.name}`
+			);
+			button.dataset.tooltip = strike.item.name;
+			attackSubsection.append(button);
+			updatePreparedBurstFireButton(
+				root,
+				strikeElement,
+				prepared?.itemId === strike.item?.id,
+				actor
+			);
+		}
+		return;
+	}
 
 	for (const strikeElement of root.querySelectorAll("li.strike[data-action-index]")) {
 		const strike = actor.system?.actions?.[Number(strikeElement.dataset.actionIndex)];
@@ -674,21 +975,45 @@ function markBurstFireAlternateUsage(app, element) {
 		const burstFireIndex = strike?.altUsages?.findIndex(usage => usage.type === "burst-fire") ?? -1;
 		if (autoFireIndex < 0 || burstFireIndex < 0) continue;
 
-		const autoFire = strikeElement
+		const controlsAlreadyPlaced = strikeElement.querySelector(":scope > section > .vurs-burst-fire-controls");
+		if (controlsAlreadyPlaced) {
+			if (prepared?.itemId === strike.item?.id) {
+				prepared.root = root;
+				prepared.strikeElement = strikeElement;
+			}
+			updatePreparedBurstFireButton(root, strikeElement, prepared?.itemId === strike.item?.id, actor);
+			continue;
+		}
+		const autoFireUsage = strikeElement
 			.querySelector(`[data-alt-usage="${autoFireIndex}"]`)
 			?.closest(".alt-usage");
-		const burstFire = strikeElement
+		const burstFireUsage = strikeElement
 			.querySelector(`[data-alt-usage="${burstFireIndex}"]`)
 			?.closest(".alt-usage");
-		if (!autoFire || !burstFire) continue;
+		const buttonGroup = strikeElement.querySelector(":scope > section > .button-group.tags");
+		if (!autoFireUsage || !burstFireUsage || !buttonGroup) continue;
 
-		let usages = strikeElement.querySelector(":scope > section > .vurs-burst-fire-usages");
-		if (!usages) {
-			usages = document.createElement("div");
-			usages.className = "vurs-burst-fire-usages";
-			autoFire.before(usages);
+		const autoFireButton = autoFireUsage.querySelector('button[data-action="strike-attack"]');
+		const burstFireButton = burstFireUsage.querySelector('button[data-action="strike-attack"]');
+		const damageButton = buttonGroup.querySelector('button[data-action="strike-damage"]');
+		const criticalButton = buttonGroup.querySelector('button[data-action="strike-critical"]');
+		if (!autoFireButton || !burstFireButton || !damageButton || !criticalButton) continue;
+
+		burstFireButton.classList.add("vurs-burst-fire-trigger");
+		const controls = document.createElement("div");
+		controls.className = "button-group tags vurs-burst-fire-controls";
+		controls.dataset.tooltipDirection = "UP";
+		for (const button of [autoFireButton, burstFireButton, damageButton, criticalButton]) {
+			controls.append(button);
 		}
-		usages.append(autoFire, burstFire);
+		buttonGroup.after(controls);
+		autoFireUsage.remove();
+		burstFireUsage.remove();
+		if (prepared?.itemId === strike.item?.id) {
+			prepared.root = root;
+			prepared.strikeElement = strikeElement;
+		}
+		updatePreparedBurstFireButton(root, strikeElement, prepared?.itemId === strike.item?.id, actor);
 	}
 }
 
@@ -707,7 +1032,7 @@ function createBurstFireUsage(actor, strike, autoFire) {
 		label: game.i18n.format("VURS.BurstFire.VariantLabel", {
 			shots: getRateOfFire(actor, strike) ?? 0
 		}),
-		roll: options => rollBurstFire(actor, strike, 0, options)
+		roll: () => null
 	}];
 	return {
 		...base,
@@ -789,5 +1114,7 @@ Hooks.once("ready", () => {
 	registerBurstFireLocalization();
 	installBurstFirePrepareAttacks();
 	Hooks.on("renderItemSheet", (app, html) => addBurstFireItemStats(app, html));
+	Hooks.on("updateItem", clearPreparedBurstFireForItem);
+	Hooks.on("deleteItem", clearPreparedBurstFireForItem);
 });
 Hooks.on("renderActorSheet", markBurstFireAlternateUsage);

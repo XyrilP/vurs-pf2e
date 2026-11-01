@@ -533,7 +533,10 @@ export function getDamageSelectors(damage, item = null) {
 	if (cached?.item === item) return new Set(cached.selectors);
 
 	const selectors = new Set(["damage-received"]);
-	if (item?.isOfType?.("weapon", "melee")) selectors.add("strike-damage");
+	if (item?.isOfType?.("weapon", "melee")) {
+		selectors.add("strike-damage");
+		if (item.isRanged) selectors.add("ranged-damage");
+	}
 	const modifiers = damage?.options?.damage?.modifiers;
 	if (Array.isArray(modifiers)) {
 		for (const modifier of modifiers) {

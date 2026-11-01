@@ -618,26 +618,7 @@ function applyDisarmedStrikeState(root, actor) {
 
 	if (actor.isOfType?.("character") || actor.type === "character") {
 		const encounterPanel = root.querySelector('.actions-panel[data-tab="encounter"]');
-		section = encounterPanel?.querySelector(":scope > .vurs-disarmed-strikes");
-
-		if (!section && encounterPanel) {
-			const strikes = encounterPanel.querySelector(":scope > ol.strikes-list[data-strikes]");
-			let heading = strikes?.previousElementSibling;
-			while (heading && heading.tagName !== "HEADER") heading = heading.previousElementSibling;
-
-			if (heading && strikes) {
-				section = document.createElement("div");
-				section.className = "vurs-disarmed-strikes";
-				encounterPanel.insertBefore(section, heading);
-				let element = heading;
-				while (element) {
-					const next = element.nextElementSibling;
-					section.append(element);
-					if (element === strikes) break;
-					element = next;
-				}
-			}
-		}
+		section = encounterPanel?.querySelector(":scope > ol.strikes-list[data-strikes]");
 	} else if (actor.isOfType?.("npc") || actor.type === "npc") {
 		section = root.querySelector(".attacks.section-container");
 	}
@@ -863,7 +844,7 @@ function applyRestrainedState(root, actor) {
 	}
 
 	if (actor.isOfType?.("character") || actor.type === "character") {
-		const strikeSection = root.querySelector(".vurs-disarmed-strikes, .strikes-list");
+		const strikeSection = root.querySelector(".strikes-list");
 		setConditionDisabled(strikeSection, "restrained", isRestrained);
 	} else {
 		setConditionDisabled(root.querySelector(".attacks.section-container"), "restrained", isRestrained);
@@ -882,7 +863,7 @@ function applyParalyzedState(root, actor) {
 
 	const isCharacter = actor.isOfType?.("character") || actor.type === "character";
 	const strikeSection = isCharacter
-		? root.querySelector(".vurs-disarmed-strikes, .strikes-list")
+		? root.querySelector(".strikes-list")
 		: root.querySelector(".attacks.section-container");
 	setConditionDisabled(strikeSection, "paralyzed", isParalyzed);
 }
