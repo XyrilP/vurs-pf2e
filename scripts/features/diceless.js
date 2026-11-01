@@ -32,6 +32,10 @@ export function getDamageRollActorForVurs(roll) {
 	return getDamageRollActor(roll) ?? activeDamageActors.at(-1) ?? null;
 }
 
+export function getActiveDamageActorForVurs() {
+	return activeDamageActors.at(-1) ?? null;
+}
+
 function findActorInRollContext(value, seen = new WeakSet(), depth = 0) {
 	if (!value || typeof value !== "object" || depth > 5 || seen.has(value)) return null;
 	seen.add(value);

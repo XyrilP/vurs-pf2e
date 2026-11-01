@@ -110,6 +110,7 @@ const SKILL_ATTRIBUTE_FALLBACK_ICONS = Object.freeze({
   cha: { icon: "moon" },
   wis: { icon: "hands-praying" }
 });
+const SKILL_NAME_WIDTHS = new WeakMap();
 const DEFAULT_SKILL_ATTRIBUTE_ICONS = Object.freeze({
   ...SKILL_ATTRIBUTE_FALLBACK_ICONS,
   con: { icon: "heart" },
@@ -636,18 +637,12 @@ function enableSkillNameHoverScroll(list) {
     if (!name || !list.contains(name) || name.classList.contains("vurs-skill-name-scrolling")) return;
     const text = name.querySelector(":scope > .vurs-skill-name-text");
     if (!text?.textContent?.trim()) return;
+    const measurement = SKILL_NAME_WIDTHS.get(text);
+    if (!measurement) return;
+    const overflow = measurement.width - name.clientWidth;
+    if (overflow <= 1) return;
 
-    // Restore the normal font size while hovered. This lets the original-size
-    // label scroll even when scaling had reduced it enough to appear to fit.
-    const scaledFontSize = text.style.fontSize;
     text.style.removeProperty("font-size");
-    const fontSize = Number.parseFloat(getComputedStyle(text).fontSize);
-    const overflow = measureSkillNameWidth(text, fontSize) - name.clientWidth;
-    if (overflow <= 1) {
-      if (scaledFontSize) text.style.fontSize = scaledFontSize;
-      return;
-    }
-
     name.style.setProperty("--vurs-skill-name-offset", `${-overflow}px`);
     name.style.setProperty("--vurs-skill-name-duration", "2s");
     name.classList.add("vurs-skill-name-scrolling");
@@ -659,59 +654,82 @@ function enableSkillNameHoverScroll(list) {
     name.classList.remove("vurs-skill-name-scrolling");
     name.style.removeProperty("--vurs-skill-name-offset");
     name.style.removeProperty("--vurs-skill-name-duration");
-    applySkillNameScaling(list);
+    applySkillNameScalingToName(name, name.querySelector(":scope > .vurs-skill-name-text"));
   };
   list._vursSkillNameHoverScrollHandlers = { onPointerOver, onPointerOut };
   list.addEventListener("pointerover", onPointerOver);
   list.addEventListener("pointerout", onPointerOut);
 }
 
-function measureSkillNameWidth(text, fontSize) {
-  const computed = getComputedStyle(text);
-  const measure = document.createElement("span");
-  Object.assign(measure.style, {
-    display: "inline-block",
-    fontFamily: computed.fontFamily,
-    fontSize: `${fontSize}px`,
-    fontStyle: computed.fontStyle,
-    fontVariant: computed.fontVariant,
-    fontWeight: computed.fontWeight,
-    letterSpacing: computed.letterSpacing,
+function measureSkillNameWidths(measurements) {
+  const container = document.createElement("span");
+  Object.assign(container.style, {
     position: "fixed",
-    textTransform: computed.textTransform,
+    left: "-10000px",
+    top: "0",
     visibility: "hidden",
     whiteSpace: "nowrap",
     width: "max-content"
   });
-  measure.textContent = text.textContent;
-  document.body.append(measure);
-  const width = measure.getBoundingClientRect().width;
-  measure.remove();
-  return width;
+  const elements = measurements.map(({ text, fontSize }) => {
+    const computed = getComputedStyle(text);
+    const measure = document.createElement("span");
+    Object.assign(measure.style, {
+      display: "inline-block",
+      fontFamily: computed.fontFamily,
+      fontSize: `${fontSize}px`,
+      fontStyle: computed.fontStyle,
+      fontVariant: computed.fontVariant,
+      fontWeight: computed.fontWeight,
+      letterSpacing: computed.letterSpacing,
+      textTransform: computed.textTransform,
+      whiteSpace: "nowrap",
+      width: "max-content"
+    });
+    measure.textContent = text.textContent;
+    container.append(measure);
+    return measure;
+  });
+  document.body.append(container);
+  const widths = elements.map(element => element.getBoundingClientRect().width);
+  container.remove();
+  return widths;
 }
 
 function applySkillNameScaling(list) {
   const twoColumns = list.classList.contains("vurs-skill-layout-two-columns");
-  for (const name of list.querySelectorAll(".vurs-skill-attribute-group-list .name")) {
+  const names = [...list.querySelectorAll(".vurs-skill-attribute-group-list .name")];
+  const candidates = [];
+  for (const name of names) {
     const text = name.querySelector(":scope > .vurs-skill-name-text");
     if (!text) continue;
-    if (twoColumns) {
+    if (twoColumns || !name.classList.contains("vurs-skill-name-scrolling")) {
       text.style.removeProperty("font-size");
-      continue;
     }
-    if (name.classList.contains("vurs-skill-name-scrolling")) continue;
-    text.style.removeProperty("font-size");
+  }
+  for (const name of names) {
+    const text = name.querySelector(":scope > .vurs-skill-name-text");
+    if (!text || name.classList.contains("vurs-skill-name-scrolling")) continue;
 
     const baseSize = Number.parseFloat(getComputedStyle(name).fontSize);
     const availableWidth = name.clientWidth;
     if (!Number.isFinite(baseSize) || availableWidth <= 0) continue;
-    const fullWidth = measureSkillNameWidth(text, baseSize);
-    if (fullWidth <= availableWidth || fullWidth <= 0) continue;
+    candidates.push({ text, baseSize, availableWidth });
+  }
 
-    // Three-column labels shrink by at most 33%. Hover scrolling handles
-    // any remaining overflow at that readable minimum size.
-    const scale = Math.max(0.67, availableWidth / fullWidth);
-    text.style.fontSize = `${baseSize * scale}px`;
+  if (candidates.length) {
+    const widths = measureSkillNameWidths(candidates.map(({ text, baseSize }) => ({ text, fontSize: baseSize })));
+    for (const [index, candidate] of candidates.entries()) {
+      const fullWidth = widths[index];
+      SKILL_NAME_WIDTHS.set(candidate.text, { fontSize: candidate.baseSize, width: fullWidth });
+      if (twoColumns) continue;
+      if (fullWidth <= candidate.availableWidth || fullWidth <= 0) continue;
+
+      // Three-column labels shrink by at most 33%. Hover scrolling handles
+      // any remaining overflow at that readable minimum size.
+      const scale = Math.max(0.67, candidate.availableWidth / fullWidth);
+      candidate.text.style.fontSize = `${candidate.baseSize * scale}px`;
+    }
   }
 
   if (typeof ResizeObserver === "undefined") return;
@@ -719,6 +737,24 @@ function applySkillNameScaling(list) {
     list._vursSkillNameScaleObserver = new ResizeObserver(() => applySkillNameScaling(list));
     list._vursSkillNameScaleObserver.observe(list);
   }
+}
+
+function applySkillNameScalingToName(name, text) {
+  if (!text) return;
+  const list = name.closest("ul.proficiencies-list");
+  const measurement = SKILL_NAME_WIDTHS.get(text);
+  if (!list || list.classList.contains("vurs-skill-layout-two-columns") || !measurement) {
+    text.style.removeProperty("font-size");
+    return;
+  }
+
+  const availableWidth = name.clientWidth;
+  if (measurement.width <= availableWidth || measurement.width <= 0) {
+    text.style.removeProperty("font-size");
+    return;
+  }
+  const scale = Math.max(0.67, availableWidth / measurement.width);
+  text.style.fontSize = `${measurement.fontSize * scale}px`;
 }
 
 function disableSkillNameHoverScroll(list) {

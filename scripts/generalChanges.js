@@ -1,4 +1,8 @@
-import { installActorDamageActionContext, installDicelessPatches } from "./features/diceless.js";
+import {
+	getActiveDamageActorForVurs,
+	installActorDamageActionContext,
+	installDicelessPatches
+} from "./features/diceless.js";
 import { installVursCriticalDamage } from "./features/vursCriticalDamage.js";
 import { appendVursPlayCostIcons, createVursPlayCostElement } from "./features/playCostIcons.js";
 import { renderVursPlayResources } from "./features/playResources.js";
@@ -32,6 +36,36 @@ import {
 } from "./features/systemModes.js";
 
 const MODULE_ID = "vurs-pf2e";
+const DRAGONBLIGHT_DAMAGE_TYPES = Object.freeze([
+	"acid",
+	"cold",
+	"electricity",
+	"fire",
+	"sonic",
+	"dragon",
+	"vurs-magic"
+]);
+const DRAGONBLIGHT_ELEMENTAL_TRAITS = Object.freeze([
+	"acid",
+	"cold",
+	"electricity",
+	"fire",
+	"sonic",
+	"air",
+	"earth",
+	"metal",
+	"water",
+	"wood"
+]);
+const DRAGONBLIGHT_MAGICAL_TRAITS = Object.freeze([
+	"magical",
+	"arcane",
+	"divine",
+	"occult",
+	"primal"
+]);
+const DRAGONBLIGHT_DAMAGE_SOURCE_OPTION = "vurs:dragonblight-damage-source";
+let dragonblightDamageTypeCache = null;
 const DISABLED_FEATURE_ENFORCEMENT_SETTINGS = Object.freeze({
 	default: "enforceDisabledFeaturesInDefault",
 	vurs: "enforceDisabledFeaturesInVurs",
@@ -43,8 +77,10 @@ const VURS_IWR_INSTANCE_TEST_PATCH = Symbol("vurs-pf2e.iwrInstanceTestPatch");
 const VURS_SPECIAL_IWR_RULE_PATCH = Symbol("vurs-pf2e.specialIwrRulePatch");
 const VURS_SPECIAL_DAMAGE_SELECTOR_METHOD_PATCH = Symbol("vurs-pf2e.specialDamageSelectorMethodPatch");
 const VURS_SPECIAL_DAMAGE_RULE_PREDICATE = Symbol("vurs-pf2e.specialDamageRulePredicate");
+const VURS_DRAGONBLIGHT_DAMAGE_DIALOG_PATCH = Symbol("vurs-pf2e.dragonblightDamageDialogPatch");
 const VURS_PLAY_COST_REFRESH_PATCH = Symbol("vurs-pf2e.playCostRefreshPatch");
 const VURS_BROKEN_PASSIVE_RULE_PATCH = Symbol("vurs-pf2e.brokenPassiveRulePatch");
+const VURS_DRAGONBLIGHT_RULE_PATCH = Symbol("vurs-pf2e.dragonblightRulePatch");
 const VURS_MUTED_ITEM_RULE_PATCH = Symbol("vurs-pf2e.mutedItemRulePatch");
 const VURS_MUTED_PHYSICAL_RULE_PATCH = Symbol("vurs-pf2e.mutedPhysicalRulePatch");
 const VURS_MUTED_EQUIPPED_PATCH = Symbol("vurs-pf2e.mutedEquippedPatch");
@@ -121,6 +157,7 @@ Hooks.once("setup", () => {
 Hooks.once("pf2e.systemReady", () => {
 	registerVursCharacterPreparationWrappers();
 	installBrokenPassiveRuleSuppression();
+	installDragonblightRuleSuppression();
 	installMutedItemRuleSuppression();
 	installMutedUnequippedItems();
 	installCustomDamageIwrPatch();
@@ -132,6 +169,7 @@ Hooks.once("ready", () => {
 	updateDisabledFeaturesPresentation();
 	registerVursCharacterPreparationWrappers();
 	installBrokenPassiveRuleSuppression();
+	installDragonblightRuleSuppression();
 	installMutedItemRuleSuppression();
 	installMutedUnequippedItems();
 	installCustomDamageIwrPatch();
@@ -473,6 +511,7 @@ Hooks.on("updateActor", (actor, changes, options = {}) => {
 
 		applyDisarmedStrikeState(root, actor);
 		applySilencedState(root, actor);
+		applyDragonblightState(root, actor);
 		applyMutedState(root, actor);
 		applyConfusedState(root, actor);
 		applyFatiguedState(root, actor);
@@ -550,6 +589,7 @@ function applyActorSheetPresentation(app, element) {
 	renderVursPlayResources(root, actor);
 	applyDisarmedStrikeState(root, actor);
 	applySilencedState(root, actor);
+	applyDragonblightState(root, actor);
 	applyMutedState(root, actor);
 	applyConfusedState(root, actor);
 	applyFatiguedState(root, actor);
@@ -572,6 +612,7 @@ function applyActorSheetPresentation(app, element) {
 		root.dataset.vursPlayResourceTokenObserver = "true";
 		const observer = new MutationObserver(() => {
 			applySilencedState(root, actor);
+			applyDragonblightState(root, actor);
 			applyMutedState(root, actor);
 			applyConfusedState(root, actor);
 			applyFatiguedState(root, actor);
@@ -651,6 +692,159 @@ function applySilencedState(root, actor) {
 		setConditionDisabled(element, "silenced", isSilenced && !isBasicAction);
 		setConditionDisabled(element, "cursed", isCursed && !isBasicAction);
 	}
+}
+
+function applyDragonblightState(root, actor) {
+	const isDragonblight = [1, "1", true].includes(
+		foundry.utils.getProperty(actor, "flags.vurs.conditions.isDragonblight")
+	);
+	if (!isDragonblight) {
+		for (const element of root.querySelectorAll('[data-vurs-dragonblight="true"]')) {
+			setConditionDisabled(element, "dragonblight", false);
+		}
+		return;
+	}
+
+	const damageTypes = getDragonblightDamageTypes();
+	setConditionDisabled(
+		root.querySelector('.tab.spellcasting[data-tab="spellcasting"], .tab.spells[data-tab="spells"]'),
+		"dragonblight",
+		true
+	);
+	const selector = [
+		".actions-list > .item:not([data-strike])",
+		".spell-list > .spell[data-item-id]",
+		".feats-list [data-item-id]"
+	].join(", ");
+
+	for (const element of root.querySelectorAll(selector)) {
+		const item = element.dataset.itemId ? actor.items?.get(element.dataset.itemId) : null;
+		const slug = item?.slug ??
+			foundry.utils.getProperty(item, "system.slug") ??
+			element.dataset.slug ??
+			element.dataset.actionSlug ??
+			element.dataset.action;
+		const action = typeof slug === "string" ? game.pf2e?.actions?.get?.(slug) : null;
+		setConditionDisabled(
+			element,
+			"dragonblight",
+			isDragonblightAffected(item, action, element, damageTypes)
+		);
+	}
+
+	for (const strike of root.querySelectorAll(
+		".strikes-list [data-strike][data-action-index], " +
+		".attacks.section-container [data-strike][data-action-index]"
+	)) {
+		const action = actor.system.actions?.[Number(strike.dataset.actionIndex)];
+		const item = actor.items?.get(action?.item?.id ?? strike.dataset.itemId);
+		setConditionDisabled(
+			strike,
+			"dragonblight",
+			isDragonblightStrikeAffected(item, action, damageTypes)
+		);
+	}
+}
+
+function isDragonblightStrikeAffected(item, action, damageTypes) {
+	const mainDamageSources = [
+		foundry.utils.getProperty(item, "system.damage"),
+		action?.damage,
+		action?.damageRoll,
+		{ damageType: action?.damageType }
+	];
+	return mainDamageSources.some(source =>
+		hasDragonblightDamageTypeInValue(source, damageTypes) ||
+		hasDragonblightDamageTraitInValue(source)
+	);
+}
+
+function isDragonblightAffected(item, action, element, damageTypes) {
+	const itemTraits = foundry.utils.getProperty(item, "system.traits.value");
+	const actionTraits = action?.traits?.value ?? action?.traits;
+	const hasAffectedTrait = item?.type === "spell" ||
+		element?.matches(".spell-list > .spell") ||
+		hasDragonblightActionTrait(itemTraits) ||
+		hasDragonblightActionTrait(actionTraits);
+	const hasAffectedDamage = hasDragonblightDamageTypeInValue(
+		getDragonblightDamageSources(item?.system, action),
+		damageTypes
+	);
+	return hasAffectedTrait || hasAffectedDamage;
+}
+
+function getDragonblightDamageSources(system, action) {
+	return [
+		system?.damage,
+		system?.damageRolls,
+		system?.damageType,
+		system?.rules,
+		action?.damage,
+		{ damageType: action?.damageType }
+	];
+}
+
+function hasDragonblightActionTrait(traits) {
+	if (!Array.isArray(traits) && !(traits instanceof Set)) return false;
+	for (const trait of traits) {
+		const slug = typeof trait === "string" ? trait : trait?.slug;
+		if (DRAGONBLIGHT_ELEMENTAL_TRAITS.includes(slug) ||
+			DRAGONBLIGHT_MAGICAL_TRAITS.includes(slug)) {
+			return true;
+		}
+	}
+	return false;
+}
+
+function getDragonblightDamageTypes() {
+	const systemConfig = CONFIG[game.system.id.toUpperCase()] ?? CONFIG.PF2E;
+	if (dragonblightDamageTypeCache && dragonblightDamageTypeCache.systemConfig === systemConfig) {
+		return dragonblightDamageTypeCache.types;
+	}
+
+	const configuredTypes = systemConfig?.damageTypes;
+	const types = new Set(configuredTypes
+		? DRAGONBLIGHT_DAMAGE_TYPES.filter(type => Object.hasOwn(configuredTypes, type))
+		: DRAGONBLIGHT_DAMAGE_TYPES);
+	dragonblightDamageTypeCache = { systemConfig, types };
+	return types;
+}
+
+function hasDragonblightDamageTypeInValue(value, damageTypes) {
+	if (Array.isArray(value)) {
+		return value.some(entry => hasDragonblightDamageTypeInValue(entry, damageTypes));
+	}
+	if (!value || typeof value !== "object") return false;
+
+	return Object.entries(value).some(([key, entry]) =>
+		(["damageType", "damage-type"].includes(key) &&
+			typeof entry === "string" &&
+			(damageTypes.has(entry) || isDragonblightTrait(entry))) ||
+		(entry && typeof entry === "object" &&
+			hasDragonblightDamageTypeInValue(entry, damageTypes))
+	);
+}
+
+function getDragonblightDamageTypesFromValue(value, damageTypes, result = new Set()) {
+	if (typeof value === "string") return result;
+	if (Array.isArray(value)) {
+		for (const entry of value) getDragonblightDamageTypesFromValue(entry, damageTypes, result);
+		return result;
+	}
+	if (!value || typeof value !== "object") return result;
+
+	for (const [key, entry] of Object.entries(value)) {
+		if (
+			["damageType", "damage-type"].includes(key) &&
+			typeof entry === "string" &&
+			damageTypes.has(entry)
+		) {
+			result.add(entry);
+		} else if (entry && typeof entry === "object") {
+			getDragonblightDamageTypesFromValue(entry, damageTypes, result);
+		}
+	}
+	return result;
 }
 
 function applyMutedState(root, actor) {
@@ -1044,6 +1238,45 @@ function installBrokenPassiveRuleSuppression() {
 	}
 }
 
+function installDragonblightRuleSuppression() {
+	for (const type of ["character", "npc"]) {
+		const prototype = CONFIG.PF2E?.Actor?.documentClasses?.[type]?.prototype;
+		const original = prototype?.prepareRuleElements;
+		if (typeof original !== "function" || prototype[VURS_DRAGONBLIGHT_RULE_PATCH]) continue;
+
+		prototype.prepareRuleElements = function (...args) {
+			const rules = original.apply(this, args);
+			if (!areDisabledFeaturesEnforced()) return rules;
+
+			const isDragonblight = [1, "1", true].includes(
+				foundry.utils.getProperty(this, "flags.vurs.conditions.isDragonblight")
+			) || rules.some(rule => ruleEnablesVursCondition(rule, this, "isDragonblight"));
+			if (!isDragonblight) return rules;
+
+			const damageTypes = getDragonblightDamageTypes();
+			const affectedItems = new WeakMap();
+			return rules.filter(rule => {
+				const item = rule.item;
+				if (!item || (typeof item !== "object" && typeof item !== "function")) return true;
+				if (item.isOfType?.("weapon", "melee")) return true;
+				if (!affectedItems.has(item)) {
+					affectedItems.set(item, isDragonblightAffected(item, null, null, damageTypes));
+				}
+				return !affectedItems.get(item);
+			});
+		};
+		Object.defineProperty(prototype, VURS_DRAGONBLIGHT_RULE_PATCH, { value: true });
+	}
+}
+
+function actorHasDragonblight(actor) {
+	return [1, "1", true].includes(
+		foundry.utils.getProperty(actor, "flags.vurs.conditions.isDragonblight")
+	) || actor?.rules?.some(rule =>
+		ruleEnablesVursCondition(rule, actor, "isDragonblight")
+	);
+}
+
 function installMutedItemRuleSuppression() {
 	for (const type of ["character", "npc"]) {
 		const prototype = CONFIG.PF2E?.Actor?.documentClasses?.[type]?.prototype;
@@ -1123,7 +1356,7 @@ function ruleEnablesVursCondition(rule, actor, condition) {
 function setConditionDisabled(element, condition, isDisabled, disableInteraction = true) {
 	if (!element) return;
 	element.dataset[`vurs${condition[0].toUpperCase()}${condition.slice(1)}`] = String(isDisabled);
-	const activeConditions = ["Cursed", "Muted", "Disarmed", "Silenced", "Confused", "Fatigued", "Rooted", "Immobilized", "Incapacitated", "Paralyzed", "Petrified", "Prone", "Restrained", "Staggered", "Stunned", "Unconscious", "CantAct", "Broken", "Cooldown", "ChargeUp"]
+	const activeConditions = ["Cursed", "Muted", "Disarmed", "Silenced", "Dragonblight", "Confused", "Fatigued", "Rooted", "Immobilized", "Incapacitated", "Paralyzed", "Petrified", "Prone", "Restrained", "Staggered", "Stunned", "Unconscious", "CantAct", "Broken", "Cooldown", "ChargeUp"]
 		.filter(name => element.dataset[`vurs${name}`] === "true")
 		.map(name => name === "CantAct" ? "Can't Act" : name === "ChargeUp" ? "Charge Up" : name);
 	element.dataset.vursConditionLabel = activeConditions.join(" · ");
@@ -2386,24 +2619,271 @@ function installCustomDamageIwrPatch() {
 	registerCustomIwrTypes();
 	installSpecialIwrRuleElementPatch();
 	installSpecialDamageSelectorPatch();
+	installDragonblightDamageDialogSuppression();
 
 	const handlerKey = Symbol.for(`${MODULE_ID}.iwrDamageHandler`);
-	if (globalThis[handlerKey]) return;
 	const damageHandlers = globalThis[Symbol.for(`${MODULE_ID}.applyDamageHandlers`)];
 	if (!(damageHandlers instanceof Set)) {
 		console.error(`${MODULE_ID} | Could not install IWR damage handling: shared applyDamage handlers are unavailable`);
 		return;
 	}
 
-	damageHandlers.add(function (actor, wrapped, args) {
-		if (!["character", "npc"].includes(actor?.type)) return wrapped(...args);
-		const attributes = actor.attributes;
-		for (const entry of [...(attributes?.immunities ?? []), ...(attributes?.resistances ?? [])]) {
-			installIwrTestPatch(entry);
+	if (!globalThis[handlerKey]) {
+		damageHandlers.add(function (actor, wrapped, args) {
+			if (!["character", "npc"].includes(actor?.type)) return wrapped(...args);
+			const attributes = actor.attributes;
+			for (const entry of [...(attributes?.immunities ?? []), ...(attributes?.resistances ?? [])]) {
+				installIwrTestPatch(entry);
+			}
+			return wrapped(...args);
+		});
+		globalThis[handlerKey] = true;
+	}
+
+	installDragonblightDamageSuppression(damageHandlers);
+}
+
+function installDragonblightDamageDialogSuppression() {
+	const prototype = foundry.appv1?.api?.Application?.prototype;
+	const originalRender = prototype?.render;
+	if (typeof originalRender !== "function" || prototype[VURS_DRAGONBLIGHT_DAMAGE_DIALOG_PATCH]) return;
+
+	prototype.render = function (...args) {
+		if (this.constructor?.name === "DamageModifierDialog") {
+			const context = this.context;
+			const actor = context?.self?.actor ??
+				context?.origin?.actor ??
+				getActiveDamageActorForVurs();
+			if (actorHasDragonblight(actor)) {
+				const damageTypes = getDragonblightDamageTypes();
+				const formulaData = this.formulaData;
+				if (formulaData) {
+					if (Array.isArray(formulaData.base)) {
+						formulaData.base = formulaData.base.filter(component =>
+							!isDragonblightDamageComponent(component, damageTypes)
+						);
+					}
+					for (const property of ["dice", "modifiers"]) {
+						if (!Array.isArray(formulaData[property])) continue;
+						for (const component of formulaData[property]) {
+							if (!isDragonblightDamageComponent(component, damageTypes)) continue;
+							component.enabled = false;
+							component.ignored = true;
+						}
+					}
+					this.baseDamageType = formulaData.base?.[0]?.damageType ?? "untyped";
+				}
+			}
 		}
-		return wrapped(...args);
+		return originalRender.apply(this, args);
+	};
+	Object.defineProperty(prototype, VURS_DRAGONBLIGHT_DAMAGE_DIALOG_PATCH, { value: true });
+}
+
+function isDragonblightDamageComponent(component, damageTypes) {
+	const type = typeof component?.damageType === "string"
+		? component.damageType
+		: typeof component?.type === "string"
+			? component.type
+			: null;
+	return (type !== null && (damageTypes.has(type) || isDragonblightTrait(type))) ||
+		hasDragonblightDamageTraitInValue(component);
+}
+
+function installDragonblightDamageSuppression(damageHandlers) {
+	const handlerKey = Symbol.for(`${MODULE_ID}.dragonblightDamageHandler`);
+	if (globalThis[handlerKey]) return;
+
+	const damageTypes = getDragonblightDamageTypes();
+	if (damageTypes.size === 0) {
+		console.error(`${MODULE_ID} | Could not install Dragonblight damage suppression: no supported damage types are configured`);
+		return;
+	}
+
+	damageHandlers.add((actor, wrapped, args) => {
+		const params = args[0];
+		const sourceActor = params?.item?.actor ?? params?.item?.parent;
+		const isDragonblighted = actorHasDragonblight(actor) ||
+			actorHasDragonblight(sourceActor) ||
+			hasDragonblightDamageSourceOption(params?.rollOptions);
+		if (!isDragonblighted) return wrapped(...args);
+
+		const hasAffectedTrait = hasDragonblightDamageTraitInOptions(params?.rollOptions) ||
+			hasDragonblightActionTrait(foundry.utils.getProperty(params?.item, "system.traits.value")) ||
+			hasDragonblightDamageTraitInValue(
+				getDragonblightDamageSources(params?.item?.system, params?.item)
+			);
+		if (typeof params?.damage === "number" && params.damage > 0) {
+			const optionTypes = getDamageTypesFromOptions(params.rollOptions);
+			const itemTypes = getDragonblightDamageTypesFromValue(
+				getDragonblightDamageSources(params.item?.system, params.item),
+				damageTypes
+			);
+			const incomingTypes = optionTypes.size > 0 ? optionTypes : itemTypes;
+			const allIncomingTypesAffected = incomingTypes.size > 0 &&
+				[...incomingTypes].every(type => damageTypes.has(type));
+			if (allIncomingTypesAffected || (incomingTypes.size === 0 && hasAffectedTrait)) {
+				return wrapped({ ...params, damage: 0 }, ...args.slice(1));
+			}
+		}
+
+		const damageInstances = getDragonblightDamageInstances(params?.damage);
+		if (Array.isArray(damageInstances) && damageInstances.length > 0) {
+			const hasTypedDamageComponents = damageInstances.some(instance =>
+				typeof instance?.type === "string" ||
+				typeof instance?.damageType === "string" ||
+				typeof instance?.type?.slug === "string"
+			);
+			const affectedInstances = damageInstances.filter(instance => {
+				if (instance.kinds?.has?.("damage") === false) return false;
+				return hasDragonblightDamageInstanceType(instance, damageTypes) ||
+					hasDragonblightDamageTraitInOptions(instance.options) ||
+					hasDragonblightDamageTraitInValue(instance.formalDescription) ||
+					(hasAffectedTrait && !hasTypedDamageComponents);
+			});
+			if (affectedInstances.length > 0) {
+				const remainingInstances = damageInstances.filter(instance =>
+					!affectedInstances.includes(instance)
+				);
+				if (remainingInstances.length === 0) {
+					return wrapped({ ...params, damage: 0 }, ...args.slice(1));
+				}
+
+				const damageRoll = params.damage;
+				const pool = damageRoll.pool;
+				if (typeof pool?.constructor?.fromRolls !== "function" ||
+					typeof damageRoll.constructor?.fromTerms !== "function") {
+					console.error(`${MODULE_ID} | Could not filter Dragonblight damage components: damage roll reconstruction is unavailable`);
+					return wrapped(...args);
+				}
+				const filteredRoll = damageRoll.constructor.fromTerms(
+					[pool.constructor.fromRolls(remainingInstances)],
+					foundry.utils.deepClone(damageRoll.options)
+				);
+				return wrapped({ ...params, damage: filteredRoll }, ...args.slice(1));
+			}
+		}
+
+		const immunities = actor.attributes?.immunities;
+		if (!Array.isArray(immunities)) {
+			console.error(`${MODULE_ID} | Could not suppress Dragonblight damage for ${actor.name}: actor immunities are unavailable`);
+			return wrapped(...args);
+		}
+
+		const immunity = {
+			type: "dragonblight",
+			label: "Dragonblight",
+			test: options => {
+				const types = getDamageTypesFromOptions(options);
+				if (types.size > 0) {
+					return [...types].some(type => damageTypes.has(type));
+				}
+				return hasAffectedTrait || hasDragonblightDamageOption(options, damageTypes);
+			}
+		};
+		immunities.push(immunity);
+		try {
+			return wrapped(...args);
+		} finally {
+			const index = immunities.indexOf(immunity);
+			if (index >= 0) immunities.splice(index, 1);
+		}
 	});
+
 	globalThis[handlerKey] = true;
+}
+
+function getDragonblightDamageInstances(damage) {
+	const poolRolls = damage?.pool?.rolls;
+	if (Array.isArray(poolRolls) && poolRolls.length > 0) return poolRolls;
+	const instances = damage?.instances;
+	if (Array.isArray(instances) && instances.length > 0) return instances;
+	return [];
+}
+
+function hasDragonblightDamageInstanceType(instance, damageTypes) {
+	const type = typeof instance?.type === "string"
+		? instance.type
+		: typeof instance?.damageType === "string"
+			? instance.damageType
+			: typeof instance?.type?.slug === "string"
+				? instance.type.slug
+				: null;
+	return type !== null &&
+		(damageTypes.has(type) || isDragonblightTrait(type));
+}
+
+function getDamageTypesFromOptions(options) {
+	const values = options instanceof Set || Array.isArray(options)
+		? options
+		: typeof options === "string"
+			? [options]
+			: [];
+	const types = new Set();
+	for (const option of values) {
+		if (typeof option !== "string") continue;
+		const normalized = option.startsWith("item:") ? option.slice("item:".length) : option;
+		if (!normalized.startsWith("damage:type:")) continue;
+		types.add(normalized.slice("damage:type:".length));
+	}
+	return types;
+}
+
+function hasDragonblightDamageOption(options, damageTypes) {
+	const types = getDamageTypesFromOptions(options);
+	if (types.size > 0) return [...types].some(type => damageTypes.has(type));
+	return hasDragonblightDamageTraitInOptions(options);
+}
+
+function hasDragonblightDamageSourceOption(options) {
+	if (options instanceof Set) return options.has(DRAGONBLIGHT_DAMAGE_SOURCE_OPTION);
+	if (Array.isArray(options)) return options.includes(DRAGONBLIGHT_DAMAGE_SOURCE_OPTION);
+	return typeof options === "string" && options === DRAGONBLIGHT_DAMAGE_SOURCE_OPTION;
+}
+
+function hasDragonblightDamageTraitInOptions(options) {
+	const values = options instanceof Set
+		? [...options]
+		: Array.isArray(options)
+		? options
+		: typeof options === "string"
+			? [options]
+			: [];
+	const prefixes = ["item:trait:", "origin:action:trait:", "action:trait:", "damage:trait:"];
+	return values.some(option =>
+		typeof option === "string" &&
+		prefixes.some(prefix =>
+			option.startsWith(prefix) &&
+			isDragonblightTrait(option.slice(prefix.length))
+		)
+	);
+}
+
+function hasDragonblightDamageTraitInValue(value) {
+	if (Array.isArray(value) || value instanceof Set) {
+		return [...value].some(entry =>
+			(typeof entry === "string" && isDragonblightTrait(entry)) ||
+			(entry && typeof entry === "object" && hasDragonblightDamageTraitInValue(entry))
+		);
+	}
+	if (!value || typeof value !== "object") return false;
+	if (typeof value.slug === "string" && isDragonblightTrait(value.slug)) return true;
+
+	return Object.entries(value).some(([key, entry]) => {
+		if (["trait", "damageType", "damage-type"].includes(key) && typeof entry === "string") {
+			return isDragonblightTrait(entry);
+		}
+		if (key === "traits") {
+			return hasDragonblightDamageTraitInValue(entry);
+		}
+		return entry && typeof entry === "object" &&
+			hasDragonblightDamageTraitInValue(entry);
+	});
+}
+
+function isDragonblightTrait(trait) {
+	return DRAGONBLIGHT_ELEMENTAL_TRAITS.includes(trait) ||
+		DRAGONBLIGHT_MAGICAL_TRAITS.includes(trait);
 }
 
 function installSpecialDamageSelectorPatch() {
@@ -2456,7 +2936,110 @@ function installSpecialDamageSelectorPatch() {
 function addSpecialDamageDomainToMessage(message, data) {
 	const context = foundry.utils.getProperty(data, `flags.${game.system.id}.context`) ??
 		foundry.utils.getProperty(message, `flags.${game.system.id}.context`);
+	markDragonblightDamageSource(context, data, message);
 	addSpecialDamageDomain(context, [message?.rolls, data?.rolls]);
+}
+
+function markDragonblightDamageSource(context, data, message) {
+	if (context?.type !== "damage-roll") return;
+	const originActorUuid = foundry.utils.getProperty(
+		data,
+		`flags.${game.system.id}.origin.actor`
+	) ?? foundry.utils.getProperty(message, `flags.${game.system.id}.origin.actor`);
+	const speaker = data?.speaker ?? message?.speaker;
+	const sourceActor = (originActorUuid ? fromUuidSync(originActorUuid) : null) ??
+		(speaker?.actor ? game.actors?.get(speaker.actor) : null) ??
+		(speaker?.token ? canvas.tokens?.get(speaker.token)?.actor : null) ??
+		message?.item?.actor ??
+		getActiveDamageActorForVurs();
+	if (!actorHasDragonblight(sourceActor)) return;
+
+	const messageContext = foundry.utils.getProperty(
+		message,
+		`flags.${game.system.id}.context`
+	);
+	const contexts = [...new Set([context, messageContext].filter(Boolean))];
+	for (const damageContext of contexts) {
+		const options = damageContext.options;
+		if (options instanceof Set) {
+			options.add(DRAGONBLIGHT_DAMAGE_SOURCE_OPTION);
+		} else if (Array.isArray(options)) {
+			if (!options.includes(DRAGONBLIGHT_DAMAGE_SOURCE_OPTION)) {
+				options.push(DRAGONBLIGHT_DAMAGE_SOURCE_OPTION);
+			}
+		} else {
+			console.error(`${MODULE_ID} | Could not mark Dragonblight damage source: damage roll context options are unavailable`);
+		}
+	}
+	const sourceOptions = messageContext?.options ?? context.options;
+	if (message?.updateSource && Array.isArray(sourceOptions)) {
+		message.updateSource({
+			flags: {
+				[game.system.id]: {
+					context: { options: sourceOptions }
+				}
+			}
+		});
+	}
+
+	const rolls = data?.rolls ?? message?.rolls;
+	if (Array.isArray(rolls)) {
+		const filteredRolls = rolls.map(roll =>
+			filterDragonblightDamageRoll(roll, getDragonblightDamageTypes())
+		);
+		if (data && Array.isArray(data.rolls)) data.rolls = filteredRolls;
+		else if (message && Array.isArray(message.rolls)) message.rolls = filteredRolls;
+		if (message?.updateSource && Array.isArray(data?.rolls)) {
+			message.updateSource({ rolls: filteredRolls });
+		}
+	} else {
+		console.error(`${MODULE_ID} | Could not filter Dragonblight damage roll: chat message has no rolls array`);
+	}
+}
+
+function filterDragonblightDamageRoll(roll, damageTypes) {
+	const isSerialized = typeof roll === "string";
+	let damageRoll = roll;
+	if (isSerialized) {
+		try {
+			const RollClass = globalThis.Roll ?? foundry.dice?.Roll;
+			if (typeof RollClass?.fromData !== "function") {
+				console.error(`${MODULE_ID} | Could not filter Dragonblight damage roll: Roll.fromData is unavailable`);
+				return roll;
+			}
+			damageRoll = RollClass.fromData(JSON.parse(roll));
+		} catch (error) {
+			console.error(`${MODULE_ID} | Could not deserialize Dragonblight damage roll`, error);
+			return roll;
+		}
+	}
+
+	const instances = getDragonblightDamageInstances(damageRoll);
+	if (instances.length === 0) return roll;
+	const affectedInstances = instances.filter(instance =>
+		instance.kinds?.has?.("damage") !== false &&
+		(hasDragonblightDamageInstanceType(instance, damageTypes) ||
+			hasDragonblightDamageTraitInOptions(instance.options) ||
+			hasDragonblightDamageTraitInValue(instance.formalDescription))
+	);
+	if (affectedInstances.length === 0) return roll;
+
+	const remainingInstances = instances.filter(instance =>
+		!affectedInstances.includes(instance)
+	);
+	if (remainingInstances.length === 0) return roll;
+
+	const pool = damageRoll.pool;
+	if (typeof pool?.constructor?.fromRolls !== "function" ||
+		typeof damageRoll.constructor?.fromTerms !== "function") {
+		console.error(`${MODULE_ID} | Could not filter Dragonblight damage roll: damage roll reconstruction is unavailable`);
+		return roll;
+	}
+	const filteredRoll = damageRoll.constructor.fromTerms(
+		[pool.constructor.fromRolls(remainingInstances)],
+		foundry.utils.deepClone(damageRoll.options)
+	);
+	return isSerialized ? JSON.stringify(filteredRoll.toJSON()) : filteredRoll;
 }
 
 async function addSpecialDamageDomainToCreatedMessage(message) {
