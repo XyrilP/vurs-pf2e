@@ -1479,8 +1479,10 @@ function replaceVursPlayResourceTokens(description, actor) {
 		magicPoints: "MP", karmaPoints: "KP", styleRank: "SR", reactions: "REACTION", free: "FREE"
 	};
 	for (const node of nodes) {
-		const resolvedText = node.nodeValue.replace(/VURS\.PlayResource\.\[\[(.+?)\]\](AP|SP|TP|BP|MP|KP|SR)/gi,
-			(match, formula, resource) => `VURS.PlayResource.${resolveVursPlayCostRolls(`[[${formula}]]`, actor)}${resource}`);
+		const resolvedText = node.nodeValue
+			.replace(/VURS\.PlayResource\.\[\[(.+?)\]\](AP|SP|TP|BP|MP|KP|SR)/gi,
+				(match, formula, resource) => `VURS.PlayResource.${resolveVursPlayCostRolls(`[[${formula}]]`, actor)}${resource}`)
+			.replace(/\b(\d+)\s+or more\s+(AP|SP|TP|BP|MP|KP|SR|RP|actions?|reactions?)\b/gi, "$1+ $2");
 		if (resolvedText !== node.nodeValue) node.nodeValue = resolvedText;
 		const matches = [...node.nodeValue.matchAll(/VURS\.PlayResource\.((?:(\d+)|(One|Two|Three|Longer))?(AP|SP|TP|BP|MP|KP|SR|actionPoints|staminaPoints|tacticPoints|budgetPoints|magicPoints|karmaPoints|styleRank|reactions|reaction|free))/gi)];
 		if (!matches.length) continue;

@@ -1,8 +1,13 @@
 import { getEffectiveStrikeMAP } from "./attackSpeed.js";
-import { applyDamageInTransaction, runDamageTransaction } from "./lifesteal.js";
+import {
+	applyDamageInTransaction,
+	getDamageModifierBreakdown,
+	runDamageTransaction
+} from "./lifesteal.js";
 import { createVursPlayCostElement } from "./playCostIcons.js";
 import {
 	applyBurstFireCollateralDamage,
+	applyPreparedCollateralDamageBatch,
 	displayCollateralArea,
 	getTokenCenter,
 	getTokenDistance,
@@ -499,34 +504,152 @@ function getCurrentHealthPool(actor) {
 		(staminaEnabled ? Number(hp.sp?.value ?? 0) : 0);
 }
 
-async function applyBurstFireDamage(applications) {
+function combineBurstFireDamageRolls(applications) {
+	const DamageRoll = CONFIG.Dice?.rolls?.find(rollClass => rollClass.name === "DamageRoll");
+	if (!DamageRoll) return null;
+
+	const validTypes = new Set(Object.keys(
+		CONFIG[game.system.id.toUpperCase()]?.damageTypes ?? CONFIG.PF2E?.damageTypes ?? {}
+	));
+	const parts = [];
+	for (const application of applications) {
+		for (const instance of application.damageParams.damage?.instances ?? []) {
+			const amount = Number(instance.total);
+			if (!Number.isFinite(amount) || amount <= 0) continue;
+			if (instance.critRule != null) return null;
+			const type = validTypes.has(instance.type) ? instance.type : "untyped";
+			const qualifiers = [];
+			if (type !== "untyped") qualifiers.push(type);
+			if (instance.persistent) qualifiers.push("persistent");
+			for (const material of instance.materials ?? []) {
+				if (typeof material === "string" && /^[a-z0-9-]+$/i.test(material)) {
+					qualifiers.push(material);
+				}
+			}
+			parts.push(qualifiers.length
+				? `${amount}[${[...new Set(qualifiers)].join(",")}]`
+				: `${amount}`);
+		}
+	}
+	if (!parts.length) return null;
+	return new DamageRoll(`{${parts.join(", ")}}`).evaluateSync();
+}
+
+function getCombinedBurstFireDamageParams(applications) {
+	const [first] = applications;
+	const damage = combineBurstFireDamageRolls(applications);
+	if (!damage) return null;
+
+	const rollOptionSets = applications.map(({ damageParams }) =>
+		damageParams.rollOptions instanceof Set
+			? damageParams.rollOptions
+			: new Set(Array.isArray(damageParams.rollOptions) ? damageParams.rollOptions : [])
+	);
+	const rollOptions = new Set([...rollOptionSets[0]].filter(option =>
+		rollOptionSets.every(options => options.has(option))
+	));
+	const outcomes = new Set(applications.map(application => application.damageParams.outcome));
+	const effects = applications.map(application => application.effect);
+	const damageModifiers = [...new Set(applications.flatMap(({ damageParams }) =>
+		getDamageModifierBreakdown(
+			damageParams.damage,
+			damageParams.vursDamageModifiers
+		) ?? []
+	))];
+	return {
+		damageParams: {
+			...first.damageParams,
+			damage,
+			rollOptions,
+			outcome: outcomes.size === 1 ? first.damageParams.outcome : null,
+			vursDamageModifiers: damageModifiers.length
+				? damageModifiers
+				: first.damageParams.vursDamageModifiers,
+			vursBurstFireCollateralHandled: true
+		},
+		effect: {
+			type: "burst-fire",
+			label: first.effect.label,
+			amount: effects.reduce((total, effect) => total + effect.amount, 0),
+			sources: effects.map(effect => ({ label: effect.label, damage: effect.amount })),
+			targetName: first.effect.targetName,
+			hidden: effects.some(effect => effect.hidden)
+		}
+	};
+}
+
+async function applyBurstFireDamage(applications, primaryTarget) {
 	if (applications.length === 0) return;
-	const [root, ...nested] = applications;
+	const primaryTokenId = getTokenDocument(primaryTarget)?.id;
+	const primaryApplications = primaryTokenId
+		? applications.filter(application =>
+			getTokenDocument(application.damageParams.token)?.id === primaryTokenId
+		)
+		: [];
+	const otherApplications = primaryTokenId
+		? applications.filter(application =>
+			getTokenDocument(application.damageParams.token)?.id !== primaryTokenId
+		)
+		: applications.slice(1);
+	const combinedPrimary = primaryApplications.length > 1
+		? getCombinedBurstFireDamageParams(primaryApplications)
+		: null;
+	const root = combinedPrimary
+		? primaryApplications[0]
+		: applications[0];
 	await runDamageTransaction(root.actor, root.damageParams, async rootParams => {
-		for (const [index, application] of [root, ...nested].entries()) {
-			const healthBefore = getCurrentHealthPool(application.actor);
-			application.damageParams.vursBurstFireCollateralHandled = true;
-			if (index === 0) {
-				await application.actor.applyDamage(application.damageParams);
-			} else {
-				await applyDamageInTransaction(
-					application.actor,
-					application.damageParams,
+		const collateralApplications = [];
+		try {
+			if (combinedPrimary) {
+				const actor = primaryApplications[0].actor;
+				const healthBefore = getCurrentHealthPool(actor);
+				const { damageParams, effect } = combinedPrimary;
+				await applyDamageInTransaction(actor, damageParams, rootParams, effect);
+				const healthAfter = getCurrentHealthPool(actor);
+				if (healthBefore !== null && healthAfter !== null) {
+					effect.amount = Math.max(0, healthBefore - healthAfter);
+				}
+				await applyBurstFireCollateralDamage(
+					actor,
+					damageParams,
+					damageParams.damage.total,
+					effect.amount,
 					rootParams,
-					application.effect
+					collateralApplications
 				);
 			}
-			const healthAfter = getCurrentHealthPool(application.actor);
-			if (healthBefore !== null && healthAfter !== null) {
-				application.effect.amount = Math.max(0, healthBefore - healthAfter);
+
+			const applicationsToApply = combinedPrimary
+				? otherApplications
+				: applications;
+			for (const application of applicationsToApply) {
+				const healthBefore = getCurrentHealthPool(application.actor);
+				application.damageParams.vursBurstFireCollateralHandled = true;
+				if (application === root) {
+					await application.actor.applyDamage(application.damageParams);
+				} else {
+					await applyDamageInTransaction(
+						application.actor,
+						application.damageParams,
+						rootParams,
+						application.effect
+					);
+				}
+				const healthAfter = getCurrentHealthPool(application.actor);
+				if (healthBefore !== null && healthAfter !== null) {
+					application.effect.amount = Math.max(0, healthBefore - healthAfter);
+				}
+				await applyBurstFireCollateralDamage(
+					application.actor,
+					application.damageParams,
+					healthBefore,
+					healthAfter,
+					rootParams,
+					collateralApplications
+				);
 			}
-			await applyBurstFireCollateralDamage(
-				application.actor,
-				application.damageParams,
-				healthBefore,
-				healthAfter,
-				rootParams
-			);
+		} finally {
+			await applyPreparedCollateralDamageBatch(collateralApplications, rootParams);
 		}
 	});
 }
@@ -813,7 +936,7 @@ async function rollBurstFire(actor, strike, startingMAP, options = {}) {
 		ui.notifications.error(game.i18n.localize("VURS.BurstFire.Warnings.ChatFailed"));
 	}
 	try {
-		await applyBurstFireDamage(damageApplications);
+		await applyBurstFireDamage(damageApplications, primaryToken);
 	} catch (error) {
 		console.error(`${MODULE_ID} | Could not apply Burst-Fire damage for ${weapon.name}`, error);
 		ui.notifications.error(game.i18n.localize("VURS.BurstFire.Warnings.DamageFailed"));
@@ -893,50 +1016,31 @@ function markBurstFireAlternateUsage(app, element) {
 	}
 
 	if (actor.type === "npc") {
-		const strikeList = root.querySelector(".attacks ol.strikes-list");
-		if (!strikeList) return;
-		let burstFireActions = strikeList.parentElement.querySelector(
-			":scope > .vurs-npc-burst-fire-actions"
-		);
+		root.querySelectorAll(".vurs-npc-burst-fire-actions").forEach(actions => actions.remove());
 		const automaticStrikes = [];
 		for (const strikeElement of root.querySelectorAll(
 			"li.item.action[data-strike][data-action-index]"
 		)) {
 			const strike = actor.system?.actions?.[Number(strikeElement.dataset.actionIndex)];
 			if (!isAutomaticStrike(strike)) continue;
-			automaticStrikes.push({ strike, strikeElement });
+			const attackSubsection = strikeElement.querySelector(".button-group > .subsection.attack");
+			if (!attackSubsection) continue;
+			automaticStrikes.push({ strike, strikeElement, attackSubsection });
 			if (prepared?.itemId === strike.item?.id) {
 				prepared.root = root;
 				prepared.strikeElement = strikeElement;
 			}
 		}
 
-		if (automaticStrikes.length === 0) {
-			burstFireActions?.remove();
-			return;
-		}
-		if (!burstFireActions) {
-			burstFireActions = document.createElement("div");
-			burstFireActions.className = "button-group vurs-npc-burst-fire-actions";
-			const attackSubsection = document.createElement("div");
-			attackSubsection.className = "subsection attack";
-			burstFireActions.append(attackSubsection);
-			strikeList.after(burstFireActions);
-		}
-		let attackSubsection = burstFireActions.querySelector(":scope > .subsection.attack");
-		if (!attackSubsection) {
-			attackSubsection = document.createElement("div");
-			attackSubsection.className = "subsection attack";
-			burstFireActions.append(attackSubsection);
-		}
-		attackSubsection.replaceChildren();
-		for (const { strike, strikeElement } of automaticStrikes) {
-			const button = document.createElement("button");
+		for (const { strike, strikeElement, attackSubsection } of automaticStrikes) {
+			const button = attackSubsection.querySelector(".vurs-burst-fire-trigger")
+				?? document.createElement("button");
 			button.type = "button";
 			button.className = "attack-button vurs-burst-fire-trigger";
 			button.dataset.action = "strike-attack";
 			button.dataset.variantIndex = "0";
 			button.dataset.actionIndex = strikeElement.dataset.actionIndex;
+			button.replaceChildren();
 			const rateOfFire = getRateOfFire(actor, strike) ?? 0;
 			const label = game.i18n.localize("VURS.BurstFire.Title");
 			const rateLabel = game.i18n.format("VURS.BurstFire.RateOfFireShort", {
@@ -958,7 +1062,9 @@ function markBurstFireAlternateUsage(app, element) {
 				`${label} 2 (${rateLabel}) — ${strike.item.name}`
 			);
 			button.dataset.tooltip = strike.item.name;
-			attackSubsection.append(button);
+			if (!button.isConnected || button.parentElement !== attackSubsection) {
+				attackSubsection.append(button);
+			}
 			updatePreparedBurstFireButton(
 				root,
 				strikeElement,

@@ -1,6 +1,7 @@
 import { MODIFIER_TYPES } from "./typedModifiers.js";
 import {
 	getRuleElementPredicateOptions,
+	isNpcActorSkillFormula,
 	resolveRuleElementValue
 } from "./ruleElementResolvers.js";
 
@@ -62,9 +63,11 @@ function registerCriticalProtectionRuleElement({ quiet = false } = {}) {
 		beforePrepareData() {
 			if (this.ignored) return;
 
-			const value = Number(this.resolveValue(this.value));
+			const deferredSkillFormula = isNpcActorSkillFormula(this, this.value);
+			const value = deferredSkillFormula ? null : Number(this.resolveValue(this.value));
 			const type = this.type ?? "untyped";
-			if (!Number.isInteger(value) || !MODIFIER_TYPES.includes(type)) {
+			if ((!deferredSkillFormula && !Number.isInteger(value)) ||
+				!MODIFIER_TYPES.includes(type)) {
 				this.failValidation("value must resolve to an integer and type must be valid");
 				return;
 			}
@@ -77,7 +80,10 @@ function registerCriticalProtectionRuleElement({ quiet = false } = {}) {
 				? options => definition.test(getRuleElementPredicateOptions(this.item, options))
 				: null;
 			(this.actor.synthetics.criticalProtections ??= []).push({
-				value,
+				value: value ?? 0,
+				resolveValue: deferredSkillFormula
+					? () => Number(this.resolveValue(this.value))
+					: null,
 				type,
 				label: this.label || this.item.name,
 				definition,

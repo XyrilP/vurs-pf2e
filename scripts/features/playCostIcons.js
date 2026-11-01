@@ -20,7 +20,15 @@ export function createVursPlayCostElement(playCost, placement = "inline") {
 
 export function appendVursPlayCostIcons(container, playCost) {
     if (!container.title) container.title = playCost;
-    const entries = playCost.split(/\s*(;|,|\+|\band\b|\bor\b|\bcombined\b)\s*/i).filter(Boolean);
+    let hasMinimumSuffix = false;
+    const normalizedPlayCost = playCost.replace(
+        /\b(\d+)\s+or more\s+(AP|SP|TP|BP|MP|KP|SR|RP|REACTIONS?)\b/gi,
+        (_match, amount, resource) => {
+            hasMinimumSuffix = true;
+            return `${amount} ${resource}`;
+        }
+    );
+    const entries = normalizedPlayCost.split(/\s*(;|,|\+|\band\b|\bor\b|\bcombined\b)\s*/i).filter(Boolean);
     let lastAmount = 1;
     let lastOperator = null;
     for (const entry of entries) {
@@ -112,5 +120,11 @@ export function appendVursPlayCostIcons(container, playCost) {
             remaining -= stackAmount;
         }
         lastAmount = amount;
+    }
+    if (hasMinimumSuffix) {
+        const suffix = document.createElement("span");
+        suffix.className = "vurs-play-cost-inline-separator vurs-play-cost-minimum-suffix";
+        suffix.textContent = "+";
+        container.append(suffix);
     }
 }

@@ -51,6 +51,12 @@ export function resolveRuleElementValue(rule, resolveValue, value, fallback, opt
 	});
 }
 
+export function isNpcActorSkillFormula(rule, value) {
+	return rule?.actor?.isOfType?.("npc") === true &&
+		typeof value === "string" &&
+		/@actor\.skills(?:\.|$)/.test(value);
+}
+
 export function getRuleElementPredicateOptions(item, rollOptions) {
 	const options = rollOptions instanceof Set
 		? new Set(rollOptions)

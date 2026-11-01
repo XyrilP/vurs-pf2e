@@ -1,6 +1,7 @@
 import { registerCheckRollWrapper } from "./checkRollWrappers.js";
 import {
 	getRuleElementPredicateOptions,
+	isNpcActorSkillFormula,
 	resolveRuleElementValue
 } from "./ruleElementResolvers.js";
 import { MODIFIER_TYPES, selectTypedModifiers } from "./typedModifiers.js";
@@ -69,9 +70,11 @@ function registerCriticalRateRuleElement({ quiet = false } = {}) {
 			if (this.ignored) return;
 
 			const selector = this.resolveInjectedProperties(this.selector);
-			const value = Number(this.resolveValue(this.value));
+			const deferredSkillFormula = isNpcActorSkillFormula(this, this.value);
+			const value = deferredSkillFormula ? null : Number(this.resolveValue(this.value));
 			const type = this.type ?? "untyped";
-			if (!selector || !Number.isFinite(value) || !MODIFIER_TYPES.includes(type)) {
+			if (!selector || (!deferredSkillFormula && !Number.isFinite(value)) ||
+				!MODIFIER_TYPES.includes(type)) {
 				this.failValidation("selector and a valid type must be provided, and value must resolve to a number");
 				return;
 			}
@@ -87,7 +90,10 @@ function registerCriticalRateRuleElement({ quiet = false } = {}) {
 
 			(this.actor.synthetics.criticalRates ??= {})[selector] ??= [];
 			this.actor.synthetics.criticalRates[selector].push({
-				value,
+				value: value ?? 0,
+				resolveValue: deferredSkillFormula
+					? () => Number(this.resolveValue(this.value))
+					: null,
 				type,
 				label: this.label || this.item.name,
 				test
@@ -110,7 +116,15 @@ function getCriticalRate(actor, domains, rollOptions) {
 	for (const [selector, adjustments] of Object.entries(actor?.synthetics?.criticalRates ?? {})) {
 		if (!domainSet.has(selector)) continue;
 		for (const adjustment of adjustments) {
-			if (adjustment.test(options)) matching.push(adjustment);
+			if (!adjustment.test(options)) continue;
+			const value = adjustment.resolveValue
+				? adjustment.resolveValue()
+				: adjustment.value;
+			if (!Number.isFinite(value)) {
+				console.error(`${MODULE_ID} | Could not resolve ${RULE_KEY} value for ${adjustment.label}`);
+				continue;
+			}
+			if (value !== 0) matching.push({ ...adjustment, value });
 		}
 	}
 	return selectTypedModifiers(matching);
@@ -137,10 +151,22 @@ function getCriticalProtection(actor, { domains, rollOptions, total, dc, natural
 	options.add(`check:roll:total:natural:${natural}`);
 	options.add(`check:total:delta:${total - dc}`);
 
-	return selectTypedModifiers(protections.filter(protection =>
+	const matching = protections.filter(protection =>
 		protection.test?.(options) ??
 			(!protection.definition || protection.definition.test(options))
-	));
+	);
+	const resolved = [];
+	for (const protection of matching) {
+		const value = protection.resolveValue
+			? protection.resolveValue()
+			: protection.value;
+		if (!Number.isInteger(value)) {
+			console.error(`${MODULE_ID} | Could not resolve Critical Protection value for ${protection.label}`);
+			continue;
+		}
+		if (value !== 0) resolved.push({ ...protection, value });
+	}
+	return selectTypedModifiers(resolved);
 }
 
 function getBaseDegreeOfSuccess(total, dc, natural, criticalThreshold = 10) {

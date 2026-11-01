@@ -1,12 +1,13 @@
 import {
+	applyDamageApplications,
 	applyDamageInTransaction,
 	getDamageRollOptions,
+	getDamageSourceMessage,
 	getDamageSelectors,
 	getDamageModifierBreakdown,
 	queueDamageTransactionApplication,
 	queueDamageTransactionRequest,
-	registerDamageTransactionFinalizer,
-	runDamageTransactionActorOperation
+	registerDamageTransactionFinalizer
 } from "./lifesteal.js";
 import {
 	resolveRuleElementValue,
@@ -179,6 +180,20 @@ function currentHealthPool(actor) {
 		(staminaEnabled ? Number(hp.sp?.value ?? 0) : 0);
 }
 
+function getDamageSourceItem(params, sourceMessage = getDamageSourceMessage(params?.damage, params?.item)) {
+	return params?.item ?? sourceMessage?.item ?? null;
+}
+
+function getDamageDealer(params, sourceMessage = getDamageSourceMessage(params?.damage, params?.item)) {
+	if (params?.vursDamageDealer) return params.vursDamageDealer;
+	const item = getDamageSourceItem(params, sourceMessage);
+	const sourceActor = sourceMessage?.speakerActor;
+	return sourceActor ??
+		item?.actor ??
+		item?.parent ??
+		null;
+}
+
 function normalizeToken(token) {
 	return token?.document ?? token ?? null;
 }
@@ -220,6 +235,14 @@ function getDamageTargetToken(actor, token, scene) {
 		return providedToken;
 	}
 	return getSceneTokenForActor(actor, scene, providedToken);
+}
+
+function getDamageRecipientActor(actor, params) {
+	const tokenActor = normalizeToken(params.token)?.actor;
+	if (sameActor(tokenActor, actor)) return tokenActor;
+
+	const worldActor = game.actors?.get(actor.id);
+	return sameActor(worldActor, actor) ? worldActor : actor;
 }
 
 export function getPlacementGeometries(placement, sourceToken, targetToken) {
@@ -495,6 +518,25 @@ function selectorMatches(rule, selectors, rollOptions) {
 	return damageTypes.some(type => !["physical", "bludgeoning", "piercing", "slashing"].includes(type));
 }
 
+function getCollateralDamageContext(params, damageDealer, sourceMessage) {
+	const damageItem = getDamageSourceItem(params, sourceMessage);
+	const rollOptions = getDamageRollOptions(params.damage, params.rollOptions);
+	for (const option of damageItem?.getRollOptions?.("item") ?? []) {
+		rollOptions.add(option);
+	}
+	const selectors = getDamageSelectors(params.damage, damageItem);
+	const sourceDomains = sourceMessage?.flags?.[game.system.id]?.context?.domains;
+	if (Array.isArray(sourceDomains)) {
+		for (const selector of sourceDomains) selectors.add(selector);
+	}
+	const collateralRules = (damageDealer?.rules ?? []).filter(rule => rule.key === RULE_KEY);
+	const rules = collateralRules.filter(rule =>
+		!rule.ignored &&
+		selectorMatches(rule, selectors, rollOptions)
+	);
+	return { sourceMessage, damageDealer, damageItem, rollOptions, selectors, collateralRules, rules };
+}
+
 function splitDamage(amount, damageRoll, overrideType) {
 	const config = CONFIG[game.system.id.toUpperCase()] ?? CONFIG.PF2E;
 	const validTypes = new Set([...Object.keys(config?.damageTypes ?? {}), "untyped"]);
@@ -560,16 +602,29 @@ export function getTokenDistance(left, right) {
 	return Number(measurement?.distance ?? Infinity);
 }
 
-function getBounceTargets(scene, sourceToken, currentToken, rule, maxDistance, counts, limit) {
-	const source = normalizeToken(sourceToken);
+function getBounceDistance(left, right, distanceCache) {
+	const from = normalizeToken(left);
+	const to = normalizeToken(right);
+	const key = `${from?.id ?? ""}:${to?.id ?? ""}`;
+	if (!distanceCache.has(key)) {
+		distanceCache.set(key, getTokenDistance(from, to));
+	}
+	return distanceCache.get(key);
+}
+
+function getBounceTargets(
+	currentToken,
+	maxDistance,
+	counts,
+	limit,
+	eligibleTargets,
+	distanceCache
+) {
 	const current = normalizeToken(currentToken);
-	return [...scene.tokens].filter(token => {
-		if (token.id === current.id || !token.actor?.attributes?.hp) return false;
-		if (token.id === source.id && !rule.affectsSelf) return false;
-		if (sameActor(token.actor, source.actor) && token.id !== source.id) return false;
+	return eligibleTargets.filter(token => {
+		if (token.id === current.id) return false;
 		if (limit > 0 && (counts.get(token.id) ?? 0) >= limit) return false;
-		if (!isAffectedByRule(rule, source, token)) return false;
-		return getTokenDistance(current, token) <= maxDistance;
+		return getBounceDistance(current, token, distanceCache) <= maxDistance;
 	});
 }
 
@@ -961,18 +1016,86 @@ async function undoDamageOperations(operations) {
 	}
 
 	const results = await Promise.all([...byActor.values()].map(async actorOperations => {
-		for (const { actor, record, effect, primary } of actorOperations) {
-			try {
+		const actor = actorOperations[0].actor;
+		try {
+			if (actorOperations.length === 1) {
+				const [{ record }] = actorOperations;
 				await actor.undoDamage(record);
+			} else {
+				await undoActorDamageBatch(actor, actorOperations);
+			}
+			for (const { record, effect, primary } of actorOperations) {
 				if (effect) effect.isReverted = true;
 				if (primary) record.isReverted = true;
-			} catch (error) {
-				return error;
 			}
+		} catch (error) {
+			return error;
 		}
 		return null;
 	}));
 	return results.find(Boolean) ?? null;
+}
+
+async function undoActorDamageBatch(actor, operations) {
+	// PF2e's undoDamage does not await Actor.update, so same-actor records must be combined.
+	const updateDeltas = new Map();
+	const shieldDeltas = new Map();
+	const persistentIds = new Set();
+	for (const { record } of operations) {
+		for (const update of record.updates ?? []) {
+			const delta = Number(update.value);
+			if (typeof update.path !== "string" || !Number.isFinite(delta)) continue;
+			updateDeltas.set(update.path, (updateDeltas.get(update.path) ?? 0) + delta);
+		}
+		const shield = record.shield;
+		if (shield?.id && Number.isFinite(Number(shield.damage))) {
+			shieldDeltas.set(
+				shield.id,
+				(shieldDeltas.get(shield.id) ?? 0) + Number(shield.damage)
+			);
+		}
+		for (const id of Array.isArray(record.persistent) ? record.persistent : []) {
+			if (typeof id === "string") persistentIds.add(id);
+		}
+	}
+
+	const updates = {};
+	for (const [path, delta] of updateDeltas) {
+		const current = foundry.utils.getProperty(actor, path);
+		if (typeof current === "number" && Number.isFinite(current)) {
+			updates[path] = current + delta;
+		}
+	}
+	const itemUpdates = [];
+	for (const [id, damage] of shieldDeltas) {
+		const shield = actor.inventory?.get(id);
+		if (!shield || !Number.isFinite(shield.hitPoints?.value)) continue;
+		itemUpdates.push({
+			_id: id,
+			"system.hp.value": shield.hitPoints.value + damage
+		});
+	}
+	if (itemUpdates.length) updates.items = itemUpdates;
+
+	const hasUpdates = Object.keys(updates).length > 0;
+	if (persistentIds.size) {
+		if (typeof actor.deleteEmbeddedDocuments !== "function") {
+			throw new Error(`Could not remove persistent damage effects from ${actor.name}`);
+		}
+		await actor.deleteEmbeddedDocuments("Item", [...persistentIds], { render: !hasUpdates });
+	}
+	if (!hasUpdates) return;
+
+	const hpPath = "system.attributes.hp.value";
+	const currentHp = foundry.utils.getProperty(actor, hpPath);
+	const restoredHp = updates[hpPath];
+	await actor.update(updates, {
+		damageTaken: typeof currentHp === "number" && Number.isFinite(currentHp) &&
+			typeof restoredHp === "number" && Number.isFinite(restoredHp)
+			? currentHp - restoredHp
+			: 0,
+		damageUndo: true
+	});
 }
 
 async function updateGroupedDamageState(
@@ -1152,7 +1275,7 @@ function prepareCollateralDamageForTarget(
 	const damageParams = {
 		damage: damageRoll,
 		token: target.object ?? target,
-		item: sourceParams.item,
+		item: getDamageSourceItem(sourceParams),
 		rollOptions,
 		vursDamageModifiers: modifiers
 	};
@@ -1167,48 +1290,17 @@ function prepareCollateralDamageForTarget(
 	return { actor: target.actor, damageParams, effect, secret, targetName: target.name };
 }
 
-async function applyPreparedCollateralDamage(application, sourceParams, transactionParams) {
-	const { actor, damageParams, effect, secret, targetName } = application;
-	try {
-		const healthBefore = currentHealthPool(actor);
-		collateralDamageApplications.add(damageParams);
-		try {
-			await applySecretDamageCard(actor, secret, () =>
-				applyDamageInTransaction(actor, damageParams, transactionParams, effect)
-			);
-			const healthAfter = currentHealthPool(actor);
-			if (healthBefore !== null && healthAfter !== null) {
-				effect.amount = Math.max(0, healthBefore - healthAfter);
-			}
-		} finally {
-			collateralDamageApplications.delete(damageParams);
+export async function applyPreparedCollateralDamageBatch(applications, transactionParams) {
+	if (!applications.length) return;
+	await applyDamageApplications(applications.map(application => ({
+		...application,
+		apply: (actor, damageParams, rootParams, effect) => {
+			collateralDamageApplications.add(damageParams);
+			return applySecretDamageCard(actor, application.secret, () =>
+				applyDamageInTransaction(actor, damageParams, rootParams, effect)
+			).finally(() => collateralDamageApplications.delete(damageParams));
 		}
-		return true;
-	} catch (error) {
-		console.error(`${MODULE_ID} | Failed to apply ${RULE_KEY} to ${targetName}`, error);
-		return false;
-	}
-}
-
-async function applyPreparedCollateralDamageBatch(
-	applications,
-	sourceParams,
-	transactionParams = sourceParams
-) {
-	const byActor = new Map();
-	for (const application of applications) {
-		const key = application.actor.uuid;
-		const actorApplications = byActor.get(key) ?? [];
-		actorApplications.push(application);
-		byActor.set(key, actorApplications);
-	}
-	await Promise.all([...byActor.values()].map(async actorApplications => {
-		for (const application of actorApplications) {
-			await runDamageTransactionActorOperation(transactionParams, application.actor, () =>
-				applyPreparedCollateralDamage(application, sourceParams, transactionParams)
-			);
-		}
-	}));
+	})), transactionParams);
 }
 
 function prepareBounceDamage(
@@ -1253,11 +1345,26 @@ function prepareBounceDamage(
 	const paths = [];
 	const applications = [];
 	const sourceLabel = rule.item?.name ?? rule.label ?? RULE_KEY;
+	const source = normalizeToken(damageDealerToken);
+	const eligibleTargets = [...scene.tokens].filter(token =>
+		token.actor?.attributes?.hp &&
+		(rule.affectsSelf || token.id !== source.id) &&
+		(!sameActor(token.actor, source.actor) || token.id === source.id) &&
+		isAffectedByRule(rule, source, token)
+	);
+	const distanceCache = new Map();
 	for (let shot = 0; shot < bounceShots; shot++) {
 		const path = [getTokenCenter(damageOriginToken)].filter(Boolean);
 		let currentToken = damageOriginToken;
 		for (let bounce = 0; bounce < bounceCount; bounce++) {
-			let candidates = getBounceTargets(scene, damageDealerToken, currentToken, rule, maxDistance, counts, bounceLimit)
+			let candidates = getBounceTargets(
+				currentToken,
+				maxDistance,
+				counts,
+				bounceLimit,
+				eligibleTargets,
+				distanceCache
+			)
 				.filter(token => bounce > 0 || !initialTargets.has(token.id));
 			if (!candidates.length) {
 				logBurstFireCollateral("no eligible bounce target", sourceParams, {
@@ -1275,7 +1382,8 @@ function prepareBounceDamage(
 			let target;
 			if (rule.bounceNearest ?? true) {
 				candidates = candidates.sort((left, right) =>
-					getTokenDistance(currentToken, left) - getTokenDistance(currentToken, right) ||
+					getBounceDistance(currentToken, left, distanceCache) -
+						getBounceDistance(currentToken, right, distanceCache) ||
 					left.id.localeCompare(right.id)
 				);
 				target = candidates[0];
@@ -1630,7 +1738,8 @@ export async function applyBurstFireCollateralDamage(
 	params,
 	healthBefore,
 	healthAfter,
-	transactionParams = params
+	transactionParams = params,
+	deferredApplications = null
 ) {
 	const damage = typeof params.damage === "number" ? params.damage : params.damage?.total;
 	if (!Number.isFinite(damage) || damage <= 0) return;
@@ -1662,10 +1771,11 @@ export async function applyBurstFireCollateralDamage(
 		shapeCount: shapes.length,
 		pathCount: paths.length,
 		applicationCount: applications.length,
-		appliedImmediately: Boolean(applications.length)
+		appliedImmediately: Boolean(applications.length && !deferredApplications)
 	});
 	if (applications.length) {
-		await applyPreparedCollateralDamageBatch(applications, params, transactionParams);
+		if (deferredApplications) deferredApplications.push(...applications);
+		else await applyPreparedCollateralDamageBatch(applications, transactionParams);
 	}
 
 	try {
@@ -1688,15 +1798,34 @@ export async function applyBurstFireCollateralDamage(
 	}
 }
 
-async function applyCollateralDamage(actor, params, beforeReduction, afterReduction) {
-	const damageDealer = params.vursDamageDealer ?? params.item?.actor ?? params.item?.parent;
+async function applyCollateralDamage(
+	actor,
+	params,
+	beforeReduction,
+	afterReduction,
+	damageContext = null
+) {
+	const sourceMessage = damageContext?.sourceMessage ??
+		getDamageSourceMessage(params.damage, params.item);
+	const context = damageContext ?? getCollateralDamageContext(
+		params,
+		getDamageDealer(params, sourceMessage),
+		sourceMessage
+	);
+	const {
+		damageDealer,
+		damageItem,
+		rollOptions,
+		selectors,
+		collateralRules
+	} = context;
 	const providedTargetToken = normalizeToken(params.token);
 	const scene = canvas.scene;
 	if (!damageDealer || !scene) {
 		logBurstFireCollateral("missing damage dealer or active scene", params, {
 			hasDamageDealer: Boolean(damageDealer),
 			hasScene: Boolean(scene),
-			itemName: params.item?.name
+			itemName: damageItem?.name
 		});
 		return { shapes: [], paths: [] };
 	}
@@ -1728,16 +1857,10 @@ async function applyCollateralDamage(actor, params, beforeReduction, afterReduct
 		console.error(`${MODULE_ID} | Could not apply ${RULE_KEY}: no source token for ${damageDealer.name} in the current scene`);
 		return { shapes: [], paths: [] };
 	}
-	const rollOptions = getDamageRollOptions(params.damage, params.rollOptions);
-	for (const option of params.item?.getRollOptions?.("item") ?? []) {
-		rollOptions.add(option);
-	}
-	const selectors = getDamageSelectors(params.damage, params.item);
-	const collateralRules = [...(damageDealer.rules ?? [])].filter(rule => rule.key === RULE_KEY);
 	logBurstFireCollateral("damage event", params, {
 		damageDealerId: damageDealer.id,
 		damageDealerName: damageDealer.name,
-		itemName: params.item?.name,
+		itemName: damageItem?.name,
 		recipientActorId: actor.id,
 		recipientTokenId: targetToken.id,
 		providedTokenId: providedTargetToken?.id,
@@ -1752,28 +1875,25 @@ async function applyCollateralDamage(actor, params, beforeReduction, afterReduct
 	const shapes = [];
 	const paths = [];
 	const applications = [];
-	for (const rule of damageDealer.rules ?? []) {
-		if (rule.key !== RULE_KEY) continue;
-		const matchesSelector = selectorMatches(rule, selectors, rollOptions);
+	for (const rule of context.rules) {
 		const matchesPredicate = testRuleElementPredicate(rule, rollOptions);
 		if (rule.type === "bounce") {
 			logBurstFireCollateral("bounce rule evaluation", params, {
 				rule: rule.item?.name ?? rule.label ?? RULE_KEY,
-				ignored: Boolean(rule.ignored),
-				matchesSelector,
+				ignored: false,
+				matchesSelector: true,
 				matchesPredicate,
 				selector: rule.selector ?? null,
 				distance: rule.distance
 			});
 		}
-		if (rule.ignored || !matchesSelector || !matchesPredicate) continue;
-
+		if (!matchesPredicate) continue;
 		const slug = typeof rule.slug === "string" ? rule.slug.trim() : "";
 		if (slug && seenSlugs.has(slug)) continue;
 		const amount = calculateCollateralAmount(rule, beforeReduction, afterReduction);
 		if (amount <= 0) continue;
 
-		const distance = resolveCollateralDistance(rule, params.item, damageDealer);
+		const distance = resolveCollateralDistance(rule, damageItem, damageDealer);
 		if (distance === null) {
 			logBurstFireCollateral("bounce distance did not resolve", params, {
 				rule: rule.item?.name ?? rule.label ?? RULE_KEY,
@@ -1849,32 +1969,47 @@ async function applyCollateralDamageHandler(actor, wrapped, args) {
 		return wrapped(...args);
 	}
 	const damage = typeof params.damage === "number" ? params.damage : params.damage?.total;
-	if (typeof damage !== "number" || damage <= 0 || !params.item) {
+	const sourceMessage = getDamageSourceMessage(params.damage, params.item);
+	const damageDealer = getDamageDealer(params, sourceMessage);
+	if (typeof damage !== "number" || damage <= 0 || !damageDealer) {
 		logBurstFireCollateral("skipped damage event", params, {
 			damage,
-			hasItem: Boolean(params.item),
+			hasDamageDealer: Boolean(damageDealer),
 			recipientActorId: actor.id,
 			recipientTokenId: normalizeToken(params.token)?.id
 		});
 		return wrapped(...args);
 	}
+	const collateralRules = (damageDealer.rules ?? []).some(rule =>
+		rule.key === RULE_KEY && !rule.ignored
+	);
+	if (!collateralRules) return wrapped(...args);
+	const damageContext = getCollateralDamageContext(params, damageDealer, sourceMessage);
+	if (!damageContext.rules.length) return wrapped(...args);
 
 	activeDamageParams.add(params);
 	try {
-		const healthBefore = currentHealthPool(actor);
+		const recipientActor = getDamageRecipientActor(actor, params);
+		const healthBefore = currentHealthPool(recipientActor);
 		const result = await wrapped(...args);
-		const healthAfter = currentHealthPool(actor);
+		const healthAfter = currentHealthPool(recipientActor);
 		if (healthBefore === null || healthAfter === null) {
 			logBurstFireCollateral("could not measure recipient health", params, {
 				healthBefore,
 				healthAfter,
-				recipientActorId: actor.id
+				recipientActorId: recipientActor.id
 			});
 			return result;
 		}
 
 		const damageApplied = Math.max(0, healthBefore - healthAfter);
-		const { shapes, paths, applications } = await applyCollateralDamage(actor, params, damage, damageApplied);
+		const { shapes, paths, applications } = await applyCollateralDamage(
+			recipientActor,
+			params,
+			damage,
+			damageApplied,
+			damageContext
+		);
 		const queued = applications.length && queueDamageTransactionRequest(
 			params,
 			"collateralApplications",

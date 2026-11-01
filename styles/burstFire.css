@@ -21,24 +21,7 @@
 	white-space: nowrap;
 }
 
-.actor.npc.sheet section.window-content .tab.main .attacks .vurs-npc-burst-fire-actions {
-	display: flex;
-	gap: var(--space-3);
-	justify-content: start;
-	min-width: 100%;
-	font-size: 1.25em;
-	margin-block-start: var(--space-4);
-}
-
-.actor.npc.sheet section.window-content .tab.main .attacks .vurs-npc-burst-fire-actions .subsection.attack {
-	align-items: start;
-	display: flex;
-	flex-wrap: wrap;
-	gap: var(--space-2);
-	justify-content: start;
-}
-
-.actor.npc.sheet section.window-content .tab.main .attacks .vurs-npc-burst-fire-actions .subsection.attack button {
+.actor.npc.sheet section.window-content .tab.main .attacks li[data-strike] .subsection.attack button.vurs-burst-fire-trigger {
 	background-color: var(--color-pf-secondary);
 	align-items: center;
 	display: flex;
@@ -57,7 +40,7 @@
 	width: auto;
 }
 
-.actor.npc.sheet section.window-content .tab.main .attacks .vurs-npc-burst-fire-actions .subsection.attack button:hover {
+.actor.npc.sheet section.window-content .tab.main .attacks li[data-strike] .subsection.attack button.vurs-burst-fire-trigger:hover {
 	box-shadow: none;
 	text-shadow: 0 0 2px var(--color-text-light-0);
 }

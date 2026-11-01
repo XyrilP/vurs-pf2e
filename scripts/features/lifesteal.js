@@ -9,6 +9,9 @@ const RULE_KEY = "Lifesteal";
 const registeredDamageTargets = new Set();
 const activeDamageParams = new WeakSet();
 const damageSelectorCache = new WeakMap();
+const damageSourceMessagesByRoll = new WeakMap();
+const damageSourceMessagesByItemUuid = new Map();
+const damageSourceMessageItemUuids = new WeakMap();
 const damageHandlers = globalThis[Symbol.for(`${MODULE_ID}.applyDamageHandlers`)] ??= new Set();
 const damageTransactionState = globalThis[Symbol.for(`${MODULE_ID}.damageTransactions`)] ??= {
 	params: new WeakMap(),
@@ -43,6 +46,83 @@ export function queueDamageTransactionRequest(parentParams, key, request) {
 
 export function queueDamageTransactionApplication(parentParams, application) {
 	return queueDamageTransactionRequest(parentParams, "damageApplications", application);
+}
+
+function getDamageSourceMessageItemUuids(message) {
+	const originUuid = foundry.utils.getProperty(
+		message,
+		`flags.${game.system.id}.origin.uuid`
+	);
+	return [...new Set([message.item?.uuid, originUuid].filter(Boolean))];
+}
+
+function indexDamageSourceMessage(message) {
+	if (foundry.utils.getProperty(message, `flags.${game.system.id}.context.type`) !== "damage-roll") {
+		return;
+	}
+
+	const itemUuids = getDamageSourceMessageItemUuids(message);
+	damageSourceMessageItemUuids.set(message, itemUuids);
+	for (const itemUuid of itemUuids) {
+		const previous = damageSourceMessagesByItemUuid.get(itemUuid);
+		if (!previous || (message.timestamp ?? 0) >= (previous.timestamp ?? 0)) {
+			damageSourceMessagesByItemUuid.set(itemUuid, message);
+		}
+	}
+	for (const roll of message.rolls ?? []) {
+		if (roll && typeof roll === "object") damageSourceMessagesByRoll.set(roll, message);
+	}
+}
+
+function unindexDamageSourceMessage(message) {
+	const itemUuids = damageSourceMessageItemUuids.get(message) ?? [];
+	damageSourceMessageItemUuids.delete(message);
+	for (const itemUuid of itemUuids) {
+		if (damageSourceMessagesByItemUuid.get(itemUuid) !== message) continue;
+		damageSourceMessagesByItemUuid.delete(itemUuid);
+		const messages = game.messages?.contents ?? [];
+		for (let index = messages.length - 1; index >= 0; index--) {
+			const candidate = messages[index];
+			if (
+				candidate !== message &&
+				foundry.utils.getProperty(candidate, `flags.${game.system.id}.context.type`) === "damage-roll" &&
+				getDamageSourceMessageItemUuids(candidate).includes(itemUuid)
+			) {
+				damageSourceMessagesByItemUuid.set(itemUuid, candidate);
+				break;
+			}
+		}
+	}
+	for (const roll of message.rolls ?? []) {
+		if (roll && damageSourceMessagesByRoll.get(roll) === message) {
+			damageSourceMessagesByRoll.delete(roll);
+		}
+	}
+}
+
+export function getDamageSourceMessage(damage, item = null) {
+	if (damage && typeof damage === "object") {
+		const exactMatch = damageSourceMessagesByRoll.get(damage);
+		if (exactMatch) return exactMatch;
+	}
+	if (item?.uuid) {
+		const itemMatch = damageSourceMessagesByItemUuid.get(item.uuid);
+		if (itemMatch) return itemMatch;
+	}
+
+	const messages = game.messages?.contents ?? [];
+	for (let index = messages.length - 1; index >= 0; index--) {
+		const message = messages[index];
+		if (message.rolls?.includes(damage)) return message;
+		if (
+			message.flags?.[game.system.id]?.context?.type === "damage-roll" &&
+			message.rolls?.some(roll => roll?.constructor === damage?.constructor) &&
+			message.speakerActor
+		) {
+			return message;
+		}
+	}
+	return null;
 }
 
 function createDamageTransaction(actor, params) {
@@ -98,22 +178,26 @@ export function runDamageTransactionActorOperation(parentParams, actor, operatio
 
 export async function applyDamageInTransaction(actor, damageParams, parentParams, effect) {
 	const transaction = damageTransactionState.params.get(parentParams);
-	if (!transaction?.rootMessageId) return actor.applyDamage(damageParams);
+	if (!transaction) return actor.applyDamage(damageParams);
 
-	const pendingEffect = Object.assign(effect, {
-		actorUuid: actor.uuid,
-		actorId: actor.id,
-		tokenId: damageParams.token?.document?.id ?? damageParams.token?.id ?? null,
-		appliedDamage: null
-	});
-	transaction.pending.push(pendingEffect);
+	const pendingEffect = transaction.rootMessageId
+		? Object.assign(effect, {
+			actorUuid: actor.uuid,
+			actorId: actor.id,
+			tokenId: damageParams.token?.document?.id ?? damageParams.token?.id ?? null,
+			appliedDamage: null
+		})
+		: null;
+	if (pendingEffect) transaction.pending.push(pendingEffect);
 	damageTransactionState.params.set(damageParams, transaction);
 	try {
 		return await actor.applyDamage(damageParams);
 	} finally {
 		damageTransactionState.params.delete(damageParams);
-		const index = transaction.pending.indexOf(pendingEffect);
-		if (index >= 0) transaction.pending.splice(index, 1);
+		if (pendingEffect) {
+			const index = transaction.pending.indexOf(pendingEffect);
+			if (index >= 0) transaction.pending.splice(index, 1);
+		}
 	}
 }
 
@@ -127,8 +211,8 @@ function getDamageApplicationBatchKey(application) {
 		damageParams.token?.document?.id ?? damageParams.token?.id ?? null,
 		damageParams.item?.uuid ?? null,
 		rollOptions.map(String).sort(),
-		damageParams.vursDamageModifiers ?? [],
 		Boolean(damageParams.skipIWR),
+		damageParams.outcome ?? null,
 		Boolean(secret)
 	]);
 }
@@ -145,14 +229,26 @@ function combineDamageRolls(rolls) {
 		for (const instance of roll?.instances ?? []) {
 			const amount = Number(instance.total);
 			if (!Number.isFinite(amount) || amount <= 0) continue;
+			if (instance.critRule != null) return null;
 			const type = validTypes.has(instance.type) ? instance.type : "untyped";
-			totals.set(type, (totals.get(type) ?? 0) + amount);
+			const qualifiers = [];
+			if (type !== "untyped") qualifiers.push(type);
+			if (instance.persistent) qualifiers.push("persistent");
+			for (const material of instance.materials ?? []) {
+				if (typeof material === "string" && /^[a-z0-9-]+$/i.test(material)) {
+					qualifiers.push(material);
+				}
+			}
+			const key = [...new Set(qualifiers)].join(",");
+			const total = totals.get(key) ?? { type, qualifiers: [...new Set(qualifiers)], amount: 0 };
+			total.amount += amount;
+			totals.set(key, total);
 		}
 	}
 	if (!totals.size) return null;
 
-	const formula = `{${[...totals].map(([type, amount]) =>
-		type === "untyped" ? `${amount}` : `${amount}[${type}]`
+	const formula = `{${[...totals.values()].map(({ qualifiers, amount }) =>
+		qualifiers.length ? `${amount}[${qualifiers.join(",")}]` : `${amount}`
 	).join(", ")}}`;
 	return new DamageRoll(formula).evaluateSync();
 }
@@ -197,7 +293,16 @@ async function applyDamageApplicationBatch(applications, parentParams) {
 			}
 			return;
 		}
-		damageParams = { ...damageParams, damage: combinedDamage };
+		const modifiers = [...new Set(applications.flatMap(({ damageParams }) =>
+			Array.isArray(damageParams.vursDamageModifiers)
+				? damageParams.vursDamageModifiers
+				: []
+		))];
+		damageParams = {
+			...damageParams,
+			damage: combinedDamage,
+			vursDamageModifiers: modifiers
+		};
 	}
 
 	const effect = getBatchedDamageEffect(applications);
@@ -211,8 +316,7 @@ async function applyDamageApplicationBatch(applications, parentParams) {
 	}
 }
 
-async function finalizeQueuedDamageApplications(transaction) {
-	const applications = (transaction.damageApplications ?? []).splice(0);
+export async function applyDamageApplications(applications, parentParams) {
 	if (!applications.length) return;
 
 	const byActor = new Map();
@@ -233,8 +337,8 @@ async function finalizeQueuedDamageApplications(transaction) {
 		const actor = batches[0].applications[0].actor;
 		for (const batch of batches) {
 			try {
-				await runDamageTransactionActorOperation(transaction.rootParams, actor, () =>
-					applyDamageApplicationBatch(batch.applications, transaction.rootParams)
+				await runDamageTransactionActorOperation(parentParams, actor, () =>
+					applyDamageApplicationBatch(batch.applications, parentParams)
 				);
 			} catch (error) {
 				console.error(`${MODULE_ID} | Failed to apply grouped damage to ${actor.name}`, error);
@@ -260,6 +364,11 @@ function getDamageMessageToken(message, appliedDamage) {
 
 function installDamageTransactionHooks() {
 	if (damageTransactionState.hooksInstalled) return;
+	for (const message of game.messages?.contents ?? []) {
+		indexDamageSourceMessage(message);
+	}
+	Hooks.on("createChatMessage", indexDamageSourceMessage);
+	Hooks.on("deleteChatMessage", unindexDamageSourceMessage);
 	Hooks.on("renderChatMessageHTML", (message, html) => {
 		if (
 			foundry.utils.getProperty(message, `flags.${game.system.id}.context.type`) !== "damage-taken" ||
@@ -396,6 +505,11 @@ async function finalizeDamageTransaction(transaction) {
 			console.error(`${MODULE_ID} | Failed to finalize a grouped damage card`, error);
 		}
 	}));
+}
+
+async function finalizeQueuedDamageApplications(transaction) {
+	const applications = (transaction.damageApplications ?? []).splice(0);
+	await applyDamageApplications(applications, transaction.rootParams);
 }
 
 registerDamageTransactionFinalizer(finalizeQueuedDamageApplications, "apply");
@@ -546,23 +660,7 @@ export function getDamageSelectors(damage, item = null) {
 		}
 	}
 
-	let sourceMessage = null;
-	let latestMatchingMessage = null;
-	for (const message of game.messages?.contents ?? []) {
-		if (message.rolls?.includes(damage)) {
-			sourceMessage = message;
-			break;
-		}
-		if (
-			item?.uuid &&
-			message.item?.uuid === item.uuid &&
-			message.rolls?.some(roll => roll?.constructor === damage?.constructor) &&
-			(!latestMatchingMessage || message.timestamp > latestMatchingMessage.timestamp)
-		) {
-			latestMatchingMessage = message;
-		}
-	}
-	sourceMessage ??= latestMatchingMessage;
+	const sourceMessage = getDamageSourceMessage(damage, item);
 	const domains = foundry.utils.getProperty(
 		sourceMessage,
 		`flags.${game.system.id}.context.domains`

@@ -1,6 +1,7 @@
 import { registerCheckRollWrapper } from "./checkRollWrappers.js";
 import {
 	getRuleElementPredicateOptions,
+	isNpcActorSkillFormula,
 	resolveRuleElementValue
 } from "./ruleElementResolvers.js";
 import { MODIFIER_TYPES, selectTypedModifiers } from "./typedModifiers.js";
@@ -66,9 +67,11 @@ function registerAttackSpeedRuleElement({ quiet = false } = {}) {
 			if (this.ignored) return;
 
 			const selector = this.resolveInjectedProperties(this.selector);
-			const value = Number(this.resolveValue(this.value));
+			const deferredSkillFormula = isNpcActorSkillFormula(this, this.value);
+			const value = deferredSkillFormula ? null : Number(this.resolveValue(this.value));
 			const type = this.type ?? "untyped";
-			if (!selector || !Number.isInteger(value) || !MODIFIER_TYPES.includes(type)) {
+			if (!selector || (!deferredSkillFormula && !Number.isInteger(value)) ||
+				!MODIFIER_TYPES.includes(type)) {
 				this.failValidation("selector and a valid type must be provided, and value must resolve to an integer");
 				return;
 			}
@@ -87,7 +90,10 @@ function registerAttackSpeedRuleElement({ quiet = false } = {}) {
 			const slug = `${MODULE_ID}-attack-speed-${selector}-${synthetics.attackSpeeds[selector].length}`;
 			synthetics.attackSpeeds[selector].push({
 				slug,
-				value,
+				value: value ?? 0,
+				resolveValue: deferredSkillFormula
+					? () => Number(this.resolveValue(this.value))
+					: null,
 				type,
 				label: this.label || this.item.name,
 				test
@@ -105,8 +111,16 @@ function getAttackSpeedContributions(actor, domains, rollOptions) {
 	for (const [selector, adjustments] of Object.entries(actor?.synthetics?.attackSpeeds ?? {})) {
 		if (!domainSet.has(selector)) continue;
 		for (const adjustment of adjustments) {
-			if (adjustment.test(options)) {
-				matching.push({ ...adjustment, type: adjustment.type ?? "untyped" });
+			if (!adjustment.test(options)) continue;
+			const value = adjustment.resolveValue
+				? adjustment.resolveValue()
+				: adjustment.value;
+			if (!Number.isInteger(value)) {
+				console.error(`${MODULE_ID} | Could not resolve ${RULE_KEY} value for ${adjustment.label}`);
+				continue;
+			}
+			if (value !== 0) {
+				matching.push({ ...adjustment, value, type: adjustment.type ?? "untyped" });
 			}
 		}
 	}
@@ -152,7 +166,7 @@ export function getEffectiveStrikeMAP(strike, mapIncreases = 1, actorOverride = 
 
 	const actor = actorOverride ?? strike.actor ?? strike.item?.actor ?? strike.item?.parent;
 	if (!actor) return Math.max(0, -penalty);
-	const domains = strike.domains ?? [];
+	const domains = getStrikeDisplayDomains(strike, actor);
 	const rollOptions = new Set([
 		...(actor.getRollOptions?.(domains) ?? []),
 		...(strike.options ?? []),
@@ -316,26 +330,101 @@ function installAttackSpeedStrikeDisplayWrapper({ quiet = false } = {}) {
 	}
 }
 
+export function getStrikeDisplayDomains(strike, actor) {
+	if (Array.isArray(strike?.domains)) return strike.domains;
+	if (!actor?.isOfType?.("npc") && actor?.type !== "npc") return [];
+
+	const item = strike.item ?? strike.weapon;
+	if (!item) return [];
+	const isMelee = item.isMelee ?? strike.attackRollType !== "PF2E.NPCAttackRanged";
+	const range = isMelee ? "melee" : "ranged";
+	const type = item.category === "unarmed" ? "unarmed" : "weapon";
+	const slug = item.slug ?? item.system?.slug ??
+		String(item.name ?? "").toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "");
+	const domains = [
+		item.baseType ? `${item.baseType}-base-attack-roll` : null,
+		item.group ? `${item.group}-group-attack-roll` : null,
+		...(item.system?.traits?.otherTags ?? []).map(tag => `${tag}-tag-attack-roll`),
+		item.id ? `${item.id}-attack` : null,
+		slug ? `${slug}-attack` : null,
+		slug ? `${slug}-attack-roll` : null,
+		`${type}-attack-roll`,
+		`${range}-attack-roll`,
+		`${range}-strike-attack-roll`,
+		"strike-attack-roll",
+		"attack-roll",
+		"attack",
+		"check",
+		"all",
+		"trained-attack"
+	];
+	const abilities = new Set([
+		item.defaultAttribute,
+		...(strike.modifiers ?? []).filter(modifier =>
+			modifier.type === "ability" && modifier.enabled !== false
+		).map(modifier => modifier.ability)
+	]);
+	for (const ability of abilities) {
+		if (typeof ability !== "string" || !ability) continue;
+		domains.push(`${ability}-attack`, `${ability}-based`);
+	}
+	return [...new Set(domains.filter(Boolean))];
+}
+
+function getStrikeDisplayRollOptions(actor, strike, domains) {
+	return new Set([
+		...(actor.getRollOptions?.(domains) ?? []),
+		...(strike.options ?? []),
+		...(strike.item?.getRollOptions?.("item") ?? [])
+	]);
+}
+
 function updateStrikeAttackSpeedTooltips(app, html) {
 	const root = html instanceof HTMLElement ? html : html?.[0];
 	const actor = app.actor ?? app.document?.actor;
 	if (!root || !actor) return;
 
 	const jq = globalThis.jQuery ?? globalThis.$;
-	if (typeof jq !== "function" || typeof jq.fn?.tooltipster !== "function") return;
+	const canCreateTooltips = typeof jq === "function" && typeof jq.fn?.tooltipster === "function";
 
-	for (const entry of root.querySelectorAll(".strikes-list > [data-strike][data-action-index]")) {
+	for (const entry of root.querySelectorAll(
+		".strikes-list > [data-strike][data-action-index], " +
+		".attacks.section-container [data-strike][data-action-index]"
+	)) {
 		const strike = actor.system.actions?.[Number(entry.dataset.actionIndex)];
-		if (!strike || !Array.isArray(strike.domains)) continue;
-
-		const rollOptions = new Set([
-			...actor.getRollOptions?.(strike.domains) ?? [],
-			...strike.options ?? [],
-			...strike.item?.getRollOptions?.("item") ?? []
-		]);
-		const contributions = getAttackSpeedContributions(actor, strike.domains, rollOptions);
+		if (!strike) continue;
+		const domains = getStrikeDisplayDomains(strike, actor);
+		const rollOptions = getStrikeDisplayRollOptions(actor, strike, domains);
+		const contributions = getAttackSpeedContributions(actor, domains, rollOptions);
 		if (contributions.length === 0) continue;
 
+		const isNpc = actor.isOfType?.("npc") || actor.type === "npc";
+		if (isNpc) {
+			for (const button of entry.querySelectorAll(
+				'button[data-action="strike-attack"][data-variant-index="1"], ' +
+				'button[data-action="strike-attack"][data-variant-index="2"]'
+			)) {
+				const mapIncreases = Number(button.dataset.variantIndex);
+				const variant = strike.variants?.[mapIncreases];
+				const basePenalty = Number(variant?.penalty);
+				const baseTotal = Number(strike.totalModifier);
+				if (!Number.isFinite(basePenalty) || !Number.isFinite(baseTotal)) continue;
+				const delta = getEffectiveAttackSpeedDelta(
+					strike.modifiers ?? [],
+					contributions,
+					mapIncreases,
+					rollOptions
+				);
+				const penalty = basePenalty + delta;
+				const value = baseTotal + penalty;
+				button.textContent = game.i18n.format("PF2E.MAPAbbreviationValueLabel", {
+					value: `${value >= 0 ? "+" : ""}${value}`,
+					penalty: `${penalty >= 0 ? "+" : ""}${penalty}`
+				});
+			}
+		}
+
+		if (!canCreateTooltips) continue;
 		for (const button of entry.querySelectorAll(
 			'button[data-action="strike-attack"][data-variant-index="1"], button[data-action="strike-attack"][data-variant-index="2"]'
 		)) {

@@ -219,15 +219,16 @@ async function renderVursPlayResourcesNow(root, actor) {
 		apply.type = "button";
 		apply.className = "vurs-play-apply vurs-play-reset";
 		apply.textContent = "Apply";
-		apply.title = "Click to apply; right-click to discard; Ctrl+right-click to reset";
-		apply.setAttribute("aria-label", "Apply staged changes; right-click to discard; Ctrl+right-click to reset resources");
+		apply.title = "Click to apply; right-click to discard; Ctrl+right-click to reset; Ctrl+Shift+right-click to hard reset";
+		apply.setAttribute("aria-label", "Apply staged changes; right-click to discard; Ctrl+right-click to reset resources; Ctrl+Shift+right-click to hard reset Play Resources");
 		apply.addEventListener("click", event => {
 			event.preventDefault();
 			void applyPlayResourceChanges(root, actor, section, apply);
 		});
 		apply.addEventListener("contextmenu", event => {
 			event.preventDefault();
-			if (event.ctrlKey) void resetPlayResources(root, actor, apply);
+			if (event.ctrlKey && event.shiftKey) void hardResetPlayResources(root, actor, apply);
+			else if (event.ctrlKey) void resetPlayResources(root, actor, apply);
 			else {
 				delete section._vursPendingUpdates;
 				apply.textContent = "Apply";
@@ -461,9 +462,9 @@ function getPlayResourceEntries(actor) {
 			: baseMax;
 		if (definition.key === "magicPoints") {
 			baseMax = maxTotal;
-		} else if (actorUsesAgnosticVurs(actor) && storedMaxValue > 0) {
+		} else if (actorUsesAgnosticVurs(actor) && !isNpcActor(actor) && storedMaxValue > 0) {
 			// A positive stored maximum can come from an external source even
-			// though Agnostic VURS has no stat-derived base maximum.
+			// though Agnostic VURS characters have no stat-derived base maximum.
 			baseMax = storedMaxValue;
 		}
 		const max = (() => {
@@ -487,8 +488,7 @@ function getPlayResourceEntries(actor) {
 		if (max <= 0 && maxReduction <= 0) return [];
 
 		// New resources start full by default. Style Rank and Karma Points are
-		// intentionally passive/empty until the user sets them. Agnostic NPC AP
-		// and Reactions therefore start at their maximums (minimum 3 AP, 1 Reaction).
+		// intentionally passive/empty until the user sets them.
 		const initialValue = resource.value === undefined || resource.value === null || resource.value === ""
 			? (["styleRank", "karmaPoints"].includes(definition.key) ? 0 : max)
 			: finiteResourceNumber(resource.value);
@@ -499,7 +499,7 @@ function getPlayResourceEntries(actor) {
 		const magicPointFields = definition.key === "magicPoints"
 			? Object.fromEntries(getMagicPointContributions(actor).map(contribution => [
 				contribution.field,
-				actorUsesAgnosticVurs(actor)
+				actorUsesAgnosticVurs(actor) && !isNpcActor(actor)
 					? finiteResourceNumber(resource[contribution.field])
 					: contribution.value
 			]))
@@ -539,6 +539,34 @@ async function resetPlayResources(root, actor, button) {
 		renderVursPlayResources(root, actor);
 	} catch (error) {
 		console.error("vurs-pf2e | Failed to reset Play resources", error);
+	} finally {
+		button.disabled = false;
+	}
+}
+
+async function hardResetPlayResources(root, actor, button) {
+	const confirmed = await Dialog.confirm({
+		title: "Hard Reset Play Resources?",
+		content: "<p>This deletes all stored Play Resource data, then regenerates the defaults for this actor. Outside-source modifications may need to be reapplied.</p>",
+		defaultYes: false
+	});
+	if (!confirmed) return;
+
+	const section = button.closest(".vurs-play-resources");
+	if (section?._vursPendingUpdates) delete section._vursPendingUpdates;
+	button.textContent = "Apply";
+	button.classList.remove("has-pending-changes");
+	button.disabled = true;
+	try {
+		await actor.update(
+			{ "flags.vurs.-=playResources": null },
+			{ render: false, vursPlayResourceOnly: true }
+		);
+		await ensurePlayResourceMaxDefaults(actor);
+		await renderVursPlayResources(root, actor);
+	} catch (error) {
+		console.error(`vurs-pf2e | Failed to hard reset Play resources for ${actor.name}`, error);
+		ui.notifications.error("Failed to hard reset Play Resources. See the console for details.");
 	} finally {
 		button.disabled = false;
 	}
@@ -596,7 +624,8 @@ async function resetEncounterPlayResources(combat) {
 
 function isNpcPlayResourceVisible(actor, resourceKey) {
 	if (!isNpcActor(actor)) return true;
-	if (resourceKey === "actionPoints" && actorUsesVursSystem(actor)) return true;
+	if (resourceKey === "actionPoints" && actorUsesAgnosticVurs(actor)) return true;
+	if (resourceKey === "actionPoints" && actorUsesVursSystem(actor) && !actorUsesAgnosticVurs(actor)) return true;
 	const associatedSkills = {
 		staminaPoints: "athletics",
 		actionPoints: "mobility",
@@ -612,18 +641,22 @@ function isNpcPlayResourceVisible(actor, resourceKey) {
 
 function getFullVursDefaultMax(actor, resourceKey) {
 	const agnostic = actorUsesAgnosticVurs(actor);
+	const npc = isNpcActor(actor);
 	if (!actorUsesVursSystem(actor) && !agnostic && getSystemModeForPlayResource(actor) !== "default") return undefined;
-	// Mode distinction: Agnostic VURS disables stat-derived Play Resources;
-	// they require an outside effect (usually a feat) to modify their maximum.
-	// Its fixed exceptions are AP (3) and Reactions (1). Full VURS generates
-	// resource maxima from stats below.
+	// Per the system author's explicitly stated rules: Agnostic characters get
+	// no stat-derived Play Resources (except AP 3 and Reactions 1); outside
+	// effects must grant them. Agnostic NPCs derive maxima only when the
+	// associated skill is visible, except AP, which uses Mobility even when
+	// hidden. Full VURS derives maxima from stats.
 	if (agnostic) {
-		if (resourceKey === "actionPoints") return 3;
 		if (resourceKey === "reactions") return 1;
 		if (resourceKey === "magicPoints") {
 			return finiteResourceNumber(foundry.utils.getProperty(actor, `${PLAY_RESOURCES_PATH}.magicPoints.max`));
 		}
-		return 0;
+		if (!npc) {
+			if (resourceKey === "actionPoints") return 3;
+			return 0;
+		}
 	}
 	if (getSystemModeForPlayResource(actor) === "default") {
 		if (game.settings.get("vurs-pf2e", DEFAULT_ACTION_POINTS_SETTING) !== true) return undefined;
@@ -636,9 +669,9 @@ function getFullVursDefaultMax(actor, resourceKey) {
 	// NPC skill modifiers use PF2e's level-scaled modifier representation;
 	// character skill resources continue to use proficiency ranks.
 	const usesNpcSkillModifiers = isNpcActor(actor);
-	const skillRank = slug => {
+	const skillRank = (slug, ignoreVisibility = false) => {
 		const skill = system?.skills?.[slug];
-		if (isNpcActor(actor) && skill?.visible !== true) return undefined;
+		if (isNpcActor(actor) && !ignoreVisibility && skill?.visible !== true) return undefined;
 		if (usesNpcSkillModifiers) {
 			return skill ? Math.floor(finiteResourceNumber(skill.mod) / 7) : undefined;
 		}
@@ -647,16 +680,18 @@ function getFullVursDefaultMax(actor, resourceKey) {
 
 	switch (resourceKey) {
 		case "actionPoints": {
-			const mobilityRank = skillRank("mobility");
+			// The system author explicitly specifies Agnostic NPC AP as the
+			// visibility exception: hidden Mobility still contributes to its max.
+			const mobilityRank = skillRank("mobility", agnostic);
 			return mobilityRank === undefined ? undefined
-				: Math.max(2, 2 + Math.min(attributeModifier("dex"), mobilityRank));
+				: Math.max(agnostic ? 3 : 2, 2 + Math.min(attributeModifier("dex"), mobilityRank));
 		}
 		case "staminaPoints":
 			return calculateNpcSkillResource(skillRank("athletics"), rank =>
 				Math.max(0, Math.min(attributeModifier("str"), rank)));
 		case "tacticPoints":
 			return calculateNpcSkillResource(skillRank("strategy"), rank =>
-				Math.max(0, Math.min(attributeModifier("int"), rank)));
+				Math.max(0, Math.min(attributeModifier("int"), rank) - (agnostic ? 1 : 0)));
 		case "styleRank":
 			return calculateNpcSkillResource(skillRank("coolness"), rank =>
 				Math.min(attributeModifier("cha"), rank) > 0 ? 5 : 0);
@@ -914,7 +949,7 @@ function getMagicPointContributions(actor) {
 				field: "maxArcane",
 				label: `${abilityLabel("PF2E.AbilityInt", "Intelligence", "Intelligence")} (${localize("PF2E.TraitArcane", "Arcane")})`,
 				color: "#3498db",
-				value: actorUsesAgnosticVurs(actor)
+				value: actorUsesAgnosticVurs(actor) && !isNpcActor(actor)
 					? 0
 					: 2 * Math.min(modifier("int"), skillRank ?? 0)
 			}];
@@ -926,7 +961,7 @@ function getMagicPointContributions(actor) {
 				field: "maxOccult",
 				label: `${abilityLabel("PF2E.AbilityCha", "Void", "Charisma")} (${localize("PF2E.TraitOccult", "Occult")})`,
 				color: "#9b59b6",
-				value: actorUsesAgnosticVurs(actor)
+				value: actorUsesAgnosticVurs(actor) && !isNpcActor(actor)
 					? 0
 					: Math.min(modifier("cha"), skillRank ?? 0)
 			}];
@@ -938,7 +973,7 @@ function getMagicPointContributions(actor) {
 				field: "maxDivine",
 				label: `${abilityLabel("PF2E.AbilityWis", "Spirit", "Wisdom")} (${localize("PF2E.TraitDivine", "Divine")})`,
 				color: "#00bcd4",
-				value: actorUsesAgnosticVurs(actor)
+				value: actorUsesAgnosticVurs(actor) && !isNpcActor(actor)
 					? 0
 					: Math.min(modifier("wis"), skillRank ?? 0)
 			}];
@@ -950,7 +985,7 @@ function getMagicPointContributions(actor) {
 				field: "maxPrimal",
 				label: `${abilityLabel("PF2E.AbilityWis", "Spirit", "Wisdom")} (${localize("PF2E.TraitPrimal", "Primal")})`,
 				color: "#2ecc71",
-				value: actorUsesAgnosticVurs(actor)
+				value: actorUsesAgnosticVurs(actor) && !isNpcActor(actor)
 					? 0
 					: Math.min(modifier("wis"), skillRank ?? 0)
 			}];
@@ -1442,6 +1477,10 @@ async function ensurePlayResourceMaxDefaults(actor) {
 		const defaultMax = getFullVursDefaultMax(actor, definition.key);
 		const hasDefaultMax = defaultMax !== undefined && defaultMax !== null && defaultMax !== "" && Number.isFinite(Number(defaultMax));
 		let effectiveMax = finiteResourceNumber(defaultMax);
+		const regenerateAgnosticNpcResource = actorUsesAgnosticVurs(actor)
+			&& isNpcActor(actor)
+			&& finiteResourceNumber(resource.max) === 0
+			&& finiteResourceNumber(defaultMax) > 0;
 		if (definition.key === "magicPoints" && hasDefaultMax) {
 			const contributions = getMagicPointContributions(actor);
 			const contributionTotal = contributions.reduce((total, contribution) => {
@@ -1472,7 +1511,12 @@ async function ensurePlayResourceMaxDefaults(actor) {
 		if (definition.key === "actionPoints" && hasDefaultMax) {
 			const missingMaximum = resource.max === undefined || resource.max === null || resource.max === "";
 			const regenerateAgnosticMaximum = actorUsesAgnosticVurs(actor)
-				&& finiteResourceNumber(resource.max) === 0
+				&& (
+					finiteResourceNumber(resource.max) === 0 ||
+					(isNpcActor(actor) &&
+						finiteResourceNumber(resource.max) === 3 &&
+						finiteResourceNumber(defaultMax) > 3)
+				)
 				&& finiteResourceNumber(defaultMax) > 0;
 			const maxReduction = resource.maxReduction === undefined || resource.maxReduction === null || resource.maxReduction === ""
 				? 0
@@ -1497,7 +1541,11 @@ async function ensurePlayResourceMaxDefaults(actor) {
 		) {
 			updates[`${PLAY_RESOURCES_PATH}.${definition.key}.max`] = finiteResourceNumber(defaultMax);
 		}
-		if ((resource.value === undefined || resource.value === null || resource.value === "") && Number.isFinite(effectiveMax)) {
+		if (
+			(resource.value === undefined || resource.value === null || resource.value === "" ||
+				(regenerateAgnosticNpcResource && finiteResourceNumber(resource.value) === 0)) &&
+			Number.isFinite(effectiveMax)
+		) {
 			updates[`${PLAY_RESOURCES_PATH}.${definition.key}.value`] = Math.max(0, effectiveMax);
 		}
 	}
