@@ -107,6 +107,7 @@ function registerAttackSpeedRuleElement({ quiet = false } = {}) {
 function getAttackSpeedContributions(actor, domains, rollOptions) {
 	const domainSet = new Set(domains ?? []);
 	const options = rollOptions instanceof Set ? rollOptions : new Set(rollOptions ?? []);
+	const modifierAdjustments = actor?.synthetics?.modifierAdjustments ?? {};
 	const matching = [];
 	for (const [selector, adjustments] of Object.entries(actor?.synthetics?.attackSpeeds ?? {})) {
 		if (!domainSet.has(selector)) continue;
@@ -120,7 +121,17 @@ function getAttackSpeedContributions(actor, domains, rollOptions) {
 				continue;
 			}
 			if (value !== 0) {
-				matching.push({ ...adjustment, value, type: adjustment.type ?? "untyped" });
+				const applicableAdjustments = [...new Set(
+					[...domainSet].flatMap(domain => modifierAdjustments[domain] ?? [])
+				)].filter(modifierAdjustment =>
+					modifierAdjustment.slug == null || modifierAdjustment.slug === adjustment.slug
+				);
+				matching.push({
+					...adjustment,
+					value,
+					type: adjustment.type ?? "untyped",
+					modifierAdjustments: applicableAdjustments
+				});
 			}
 		}
 	}
@@ -152,7 +163,8 @@ function getEffectiveAttackSpeedDelta(modifiers, contributions, mapIncreases, ro
 			slug: contribution.slug,
 			label: contribution.label,
 			modifier: contribution.value * mapIncreases,
-			type: contribution.type
+			type: contribution.type,
+			adjustments: contribution.modifierAdjustments
 		}))
 	];
 	const baseTotal = new StatisticModifier("attack-speed-display", baseModifiers, options).totalModifier;
@@ -227,7 +239,8 @@ function installAttackSpeedCheckWrapper({ quiet = false } = {}) {
 					slug: contribution.slug ?? `${MODULE_ID}-attack-speed-${index}`,
 					label: contribution.label,
 					modifier: contribution.value * mapIncreases,
-					type: contribution.type
+					type: contribution.type,
+					adjustments: contribution.modifierAdjustments
 				});
 				check.push(modifier);
 				addedModifiers.push(modifier);
