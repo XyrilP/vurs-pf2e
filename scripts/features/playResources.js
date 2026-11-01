@@ -461,6 +461,10 @@ function getPlayResourceEntries(actor) {
 			: baseMax;
 		if (definition.key === "magicPoints") {
 			baseMax = maxTotal;
+		} else if (actorUsesAgnosticVurs(actor) && storedMaxValue > 0) {
+			// A positive stored maximum can come from an external source even
+			// though Agnostic VURS has no stat-derived base maximum.
+			baseMax = storedMaxValue;
 		}
 		const max = (() => {
 			if (resource.maxReduction !== undefined && resource.maxReduction !== null && resource.maxReduction !== "") {
@@ -609,12 +613,17 @@ function isNpcPlayResourceVisible(actor, resourceKey) {
 function getFullVursDefaultMax(actor, resourceKey) {
 	const agnostic = actorUsesAgnosticVurs(actor);
 	if (!actorUsesVursSystem(actor) && !agnostic && getSystemModeForPlayResource(actor) !== "default") return undefined;
-	// Agnostic mode keeps fixed AP and Reaction defaults but leaves
-	// stat-derived resource maxima available for external configuration.
+	// Mode distinction: Agnostic VURS disables stat-derived Play Resources;
+	// they require an outside effect (usually a feat) to modify their maximum.
+	// Its fixed exceptions are AP (3) and Reactions (1). Full VURS generates
+	// resource maxima from stats below.
 	if (agnostic) {
 		if (resourceKey === "actionPoints") return 3;
 		if (resourceKey === "reactions") return 1;
-		return undefined;
+		if (resourceKey === "magicPoints") {
+			return finiteResourceNumber(foundry.utils.getProperty(actor, `${PLAY_RESOURCES_PATH}.magicPoints.max`));
+		}
+		return 0;
 	}
 	if (getSystemModeForPlayResource(actor) === "default") {
 		if (game.settings.get("vurs-pf2e", DEFAULT_ACTION_POINTS_SETTING) !== true) return undefined;
@@ -640,14 +649,14 @@ function getFullVursDefaultMax(actor, resourceKey) {
 		case "actionPoints": {
 			const mobilityRank = skillRank("mobility");
 			return mobilityRank === undefined ? undefined
-				: Math.max(agnostic ? 3 : 2, 2 + Math.min(attributeModifier("dex"), mobilityRank));
+				: Math.max(2, 2 + Math.min(attributeModifier("dex"), mobilityRank));
 		}
 		case "staminaPoints":
 			return calculateNpcSkillResource(skillRank("athletics"), rank =>
 				Math.max(0, Math.min(attributeModifier("str"), rank)));
 		case "tacticPoints":
 			return calculateNpcSkillResource(skillRank("strategy"), rank =>
-				Math.max(0, Math.min(attributeModifier("int"), rank) - (agnostic ? 1 : 0)));
+				Math.max(0, Math.min(attributeModifier("int"), rank)));
 		case "styleRank":
 			return calculateNpcSkillResource(skillRank("coolness"), rank =>
 				Math.min(attributeModifier("cha"), rank) > 0 ? 5 : 0);
@@ -905,7 +914,7 @@ function getMagicPointContributions(actor) {
 				field: "maxArcane",
 				label: `${abilityLabel("PF2E.AbilityInt", "Intelligence", "Intelligence")} (${localize("PF2E.TraitArcane", "Arcane")})`,
 				color: "#3498db",
-				value: actorUsesAgnosticVurs(actor) && !isNpcActor(actor)
+				value: actorUsesAgnosticVurs(actor)
 					? 0
 					: 2 * Math.min(modifier("int"), skillRank ?? 0)
 			}];
@@ -917,7 +926,7 @@ function getMagicPointContributions(actor) {
 				field: "maxOccult",
 				label: `${abilityLabel("PF2E.AbilityCha", "Void", "Charisma")} (${localize("PF2E.TraitOccult", "Occult")})`,
 				color: "#9b59b6",
-				value: actorUsesAgnosticVurs(actor) && !isNpcActor(actor)
+				value: actorUsesAgnosticVurs(actor)
 					? 0
 					: Math.min(modifier("cha"), skillRank ?? 0)
 			}];
@@ -929,7 +938,7 @@ function getMagicPointContributions(actor) {
 				field: "maxDivine",
 				label: `${abilityLabel("PF2E.AbilityWis", "Spirit", "Wisdom")} (${localize("PF2E.TraitDivine", "Divine")})`,
 				color: "#00bcd4",
-				value: actorUsesAgnosticVurs(actor) && !isNpcActor(actor)
+				value: actorUsesAgnosticVurs(actor)
 					? 0
 					: Math.min(modifier("wis"), skillRank ?? 0)
 			}];
@@ -941,7 +950,7 @@ function getMagicPointContributions(actor) {
 				field: "maxPrimal",
 				label: `${abilityLabel("PF2E.AbilityWis", "Spirit", "Wisdom")} (${localize("PF2E.TraitPrimal", "Primal")})`,
 				color: "#2ecc71",
-				value: actorUsesAgnosticVurs(actor) && !isNpcActor(actor)
+				value: actorUsesAgnosticVurs(actor)
 					? 0
 					: Math.min(modifier("wis"), skillRank ?? 0)
 			}];
@@ -1461,20 +1470,31 @@ async function ensurePlayResourceMaxDefaults(actor) {
 			continue;
 		}
 		if (definition.key === "actionPoints" && hasDefaultMax) {
+			const missingMaximum = resource.max === undefined || resource.max === null || resource.max === "";
+			const regenerateAgnosticMaximum = actorUsesAgnosticVurs(actor)
+				&& finiteResourceNumber(resource.max) === 0
+				&& finiteResourceNumber(defaultMax) > 0;
 			const maxReduction = resource.maxReduction === undefined || resource.maxReduction === null || resource.maxReduction === ""
 				? 0
 				: finiteResourceNumber(resource.maxReduction);
-			const outsideMaximum = resource.max === undefined || resource.max === null || resource.max === ""
+			const outsideMaximum = missingMaximum || regenerateAgnosticMaximum
 				? finiteResourceNumber(defaultMax)
 				: finiteResourceNumber(resource.max);
 			effectiveMax = Math.max(0, outsideMaximum - maxReduction);
+			if (actorUsesAgnosticVurs(actor) && (missingMaximum || regenerateAgnosticMaximum)) {
+				updates[`${PLAY_RESOURCES_PATH}.actionPoints.max`] = outsideMaximum;
+			}
 		} else if (isNpcActor(actor) && definition.key === "tacticPoints" && hasDefaultMax) {
 			const maxReduction = finiteResourceNumber(resource.maxReduction);
 			effectiveMax = Math.max(0, finiteResourceNumber(defaultMax) - maxReduction);
 			if (finiteResourceNumber(resource.max) !== finiteResourceNumber(defaultMax)) {
 				updates[`${PLAY_RESOURCES_PATH}.tacticPoints.max`] = finiteResourceNumber(defaultMax);
 			}
-		} else if (resource.max === undefined || resource.max === null || resource.max === "") {
+		} else if (
+			resource.max === undefined || resource.max === null || resource.max === "" ||
+			(actorUsesAgnosticVurs(actor) && hasDefaultMax &&
+				finiteResourceNumber(resource.max) === 0 && finiteResourceNumber(defaultMax) > 0)
+		) {
 			updates[`${PLAY_RESOURCES_PATH}.${definition.key}.max`] = finiteResourceNumber(defaultMax);
 		}
 		if ((resource.value === undefined || resource.value === null || resource.value === "") && Number.isFinite(effectiveMax)) {
