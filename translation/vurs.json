@@ -60,6 +60,70 @@
                 "CriticalMiss": "Critical miss; no damage",
                 "NoSecondaryTarget": "No secondary target; no damage"
             }
+        },
+        "RuleElements": {
+            "Common": {
+                "Value": "Value",
+                "Selector": "Selector",
+                "Mode": "Mode",
+                "ModifierType": "Modifier Type",
+                "BeforeReduction": "Calculate Before Reduction",
+                "Modes": {
+                    "Threshold": "Threshold",
+                    "Flat": "Flat",
+                    "Percent": "Percent"
+                }
+            },
+            "CriticalProtection": {
+                "Definition": "Definition"
+            },
+            "HealingEffectiveness": {
+                "Threshold": "Healing Effectiveness Threshold"
+            },
+            "Lifesteal": {
+                "Threshold": "Lifesteal Threshold"
+            },
+            "DamageReturn": {
+                "Threshold": "Damage Return Threshold",
+                "ReflectDamage": "Reflect Damage"
+            },
+            "CollateralDamage": {
+                "AreaType": "Area Shape",
+                "AreaTypes": {
+                    "burst": "Burst",
+                    "cone": "Cone",
+                    "cube": "Cube",
+                    "cylinder": "Cylinder",
+                    "emanation": "Emanation",
+                    "line": "Line",
+                    "ring": "Ring",
+                    "square": "Square",
+                    "bounce": "Bounce"
+                },
+                "Distance": "Distance",
+                "Width": "Width",
+                "Threshold": "Collateral Damage Threshold",
+                "BounceShots": "Bounce Shots",
+                "BounceCount": "Bounce Count",
+                "BounceLimit": "Bounce Limit",
+                "BounceNearest": "Bounce to Nearest",
+                "Affects": "Affects",
+                "AffectsTypes": {
+                    "Allied": "Allied",
+                    "Neutral": "Neutral",
+                    "Hostile": "Hostile",
+                    "All": "All"
+                },
+                "AffectsSelf": "Affects Self",
+                "Divided": "Divide Damage",
+                "AreaDamage": "Area Damage",
+                "DamageType": "Damage Type",
+                "Placement": "Placement",
+                "Placements": {
+                    "Target": "Target",
+                    "Self": "Self"
+                }
+            }
         }
     },
     "PF2E": {

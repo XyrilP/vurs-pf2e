@@ -13,6 +13,7 @@ import {
 	resolveRuleElementValue,
 	testRuleElementPredicate
 } from "./ruleElementResolvers.js";
+import { localizeRuleElementFormText } from "./ruleElementFormLocalization.js";
 
 const MODULE_ID = "vurs-pf2e";
 const RULE_KEY = "Collateral Damage";
@@ -71,8 +72,16 @@ function registerCollateralDamageRuleElement({ quiet = false } = {}) {
 	}
 
 	const damageTypes = CONFIG[game.system.id.toUpperCase()]?.damageTypes ?? CONFIG.PF2E?.damageTypes ?? {};
-	const damageTypeChoices = Object.fromEntries([...Object.keys(damageTypes), "untyped"].map(type => [type, type]));
+	const damageTypeChoices = Object.fromEntries(
+		Object.entries({ ...damageTypes, untyped: damageTypes.untyped ?? "PF2E.TraitUntyped" })
+			.map(([type, label]) => {
+				const localized = game.i18n.localize(label);
+				return [type, localized === label ? type : localized];
+			})
+	);
 	CollateralDamageRuleElement = class CollateralDamageRuleElement extends RuleElement {
+		static autogenForms = true;
+
 		resolveValue(value, fallback = 0, options = {}) {
 			return resolveRuleElementValue(
 				this,
@@ -88,74 +97,133 @@ function registerCollateralDamageRuleElement({ quiet = false } = {}) {
 			const fields = foundry.data.fields;
 			return {
 				...super.defineSchema(),
-				value: new ResolvableValueField({ required: true, nullable: false }),
+				value: new ResolvableValueField({
+					required: true,
+					nullable: false,
+					label: localizeRuleElementFormText("Common.Value", "Value")
+				}),
 				type: new fields.StringField({
 					required: true,
 					nullable: false,
-					choices: Object.fromEntries([...AREA_TYPES, "bounce"].map(type => [type, type]))
+					label: localizeRuleElementFormText("CollateralDamage.AreaType", "Area Shape"),
+					choices: Object.fromEntries([...AREA_TYPES, "bounce"].map(type => [
+						type,
+						localizeRuleElementFormText(`CollateralDamage.AreaTypes.${type}`, type)
+					]))
 				}),
-				distance: new ResolvableValueField({ required: true, nullable: false }),
-				width: new ResolvableValueField({ required: false, nullable: false, initial: undefined }),
+				distance: new ResolvableValueField({
+					required: true,
+					nullable: false,
+					label: localizeRuleElementFormText("CollateralDamage.Distance", "Distance")
+				}),
+				width: new ResolvableValueField({
+					required: false,
+					nullable: false,
+					initial: undefined,
+					label: localizeRuleElementFormText("CollateralDamage.Width", "Width")
+				}),
 				collateralDamageThreshold: new ResolvableValueField({
 					required: false,
 					nullable: false,
-					initial: 20
+					initial: 20,
+					label: localizeRuleElementFormText("CollateralDamage.Threshold", "Collateral Damage Threshold")
 				}),
 				mode: new fields.StringField({
 					required: false,
 					nullable: false,
 					initial: "threshold",
-					choices: { threshold: "Threshold", flat: "Flat", percent: "Percent" }
+					label: localizeRuleElementFormText("Common.Mode", "Mode"),
+					choices: {
+						threshold: localizeRuleElementFormText("Common.Modes.Threshold", "Threshold"),
+						flat: localizeRuleElementFormText("Common.Modes.Flat", "Flat"),
+						percent: localizeRuleElementFormText("Common.Modes.Percent", "Percent")
+					}
 				}),
 				bounceShots: new ResolvableValueField({
 					required: false,
 					nullable: true,
-					initial: 1
+					initial: 1,
+					label: localizeRuleElementFormText("CollateralDamage.BounceShots", "Bounce Shots")
 				}),
 				bounceCount: new ResolvableValueField({
 					required: false,
 					nullable: false,
-					initial: 1
+					initial: 1,
+					label: localizeRuleElementFormText("CollateralDamage.BounceCount", "Bounce Count")
 				}),
 				bounceLimit: new fields.NumberField({
 					required: false,
 					nullable: false,
 					integer: true,
 					min: 0,
-					initial: 1
+					initial: 1,
+					label: localizeRuleElementFormText("CollateralDamage.BounceLimit", "Bounce Limit")
 				}),
 				bounceNearest: new fields.BooleanField({
 					required: false,
 					nullable: false,
-					initial: true
+					initial: true,
+					label: localizeRuleElementFormText("CollateralDamage.BounceNearest", "Bounce to Nearest")
 				}),
 				affects: new fields.StringField({
 					required: false,
 					nullable: false,
 					initial: "hostile",
-					choices: { allied: "Allied", neutral: "Neutral", hostile: "Hostile", all: "All" }
+					label: localizeRuleElementFormText("CollateralDamage.Affects", "Affects"),
+					choices: {
+						allied: localizeRuleElementFormText("CollateralDamage.AffectsTypes.Allied", "Allied"),
+						neutral: localizeRuleElementFormText("CollateralDamage.AffectsTypes.Neutral", "Neutral"),
+						hostile: localizeRuleElementFormText("CollateralDamage.AffectsTypes.Hostile", "Hostile"),
+						all: localizeRuleElementFormText("CollateralDamage.AffectsTypes.All", "All")
+					}
 				}),
-				affectsSelf: new fields.BooleanField({ required: false, nullable: false, initial: false }),
-				divided: new fields.BooleanField({ required: false, nullable: false, initial: false }),
-				beforeReduction: new fields.BooleanField({ required: false, nullable: false, initial: false }),
+				affectsSelf: new fields.BooleanField({
+					required: false,
+					nullable: false,
+					initial: false,
+					label: localizeRuleElementFormText("CollateralDamage.AffectsSelf", "Affects Self")
+				}),
+				divided: new fields.BooleanField({
+					required: false,
+					nullable: false,
+					initial: false,
+					label: localizeRuleElementFormText("CollateralDamage.Divided", "Divide Damage")
+				}),
+				beforeReduction: new fields.BooleanField({
+					required: false,
+					nullable: false,
+					initial: false,
+					label: localizeRuleElementFormText("Common.BeforeReduction", "Calculate Before Reduction")
+				}),
 				areaDamage: new fields.BooleanField({
 					required: false,
 					nullable: true,
-					initial: undefined
+					initial: undefined,
+					label: localizeRuleElementFormText("CollateralDamage.AreaDamage", "Area Damage")
 				}),
 				damageType: new fields.StringField({
 					required: false,
 					nullable: true,
 					initial: undefined,
+					label: localizeRuleElementFormText("CollateralDamage.DamageType", "Damage Type"),
 					choices: damageTypeChoices
 				}),
 				placement: new fields.StringField({
 					required: false,
 					nullable: false,
 					initial: "self",
-					choices: { target: "Target", self: "Self" }
+					label: localizeRuleElementFormText("CollateralDamage.Placement", "Placement"),
+					choices: {
+						target: localizeRuleElementFormText("CollateralDamage.Placements.Target", "Target"),
+						self: localizeRuleElementFormText("CollateralDamage.Placements.Self", "Self")
+					}
 				}),
-				selector: new fields.StringField({ required: false, nullable: true, initial: undefined })
+				selector: new fields.StringField({
+					required: false,
+					nullable: true,
+					initial: undefined,
+					label: localizeRuleElementFormText("Common.Selector", "Selector")
+				})
 			};
 		}
 	};

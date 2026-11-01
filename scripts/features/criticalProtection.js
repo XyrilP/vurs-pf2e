@@ -1,5 +1,9 @@
 import { MODIFIER_TYPES } from "./typedModifiers.js";
 import {
+	localizeRuleElementFormText,
+	localizeRuleElementModifierTypes
+} from "./ruleElementFormLocalization.js";
+import {
 	getRuleElementPredicateOptions,
 	isNpcActorSkillFormula,
 	resolveRuleElementValue
@@ -35,6 +39,8 @@ function registerCriticalProtectionRuleElement({ quiet = false } = {}) {
 	}
 
 	CriticalProtectionRuleElement = class CriticalProtectionRuleElement extends RuleElement {
+		static autogenForms = true;
+
 		resolveValue(value, fallback = 0, options = {}) {
 			return resolveRuleElementValue(
 				this,
@@ -49,14 +55,23 @@ function registerCriticalProtectionRuleElement({ quiet = false } = {}) {
 		static defineSchema() {
 			return {
 				...super.defineSchema(),
-				value: new ResolvableValueField({ required: true, nullable: false }),
+				value: new ResolvableValueField({
+					required: true,
+					nullable: false,
+					label: localizeRuleElementFormText("Common.Value", "Value")
+				}),
 				type: new foundry.data.fields.StringField({
 					required: false,
 					nullable: false,
-					choices: MODIFIER_TYPES,
+					label: localizeRuleElementFormText("Common.ModifierType", "Modifier Type"),
+					choices: localizeRuleElementModifierTypes(MODIFIER_TYPES),
 					initial: "untyped"
 				}),
-				definition: new PredicateField({ required: false, initial: undefined })
+				definition: new PredicateField({
+					required: false,
+					initial: undefined,
+					label: localizeRuleElementFormText("CriticalProtection.Definition", "Definition")
+				})
 			};
 		}
 

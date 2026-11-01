@@ -1,6 +1,10 @@
 import { getDamageRollOptions, getDamageSelectors } from "./lifesteal.js";
 import { resolveRuleElementValue, testRuleElementPredicate } from "./ruleElementResolvers.js";
 import { MODIFIER_TYPES, selectTypedModifiers } from "./typedModifiers.js";
+import {
+	localizeRuleElementFormText,
+	localizeRuleElementModifierTypes
+} from "./ruleElementFormLocalization.js";
 
 const MODULE_ID = "vurs-pf2e";
 const RULE_KEY = "Healing Effectiveness";
@@ -40,6 +44,8 @@ function registerHealingEffectivenessRuleElement({ quiet = false } = {}) {
 	}
 
 	HealingEffectivenessRuleElement = class HealingEffectivenessRuleElement extends RuleElement {
+		static autogenForms = true;
+
 		resolveValue(value, fallback = 0, options = {}) {
 			return resolveRuleElementValue(
 				this,
@@ -58,33 +64,38 @@ function registerHealingEffectivenessRuleElement({ quiet = false } = {}) {
 				value: new ResolvableValueField({
 					required: true,
 					nullable: false,
-					initial: 1
+					initial: 1,
+					label: localizeRuleElementFormText("Common.Value", "Value")
 				}),
 				type: new fields.StringField({
 					required: false,
 					nullable: false,
-					choices: MODIFIER_TYPES,
+					label: localizeRuleElementFormText("Common.ModifierType", "Modifier Type"),
+					choices: localizeRuleElementModifierTypes(MODIFIER_TYPES),
 					initial: "untyped"
 				}),
 				healingEffectivenessThreshold: new ResolvableValueField({
 					required: false,
 					nullable: false,
-					initial: 20
+					initial: 20,
+					label: localizeRuleElementFormText("HealingEffectiveness.Threshold", "Healing Effectiveness Threshold")
 				}),
 				mode: new fields.StringField({
 					required: false,
 					nullable: false,
 					initial: "threshold",
+					label: localizeRuleElementFormText("Common.Mode", "Mode"),
 					choices: {
-						threshold: "Threshold",
-						flat: "Flat",
-						percent: "Percent"
+						threshold: localizeRuleElementFormText("Common.Modes.Threshold", "Threshold"),
+						flat: localizeRuleElementFormText("Common.Modes.Flat", "Flat"),
+						percent: localizeRuleElementFormText("Common.Modes.Percent", "Percent")
 					}
 				}),
 				selector: new fields.StringField({
 					required: false,
 					nullable: true,
-					initial: undefined
+					initial: undefined,
+					label: localizeRuleElementFormText("Common.Selector", "Selector")
 				})
 			};
 		}

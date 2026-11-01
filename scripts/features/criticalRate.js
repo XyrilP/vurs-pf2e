@@ -4,6 +4,10 @@ import {
 	isNpcActorSkillFormula,
 	resolveRuleElementValue
 } from "./ruleElementResolvers.js";
+import {
+	localizeRuleElementFormText,
+	localizeRuleElementModifierTypes
+} from "./ruleElementFormLocalization.js";
 import { MODIFIER_TYPES, selectTypedModifiers } from "./typedModifiers.js";
 
 const MODULE_ID = "vurs-pf2e";
@@ -40,6 +44,8 @@ function registerCriticalRateRuleElement({ quiet = false } = {}) {
 	}
 
 	CriticalRateRuleElement = class CriticalRateRuleElement extends RuleElement {
+		static autogenForms = true;
+
 		resolveValue(value, fallback = 0, options = {}) {
 			return resolveRuleElementValue(
 				this,
@@ -55,12 +61,22 @@ function registerCriticalRateRuleElement({ quiet = false } = {}) {
 			const fields = foundry.data.fields;
 			return {
 				...super.defineSchema(),
-				value: new ResolvableValueField({ required: true, nullable: false }),
-				selector: new fields.StringField({ required: true, nullable: false, blank: false }),
+				value: new ResolvableValueField({
+					required: true,
+					nullable: false,
+					label: localizeRuleElementFormText("Common.Value", "Value")
+				}),
+				selector: new fields.StringField({
+					required: true,
+					nullable: false,
+					blank: false,
+					label: localizeRuleElementFormText("Common.Selector", "Selector")
+				}),
 				type: new fields.StringField({
 					required: false,
 					nullable: false,
-					choices: MODIFIER_TYPES,
+					label: localizeRuleElementFormText("Common.ModifierType", "Modifier Type"),
+					choices: localizeRuleElementModifierTypes(MODIFIER_TYPES),
 					initial: "untyped"
 				})
 			};

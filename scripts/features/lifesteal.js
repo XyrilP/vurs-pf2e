@@ -3,6 +3,11 @@ import {
 	resolveRuleElementValue,
 	testRuleElementPredicate
 } from "./ruleElementResolvers.js";
+import { MODIFIER_TYPES, selectTypedModifiers } from "./typedModifiers.js";
+import {
+	localizeRuleElementFormText,
+	localizeRuleElementModifierTypes
+} from "./ruleElementFormLocalization.js";
 
 const MODULE_ID = "vurs-pf2e";
 const RULE_KEY = "Lifesteal";
@@ -574,6 +579,8 @@ function registerLifestealRuleElement({ quiet = false } = {}) {
 	}
 
 	LifestealRuleElement = class LifestealRuleElement extends RuleElement {
+		static autogenForms = true;
+
 		resolveValue(value, fallback = 0, options = {}) {
 			return resolveRuleElementValue(
 				this,
@@ -592,27 +599,38 @@ function registerLifestealRuleElement({ quiet = false } = {}) {
 				value: new ResolvableValueField({
 					required: true,
 					nullable: false,
-					initial: 1
+					initial: 1,
+					label: localizeRuleElementFormText("Common.Value", "Value")
 				}),
 				lifestealThreshold: new ResolvableValueField({
 					required: false,
 					nullable: false,
-					initial: 20
+					initial: 20,
+					label: localizeRuleElementFormText("Lifesteal.Threshold", "Lifesteal Threshold")
 				}),
 				mode: new fields.StringField({
 					required: false,
 					nullable: false,
 					initial: "threshold",
+					label: localizeRuleElementFormText("Common.Mode", "Mode"),
 					choices: {
-						threshold: "Threshold",
-						flat: "Flat",
-						percent: "Percent"
+						threshold: localizeRuleElementFormText("Common.Modes.Threshold", "Threshold"),
+						flat: localizeRuleElementFormText("Common.Modes.Flat", "Flat"),
+						percent: localizeRuleElementFormText("Common.Modes.Percent", "Percent")
 					}
+				}),
+				type: new fields.StringField({
+					required: false,
+					nullable: false,
+					label: localizeRuleElementFormText("Common.ModifierType", "Modifier Type"),
+					choices: localizeRuleElementModifierTypes(MODIFIER_TYPES),
+					initial: "untyped"
 				}),
 				selector: new fields.StringField({
 					required: false,
 					nullable: true,
-					initial: undefined
+					initial: undefined,
+					label: localizeRuleElementFormText("Common.Selector", "Selector")
 				})
 			};
 		}
@@ -811,12 +829,18 @@ function getLifestealHealing(attacker, damageRoll, damage, rollOptions, selector
 		const label = typeof sourceRule?.label === "string" && sourceRule.label.trim()
 			? sourceRule.label.trim()
 			: rule.item?.name ?? rule.label ?? "Lifesteal";
-		sources.push({ label, healing });
+		sources.push({
+			label,
+			healing,
+			value: healing,
+			type: rule.type ?? "untyped"
+		});
 	}
 
+	const selectedSources = selectTypedModifiers(sources);
 	return {
-		healing: sources.reduce((total, source) => total + source.healing, 0),
-		sources
+		healing: selectedSources.reduce((total, source) => total + source.value, 0),
+		sources: selectedSources.map(({ label, healing }) => ({ label, healing }))
 	};
 }
 

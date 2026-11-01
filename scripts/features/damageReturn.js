@@ -11,6 +11,7 @@ import {
 	resolveRuleElementValue,
 	testRuleElementPredicate
 } from "./ruleElementResolvers.js";
+import { localizeRuleElementFormText } from "./ruleElementFormLocalization.js";
 
 const MODULE_ID = "vurs-pf2e";
 const RULE_KEY = "Damage Return";
@@ -46,6 +47,8 @@ function registerDamageReturnRuleElement({ quiet = false } = {}) {
 	}
 
 	DamageReturnRuleElement = class DamageReturnRuleElement extends RuleElement {
+		static autogenForms = true;
+
 		resolveValue(value, fallback = 0, options = {}) {
 			return resolveRuleElementValue(
 				this,
@@ -64,32 +67,43 @@ function registerDamageReturnRuleElement({ quiet = false } = {}) {
 				value: new ResolvableValueField({
 					required: true,
 					nullable: false,
-					initial: 1
+					initial: 1,
+					label: localizeRuleElementFormText("Common.Value", "Value")
 				}),
 				damageReturnThreshold: new ResolvableValueField({
 					required: false,
 					nullable: false,
-					initial: 20
+					initial: 20,
+					label: localizeRuleElementFormText("DamageReturn.Threshold", "Damage Return Threshold")
 				}),
 				mode: new fields.StringField({
 					required: false,
 					nullable: false,
 					initial: "threshold",
+					label: localizeRuleElementFormText("Common.Mode", "Mode"),
 					choices: {
-						threshold: "Threshold",
-						flat: "Flat",
-						percent: "Percent"
+						threshold: localizeRuleElementFormText("Common.Modes.Threshold", "Threshold"),
+						flat: localizeRuleElementFormText("Common.Modes.Flat", "Flat"),
+						percent: localizeRuleElementFormText("Common.Modes.Percent", "Percent")
 					}
 				}),
 				beforeReduction: new fields.BooleanField({
 					required: false,
 					nullable: false,
-					initial: true
+					initial: true,
+					label: localizeRuleElementFormText("Common.BeforeReduction", "Calculate Before Reduction")
+				}),
+				reflectDamage: new fields.BooleanField({
+					required: false,
+					nullable: false,
+					initial: false,
+					label: localizeRuleElementFormText("DamageReturn.ReflectDamage", "Reflect Damage")
 				}),
 				selector: new fields.StringField({
 					required: false,
 					nullable: true,
-					initial: undefined
+					initial: undefined,
+					label: localizeRuleElementFormText("Common.Selector", "Selector")
 				})
 			};
 		}
@@ -133,16 +147,26 @@ function hasSpecialDamageOption(options) {
 		damageCategoryOptions.length === 0;
 }
 
-function getDamageReturnAmount(actor, damageBeforeReduction, damageAfterReduction, rollOptions, selectors) {
+function getDamageReturnAmount(
+	actor,
+	damageBeforeReduction,
+	damageAfterReduction,
+	rollOptions,
+	selectors,
+	reflectDamage = null
+) {
 	const seenSlugs = new Set();
 	const sources = [];
 	for (const rule of Array.isArray(actor?.rules) ? actor.rules : []) {
+		const sourceRule = rule.item?.system?.rules?.[rule.sourceIndex];
+		const ruleReflectsDamage = sourceRule?.reflectDamage === true || rule.reflectDamage === true;
 		const selectorMatches = !rule.selector ||
 			selectors.has(rule.selector) ||
 			(rule.selector === "special-damage" && hasSpecialDamageOption(rollOptions));
 		if (
 			rule.key !== RULE_KEY ||
 			rule.ignored ||
+			(reflectDamage !== null && ruleReflectsDamage !== reflectDamage) ||
 			!selectorMatches ||
 			!testRuleElementPredicate(rule, rollOptions)
 		) {
@@ -179,9 +203,8 @@ function getDamageReturnAmount(actor, damageBeforeReduction, damageAfterReductio
 			}
 		}
 		if (returned <= 0) continue;
-
 		if (slug) seenSlugs.add(slug);
-		const sourceRule = rule.item?.system?.rules?.[rule.sourceIndex];
+		if (slug) seenSlugs.add(slug);
 		const label = typeof sourceRule?.label === "string" && sourceRule.label.trim()
 			? sourceRule.label.trim()
 			: rule.item?.name ?? rule.label ?? "Damage Return";
@@ -192,6 +215,75 @@ function getDamageReturnAmount(actor, damageBeforeReduction, damageAfterReductio
 		total: sources.reduce((total, source) => total + source.damage, 0),
 		sources
 	};
+}
+
+function createDamageReducedRoll(damageRoll, amount, rollOptions) {
+	if (typeof damageRoll === "number") return Math.max(0, damageRoll - amount);
+
+	const DamageRoll = CONFIG.Dice?.rolls?.find(rollClass => rollClass.name === "DamageRoll");
+	if (!DamageRoll) {
+		console.error(`${MODULE_ID} | Could not reduce incoming damage: the system DamageRoll class is unavailable`);
+		return null;
+	}
+
+	const instances = damageRoll?.instances ?? [];
+	const reducible = instances.map(instance => ({
+		instance,
+		total: Number(instance.total)
+	})).filter(({ total }) => Number.isFinite(total) && total > 0);
+	const totalDamage = reducible.reduce((total, instance) => total + instance.total, 0);
+	if (totalDamage <= 0) return null;
+
+	const reduction = Math.min(Math.floor(amount), Math.floor(totalDamage));
+	const allocations = reducible.map(({ instance, total }) => {
+		const exact = reduction * total / totalDamage;
+		const amount = Math.floor(exact);
+		return { instance, total, amount, remainder: exact - amount };
+	});
+	let remaining = reduction - allocations.reduce((total, allocation) => total + allocation.amount, 0);
+	allocations.sort((left, right) =>
+		right.remainder - left.remainder ||
+		String(left.instance.type).localeCompare(String(right.instance.type))
+	);
+	for (const allocation of allocations) {
+		if (remaining <= 0) break;
+		if (allocation.amount >= allocation.total) continue;
+		allocation.amount++;
+		remaining--;
+	}
+	const reductions = new Map(allocations.map(({ instance, amount }) => [instance, amount]));
+	const config = CONFIG[game.system.id.toUpperCase()] ?? CONFIG.PF2E;
+	const validTypes = new Set(Object.keys(config?.damageTypes ?? {}));
+	const parts = reducible.flatMap(({ instance, total }) => {
+		const reducedTotal = total - (reductions.get(instance) ?? 0);
+		if (reducedTotal <= 0) return [];
+		if (instance.critRule != null) return null;
+
+		const type = validTypes.has(instance.type) ? instance.type : "untyped";
+		const qualifiers = [];
+		if (type !== "untyped") qualifiers.push(type);
+		if (instance.persistent) qualifiers.push("persistent");
+		for (const material of instance.materials ?? []) {
+			if (typeof material === "string" && /^[a-z0-9-]+$/i.test(material)) {
+				qualifiers.push(material);
+			}
+		}
+		return [qualifiers.length
+			? `${reducedTotal}[${[...new Set(qualifiers)].join(",")}]`
+			: `${reducedTotal}`];
+	});
+	if (parts.some(part => part === null)) {
+		console.error(`${MODULE_ID} | Could not reduce incoming damage containing a critical damage rule`);
+		return null;
+	}
+	if (!parts.length) return new DamageRoll("{0}").evaluateSync();
+
+	try {
+		return new DamageRoll(`{${parts.join(", ")}}`, damageRoll.data).evaluateSync();
+	} catch (error) {
+		console.error(`${MODULE_ID} | Could not create a reduced damage roll`, error);
+		return null;
+	}
 }
 
 function getDamageReturnParts(damageRoll, amount, rollOptions) {
@@ -256,7 +348,7 @@ async function finalizeDamageReturnRequests(transaction) {
 
 registerDamageTransactionFinalizer(finalizeDamageReturnRequests, "prepare");
 
-function findDamageReturnCard(previousMessageIds, actor) {
+function findDamageTakenCard(previousMessageIds, actor) {
 	return [...(game.messages?.contents ?? [])]
 		.filter(message => {
 			if (
@@ -273,6 +365,58 @@ function findDamageReturnCard(previousMessageIds, actor) {
 			return appliedActorUuid === actor.uuid || message.speaker?.actor === actor.id;
 		})
 		.sort((left, right) => right.timestamp - left.timestamp)[0] ?? null;
+}
+
+async function addDamageReductionToCard(message, actor, sources, reduction) {
+	const container = document.createElement("div");
+	container.innerHTML = message.content ?? "";
+	const damageTaken = container.querySelector(".damage-taken");
+	if (!damageTaken) {
+		console.error(`${MODULE_ID} | Could not credit ${RULE_KEY} reduction: damage card has no damage-taken section`);
+		return;
+	}
+
+	const statement = damageTaken.querySelector(".statements");
+
+	let indicator = damageTaken.querySelector(".damage-return-reduction-iwr");
+	if (!indicator) {
+		indicator = document.createElement("span");
+		indicator.classList.add("damage-return-reduction-iwr");
+		indicator.dataset.visibility = actor.hasPlayerOwner ? "all" : "gm";
+		const icon = document.createElement("i");
+		icon.classList.add("fa-solid", "fa-circle-info", "small");
+		indicator.append(icon);
+	}
+
+	let remaining = reduction;
+	const tooltip = document.createElement("ul");
+	for (const source of sources) {
+		const amount = Math.min(remaining, Math.max(0, Number(source.damage) || 0));
+		if (amount <= 0) continue;
+		const entry = document.createElement("li");
+		entry.textContent = `${source.label}: -${amount}`;
+		tooltip.append(entry);
+		remaining -= amount;
+		if (remaining <= 0) break;
+	}
+	indicator.dataset.tooltipClass = "pf2e";
+	indicator.dataset.tooltipHtml = tooltip.outerHTML;
+
+	if (statement) {
+		statement.after(indicator);
+	} else {
+		const firstIndicator = damageTaken.querySelector(".iwr");
+		const revertButton = damageTaken.querySelector(".revert-damage");
+		if (firstIndicator) {
+			damageTaken.insertBefore(indicator, firstIndicator);
+		} else if (revertButton) {
+			damageTaken.insertBefore(indicator, revertButton);
+		} else {
+			damageTaken.append(indicator);
+		}
+	}
+
+	await message.update({ content: container.innerHTML });
 }
 
 async function addDamageReturnTooltip(message, sources) {
@@ -327,23 +471,66 @@ async function applyDamageReturn(actor, wrapped, args) {
 	activeDamageParams.add(params);
 	try {
 		const targetActor = params.token?.actor ?? actor;
+		const originalDamageRoll = params.damage;
+		const rollOptions = getDamageRollOptions(originalDamageRoll, params.rollOptions);
+		const selectors = getDamageSelectors(originalDamageRoll, params.item);
+		// Reductions must be known before PF2e applies resistances to this hit.
+		let reducingReturn = getDamageReturnAmount(
+			actor,
+			damage,
+			damage,
+			rollOptions,
+			selectors,
+			true
+		);
+		const reduction = Math.min(damage, reducingReturn.total);
+		let appliedReduction = reduction;
+		if (reduction > 0) {
+			const reducedDamage = createDamageReducedRoll(originalDamageRoll, reduction, rollOptions);
+			if (reducedDamage === null) {
+				console.error(`${MODULE_ID} | Could not apply ${RULE_KEY} damage reduction`);
+				reducingReturn = { total: 0, sources: [] };
+				appliedReduction = 0;
+			} else {
+				params.damage = reducedDamage;
+			}
+		}
+
+		const previousMessageIds = appliedReduction > 0
+			? new Set((game.messages?.contents ?? []).map(message => message.id))
+			: null;
 		const healthBefore = currentHealthPool(targetActor);
-		const result = await wrapped(...args);
+		let result;
+		try {
+			result = await wrapped(...args);
+		} finally {
+			params.damage = originalDamageRoll;
+		}
+		if (appliedReduction > 0) {
+			const card = findDamageTakenCard(previousMessageIds, targetActor);
+			if (card) {
+				await addDamageReductionToCard(card, targetActor, reducingReturn.sources, appliedReduction);
+			} else {
+				console.error(`${MODULE_ID} | Could not credit ${RULE_KEY} reduction: damage-taken card was not found`);
+			}
+		}
 		const healthAfter = currentHealthPool(targetActor);
 		if (healthBefore === null || healthAfter === null) return result;
 
 		const damageApplied = Math.max(0, healthBefore - healthAfter);
-		const rollOptions = getDamageRollOptions(params.damage, params.rollOptions);
-		const { total: amount, sources } = getDamageReturnAmount(
+		const nonReducingReturn = getDamageReturnAmount(
 			actor,
 			damage,
 			damageApplied,
 			rollOptions,
-			getDamageSelectors(params.damage, params.item)
+			selectors,
+			false
 		);
+		const amount = reducingReturn.total + nonReducingReturn.total;
+		const sources = [...reducingReturn.sources, ...nonReducingReturn.sources];
 		if (amount <= 0) return result;
 
-		const returnedDamage = createDamageReturnRoll(params.damage, amount, rollOptions);
+		const returnedDamage = createDamageReturnRoll(originalDamageRoll, amount, rollOptions);
 		const token = damageDealer.token ?? damageDealer.getActiveTokens?.()[0]?.document;
 		if (!returnedDamage || !token || typeof damageDealer.applyDamage !== "function") {
 			console.error(`${MODULE_ID} | Could not apply ${RULE_KEY}: the damage-dealer token or applyDamage method is unavailable`);
@@ -356,7 +543,7 @@ async function applyDamageReturn(actor, wrapped, args) {
 			amount,
 			sources: sources.map(source => ({ ...source })),
 			targetName: token.name,
-			modifiers: getDamageModifierBreakdown(params.damage, params.vursDamageModifiers)
+			modifiers: getDamageModifierBreakdown(originalDamageRoll, params.vursDamageModifiers)
 		};
 		const damageParams = {
 			damage: returnedDamage,
@@ -370,9 +557,9 @@ async function applyDamageReturn(actor, wrapped, args) {
 			effect
 		})) return result;
 
-		const previousMessageIds = new Set((game.messages?.contents ?? []).map(message => message.id));
+		const previousReturnCardIds = new Set((game.messages?.contents ?? []).map(message => message.id));
 		await applyDamageInTransaction(damageDealer, damageParams, params, effect);
-		const card = findDamageReturnCard(previousMessageIds, damageDealer);
+		const card = findDamageTakenCard(previousReturnCardIds, damageDealer);
 		if (card) await addDamageReturnTooltip(card, sources);
 		return result;
 	} finally {
