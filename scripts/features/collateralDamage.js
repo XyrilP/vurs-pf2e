@@ -3459,8 +3459,7 @@ async function applyNestedCollateralDamage(message, cardId, multiplier = 1) {
 		throw new Error(`Unsupported collateral damage multiplier: ${multiplier}`);
 	}
 	const adjustedDamage = multiplier === 1 ? damage : damage.alter(multiplier, 0);
-	const previousMessageIds = new Set((game.messages?.contents ?? []).map(candidate => candidate.id));
-	await actor.applyDamage({
+	const damageParams = {
 		damage: adjustedDamage,
 		token: token.object ?? token,
 		item,
@@ -3468,27 +3467,30 @@ async function applyNestedCollateralDamage(message, cardId, multiplier = 1) {
 		vursDamageModifiers: card.modifiers,
 		shieldBlockRequest: Boolean(card.shieldBlockRequest),
 		vursCollateralDamageCard: true
-	});
-
-	const receivedMessage = findNewDamageTakenMessage(previousMessageIds, actor, token);
-	const appliedDamage = receivedMessage && foundry.utils.deepClone(foundry.utils.getProperty(
-		receivedMessage,
-		`flags.${game.system.id}.appliedDamage`
-	));
-	card.isApplied = true;
-	if (receivedMessage && typeof appliedDamage?.uuid === "string") {
-		card.receivedHtml = receivedMessage.content;
-		card.appliedDamage = appliedDamage;
-	} else {
-		console.error(`${MODULE_ID} | Could not capture the secondary damage-received card for ${actor.name}`);
-		ui.notifications.warn(
-			`Damage was applied to ${actor.name}, but its damage-received card could not be nested.`
-		);
-	}
-	await updateGroupedDamageState(message, group);
-	if (receivedMessage && typeof appliedDamage?.uuid === "string") {
-		await receivedMessage.delete();
-	}
+	};
+	const effect = {
+		type: "collateral",
+		label: card.label,
+		amount: adjustedDamage.total,
+		targetName: card.targetName,
+		hidden: Boolean(card.hidden),
+		modifiers: card.modifiers,
+		collateralCardIds: [card.id]
+	};
+	const transactionParams = { ...damageParams };
+	await runDamageTransaction(
+		actor,
+		transactionParams,
+		async (rootParams, transaction) => {
+			transaction.collateralDamageCards = [card];
+			await applyDamageInTransaction(actor, damageParams, rootParams, effect);
+			card.isApplied = true;
+		},
+		{
+			rootMessageId: message.id,
+			rootTokenId: group.primaryTokenId
+		}
+	);
 }
 
 function findNewDamageTakenMessage(previousMessageIds, actor, token) {
