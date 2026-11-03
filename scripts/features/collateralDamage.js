@@ -3531,9 +3531,11 @@ async function applyAllGroupedCollateralDamage(message) {
 			return application;
 		}));
 		const root = applications[0];
+		// These applications are secondary to an existing message, not the transaction root.
+		const transactionParams = { ...root.damageParams };
 		await runDamageTransaction(
 			root.actor,
-			root.damageParams,
+			transactionParams,
 			async (rootParams, transaction) => {
 				transaction.collateralDamageCards = cards;
 				await applyDamageApplications(applications, rootParams);
