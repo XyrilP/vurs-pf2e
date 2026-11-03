@@ -137,7 +137,7 @@ export async function renderVursPlayResources(root, actor) {
 	}
 }
 
-export function renderVursPlayResourcesDrawer(root, actor) {
+export function renderVursPlayResourcesDrawer(root, actor, app = null) {
 	if (!(root instanceof HTMLElement) || !actor || !(actor.isOfType?.("character") || actor.isOfType?.("npc") || ["character", "npc"].includes(actor.type))) return false;
 	preloadResourceIcons();
 	const sheetWindow = root.closest(".window-app") ?? root;
@@ -152,10 +152,11 @@ export function renderVursPlayResourcesDrawer(root, actor) {
 	}
 
 	if (!panel) {
-		panel = createPlayResourceDrawer(sheetWindow, actor, actorKey, root);
+		panel = createPlayResourceDrawer(sheetWindow, actor, actorKey, root, app);
 		playResourceDrawerPanels.set(sheetWindow, panel);
 	}
 	panel.actor = actor;
+	panel.app = app ?? panel.app;
 	applyPlayResourceDrawerTheme(panel, root);
 	void ensurePlayResourceMaxDefaults(actor).catch(error =>
 		console.error(`vurs-pf2e | Failed to initialize Play resource defaults for ${actor.name}`, error)
@@ -207,7 +208,7 @@ export function hasVursPlayResourcesDrawer(root) {
 	return playResourceDrawerPanels.has(sheetWindow);
 }
 
-function createPlayResourceDrawer(sheetWindow, actor, actorKey, root) {
+function createPlayResourceDrawer(sheetWindow, actor, actorKey, root, app) {
 	const wrapper = document.createElement("div");
 	wrapper.className = "vurs-play-resources-drawer";
 	const panelElement = document.createElement("section");
@@ -314,6 +315,13 @@ function createPlayResourceDrawer(sheetWindow, actor, actorKey, root) {
 			panel?.cleanup();
 			return;
 		}
+		const minimized = panel?.app?._minimized === true || sheetWindow.classList.contains("minimized");
+		wrapper.hidden = minimized;
+		if (minimized) {
+			if (panel) panel.expanded = false;
+			setExpanded(false);
+			return;
+		}
 		const bounds = sheetWindow.getBoundingClientRect();
 		const sideRight = bounds.left < panelElement.getBoundingClientRect().width + 36;
 		wrapper.classList.toggle("side-right", sideRight);
@@ -341,6 +349,7 @@ function createPlayResourceDrawer(sheetWindow, actor, actorKey, root) {
 	panel = {
 		actor,
 		actorKey,
+		app,
 		sheetWindow,
 		wrapper,
 		section,

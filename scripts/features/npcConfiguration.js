@@ -169,7 +169,7 @@ export function addNpcConfigurationButton(root, actor) {
 	raritySizeControls.append(selector);
 }
 
-export function renderNpcRelationshipStatistics(root, actor) {
+export function renderNpcRelationshipStatistics(root, actor, app = null) {
 	if (!(root instanceof HTMLElement) || !isNpcActor(actor)) return;
 	const sheetWindow = root.closest(".window-app") ?? root;
 	const actorKey = actor.uuid ?? actor.id;
@@ -222,6 +222,12 @@ export function renderNpcRelationshipStatistics(root, actor) {
 				panel.cleanup();
 				return;
 			}
+			const minimized = panel.app?._minimized === true || sheetWindow.classList.contains("minimized");
+			wrapper.hidden = minimized;
+			if (minimized) {
+				setExpanded(false);
+				return;
+			}
 			const bounds = sheetWindow.getBoundingClientRect();
 			const sideRight = bounds.left < section.getBoundingClientRect().width + 36;
 			wrapper.classList.toggle("side-right", sideRight);
@@ -253,6 +259,7 @@ export function renderNpcRelationshipStatistics(root, actor) {
 		resizeObserver?.observe(sheetWindow);
 		window.addEventListener("resize", updatePosition);
 		panel = {
+			app,
 			sheetWindow,
 			wrapper,
 			updatePosition,
@@ -270,6 +277,7 @@ export function renderNpcRelationshipStatistics(root, actor) {
 		NPC_RELATIONSHIP_PANELS.set(actorKey, panel);
 	}
 
+	panel.app = app ?? panel.app;
 	const { wrapper } = panel;
 	applyNpcRelationshipDrawerTheme(panel, root);
 	const section = wrapper.querySelector(".vurs-npc-relationship-statistics");

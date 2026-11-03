@@ -71,10 +71,10 @@ function registerAttackSpeedRuleElement({ quiet = false } = {}) {
 				}),
 				type: new fields.StringField({
 					required: false,
-					nullable: false,
+					nullable: true,
 					label: localizeRuleElementFormText("Common.ModifierType", "Modifier Type"),
 					choices: localizeRuleElementModifierTypes(MODIFIER_TYPES),
-					initial: "untyped"
+					initial: null
 				})
 			};
 		}
@@ -83,12 +83,19 @@ function registerAttackSpeedRuleElement({ quiet = false } = {}) {
 			if (this.ignored) return;
 
 			const selector = this.resolveInjectedProperties(this.selector);
+			if (!selector) {
+				this.failValidation("selector is required");
+				return;
+			}
 			const deferredSkillFormula = isNpcActorSkillFormula(this, this.value);
+			if (this.value === null || this.value === undefined || this.value === "") {
+				this.failValidation("value is required");
+				return;
+			}
 			const value = deferredSkillFormula ? null : Number(this.resolveValue(this.value));
 			const type = this.type ?? "untyped";
-			if (!selector || (!deferredSkillFormula && !Number.isInteger(value)) ||
-				!MODIFIER_TYPES.includes(type)) {
-				this.failValidation("selector and a valid type must be provided, and value must resolve to an integer");
+			if ((!deferredSkillFormula && !Number.isInteger(value)) || !MODIFIER_TYPES.includes(type)) {
+				this.failValidation("type must be valid and value must resolve to an integer");
 				return;
 			}
 			if (value === 0) return;

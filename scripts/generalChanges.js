@@ -626,9 +626,9 @@ function applyActorSheetPresentation(app, element) {
 	if (!root || !actor) return;
 	addNpcRestButton(root, actor);
 	if (!isSupportedVursActor(actor)) return;
-	renderVursPlayResourcesDrawer(root, actor);
+	renderVursPlayResourcesDrawer(root, actor, app);
 	addNpcConfigurationButton(root, actor);
-	renderNpcRelationshipStatistics(root, actor);
+	renderNpcRelationshipStatistics(root, actor, app);
 	applyDisarmedStrikeState(root, actor);
 	applySilencedState(root, actor);
 	applyDragonblightState(root, actor);

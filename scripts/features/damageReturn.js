@@ -67,19 +67,18 @@ function registerDamageReturnRuleElement({ quiet = false } = {}) {
 				value: new ResolvableValueField({
 					required: true,
 					nullable: false,
-					initial: 1,
 					label: localizeRuleElementFormText("Common.Value", "Value")
 				}),
 				damageReturnThreshold: new ResolvableValueField({
 					required: false,
-					nullable: false,
-					initial: 20,
+					nullable: true,
+					initial: null,
 					label: localizeRuleElementFormText("DamageReturn.Threshold", "Damage Return Threshold")
 				}),
 				mode: new fields.StringField({
 					required: false,
-					nullable: false,
-					initial: "threshold",
+					nullable: true,
+					initial: null,
 					label: localizeRuleElementFormText("Common.Mode", "Mode"),
 					choices: {
 						threshold: localizeRuleElementFormText("Common.Modes.Threshold", "Threshold"),
@@ -89,23 +88,34 @@ function registerDamageReturnRuleElement({ quiet = false } = {}) {
 				}),
 				beforeReduction: new fields.BooleanField({
 					required: false,
-					nullable: false,
-					initial: true,
+					nullable: true,
+					initial: null,
 					label: localizeRuleElementFormText("Common.BeforeReduction", "Calculate Before Reduction")
 				}),
 				reflectDamage: new fields.BooleanField({
 					required: false,
-					nullable: false,
-					initial: false,
+					nullable: true,
+					initial: null,
 					label: localizeRuleElementFormText("DamageReturn.ReflectDamage", "Reflect Damage")
 				}),
 				selector: new fields.StringField({
-					required: false,
-					nullable: true,
-					initial: undefined,
+					required: true,
+					nullable: false,
+					blank: false,
 					label: localizeRuleElementFormText("Common.Selector", "Selector")
 				})
 			};
+		}
+
+		beforePrepareData() {
+			if (this.ignored) return;
+			if (this.value === null || this.value === undefined || this.value === "") {
+				this.failValidation("value is required");
+				return;
+			}
+			if (!this.resolveInjectedProperties(this.selector)) {
+				this.failValidation("selector is required");
+			}
 		}
 	};
 
@@ -178,7 +188,7 @@ function getDamageReturnAmount(
 
 		const slug = typeof rule.slug === "string" ? rule.slug.trim() : "";
 		if (slug && seenSlugs.has(slug)) continue;
-		const value = Number(rule.resolveValue(rule.value, 0));
+		const value = Number(rule.resolveValue(rule.value));
 		if (!Number.isFinite(value) || value <= 0) continue;
 
 		let returned;

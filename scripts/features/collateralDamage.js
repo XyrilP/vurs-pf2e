@@ -137,22 +137,28 @@ function registerCollateralDamageRuleElement({ quiet = false } = {}) {
 					nullable: false,
 					label: localizeRuleElementFormText("CollateralDamage.Distance", "Distance")
 				}),
+				within: new ResolvableValueField({
+					required: false,
+					nullable: true,
+					initial: null,
+					label: localizeRuleElementFormText("CollateralDamage.Within", "Within")
+				}),
 				width: new ResolvableValueField({
 					required: false,
-					nullable: false,
-					initial: undefined,
+					nullable: true,
+					initial: null,
 					label: localizeRuleElementFormText("CollateralDamage.Width", "Width")
 				}),
 				collateralDamageThreshold: new ResolvableValueField({
 					required: false,
-					nullable: false,
-					initial: 20,
+					nullable: true,
+					initial: null,
 					label: localizeRuleElementFormText("CollateralDamage.Threshold", "Collateral Damage Threshold")
 				}),
 				mode: new fields.StringField({
 					required: false,
-					nullable: false,
-					initial: "threshold",
+					nullable: true,
+					initial: null,
 					label: localizeRuleElementFormText("Common.Mode", "Mode"),
 					choices: {
 						threshold: localizeRuleElementFormText("Common.Modes.Threshold", "Threshold"),
@@ -163,33 +169,33 @@ function registerCollateralDamageRuleElement({ quiet = false } = {}) {
 				bounceShots: new ResolvableValueField({
 					required: false,
 					nullable: true,
-					initial: 1,
+					initial: null,
 					label: localizeRuleElementFormText("CollateralDamage.BounceShots", "Bounce Shots")
 				}),
 				bounceCount: new ResolvableValueField({
 					required: false,
-					nullable: false,
-					initial: 1,
+					nullable: true,
+					initial: null,
 					label: localizeRuleElementFormText("CollateralDamage.BounceCount", "Bounce Count")
 				}),
 				bounceLimit: new fields.NumberField({
 					required: false,
-					nullable: false,
+					nullable: true,
 					integer: true,
 					min: 0,
-					initial: 1,
+					initial: null,
 					label: localizeRuleElementFormText("CollateralDamage.BounceLimit", "Bounce Limit")
 				}),
 				bounceNearest: new fields.BooleanField({
 					required: false,
-					nullable: false,
-					initial: true,
+					nullable: true,
+					initial: null,
 					label: localizeRuleElementFormText("CollateralDamage.BounceNearest", "Bounce to Nearest")
 				}),
 				affects: new fields.StringField({
 					required: false,
-					nullable: false,
-					initial: "hostile",
+					nullable: true,
+					initial: null,
 					label: localizeRuleElementFormText("CollateralDamage.Affects", "Affects"),
 					choices: {
 						allied: localizeRuleElementFormText("CollateralDamage.AffectsTypes.Allied", "Allied"),
@@ -200,39 +206,39 @@ function registerCollateralDamageRuleElement({ quiet = false } = {}) {
 				}),
 				affectsSelf: new fields.BooleanField({
 					required: false,
-					nullable: false,
-					initial: false,
+					nullable: true,
+					initial: null,
 					label: localizeRuleElementFormText("CollateralDamage.AffectsSelf", "Affects Self")
 				}),
 				divided: new fields.BooleanField({
 					required: false,
-					nullable: false,
-					initial: false,
+					nullable: true,
+					initial: null,
 					label: localizeRuleElementFormText("CollateralDamage.Divided", "Divide Damage")
 				}),
 				beforeReduction: new fields.BooleanField({
 					required: false,
-					nullable: false,
-					initial: false,
+					nullable: true,
+					initial: null,
 					label: localizeRuleElementFormText("Common.BeforeReduction", "Calculate Before Reduction")
 				}),
 				areaDamage: new fields.BooleanField({
 					required: false,
 					nullable: true,
-					initial: undefined,
+					initial: null,
 					label: localizeRuleElementFormText("CollateralDamage.AreaDamage", "Area Damage")
 				}),
 				damageType: new fields.StringField({
 					required: false,
 					nullable: true,
-					initial: undefined,
+					initial: null,
 					label: localizeRuleElementFormText("CollateralDamage.DamageType", "Damage Type"),
 					choices: damageTypeChoices
 				}),
 				placement: new fields.StringField({
 					required: false,
-					nullable: false,
-					initial: "self",
+					nullable: true,
+					initial: null,
 					label: localizeRuleElementFormText("CollateralDamage.Placement", "Placement"),
 					choices: {
 						target: localizeRuleElementFormText("CollateralDamage.Placements.Target", "Target"),
@@ -240,12 +246,31 @@ function registerCollateralDamageRuleElement({ quiet = false } = {}) {
 					}
 				}),
 				selector: new fields.StringField({
-					required: false,
-					nullable: true,
-					initial: undefined,
+					required: true,
+					nullable: false,
+					blank: false,
 					label: localizeRuleElementFormText("Common.Selector", "Selector")
 				})
 			};
+		}
+
+		beforePrepareData() {
+			if (this.ignored) return;
+			if (this.value === null || this.value === undefined || this.value === "") {
+				this.failValidation("value is required");
+				return;
+			}
+			if (!this.type) {
+				this.failValidation("type is required");
+				return;
+			}
+			if (this.distance === null || this.distance === undefined || this.distance === "") {
+				this.failValidation("distance is required");
+				return;
+			}
+			if (!this.resolveInjectedProperties(this.selector)) {
+				this.failValidation("selector is required");
+			}
 		}
 	};
 
@@ -256,7 +281,7 @@ function ruleCountsAsAreaDamage(rule) {
 	if (typeof rule.areaDamage === "boolean") return rule.areaDamage;
 	const sourceRule = rule.item?.system?.rules?.[rule.sourceIndex];
 	if (typeof sourceRule?.areaDamage === "boolean") return sourceRule.areaDamage;
-	return rule.type !== "bounce";
+	return true;
 }
 
 function currentHealthPool(actor) {
@@ -389,12 +414,7 @@ export function getPlacementGeometries(placement, sourceToken, targetToken) {
 	return corners.map(({ x, y }) => ({ x, y, rotation }));
 }
 
-function resolveCollateralDistance(rule, damageItem, damageSource) {
-	const expression = String(rule.distance);
-	if (!/\b(?:range-increment|range|reach)\b/.test(expression)) {
-		return Number(rule.resolveValue(rule.distance, rule.type === "bounce" ? 0 : 5));
-	}
-
+function substituteCollateralRangeValues(rule, expression, damageItem, damageSource, fieldName) {
 	const range = damageItem?.range ?? damageItem?.system?.range;
 	const variables = {
 		range: range?.max,
@@ -403,18 +423,35 @@ function resolveCollateralDistance(rule, damageItem, damageSource) {
 	};
 	let missingVariable = null;
 	const substitutedExpression = expression.replace(
-		/(^|[^A-Za-z0-9_@.-])(range-increment|range|reach)(?=$|[^A-Za-z0-9_.-])/g,
+		/(^|[^A-Za-z0-9_@.-])@?(range-increment|range|reach)(?=$|[^A-Za-z0-9_.-])/g,
 		(match, prefix, variable) => {
 			const value = Number(variables[variable]);
 			if (!Number.isFinite(value) || value <= 0) {
-				console.error(`${MODULE_ID} | Skipping ${RULE_KEY} on ${rule.item?.name ?? "unknown item"}: the damage source's ${variable} is unavailable or not positive`);
+				const fieldMessage = fieldName ? ` for ${fieldName}` : "";
+				console.error(`${MODULE_ID} | Skipping ${RULE_KEY} on ${rule.item?.name ?? "unknown item"}: the damage source's ${variable} is unavailable or not positive${fieldMessage}`);
 				missingVariable = variable;
 				return match;
 			}
 			return `${prefix}${value}`;
 		}
 	);
-	if (missingVariable) return null;
+	return missingVariable ? null : substitutedExpression;
+}
+
+function resolveCollateralDistance(rule, damageItem, damageSource) {
+	const expression = String(rule.distance);
+	if (!/\b(?:range-increment|range|reach)\b/.test(expression)) {
+		return Number(rule.resolveValue(rule.distance, rule.type === "bounce" ? 0 : 5));
+	}
+
+	const substitutedExpression = substituteCollateralRangeValues(
+		rule,
+		expression,
+		damageItem,
+		damageSource,
+		"distance"
+	);
+	if (substitutedExpression === null) return null;
 
 	const resolvedExpression = rule.resolveValue(substitutedExpression, null);
 	if (typeof resolvedExpression === "number") {
@@ -439,10 +476,49 @@ function resolveCollateralDistance(rule, damageItem, damageSource) {
 	}
 }
 
+function resolveCollateralWithin(rule, damageItem, damageSource) {
+	if (rule.within === undefined || rule.within === null || String(rule.within).trim() === "") return null;
+
+	const expression = String(rule.within);
+	const substitutedExpression = substituteCollateralRangeValues(
+		rule,
+		expression,
+		damageItem,
+		damageSource,
+		"within"
+	);
+	if (substitutedExpression === null) return NaN;
+
+	const resolvedExpression = rule.resolveValue(substitutedExpression, null);
+	if (typeof resolvedExpression === "number") {
+		if (!Number.isFinite(resolvedExpression) || resolvedExpression <= 0) {
+			console.error(`${MODULE_ID} | Skipping ${RULE_KEY} on ${rule.item?.name ?? "unknown item"}: within must resolve to a positive number`);
+			return NaN;
+		}
+		return resolvedExpression;
+	}
+	if (typeof resolvedExpression !== "string") {
+		console.error(`${MODULE_ID} | Skipping ${RULE_KEY} on ${rule.item?.name ?? "unknown item"}: within must resolve to a positive number`);
+		return NaN;
+	}
+
+	try {
+		const within = Number(Roll.safeEval(resolvedExpression));
+		if (!Number.isFinite(within) || within <= 0) {
+			console.error(`${MODULE_ID} | Skipping ${RULE_KEY} on ${rule.item?.name ?? "unknown item"}: within must resolve to a positive number`);
+			return NaN;
+		}
+		return within;
+	} catch (error) {
+		console.error(`${MODULE_ID} | Skipping ${RULE_KEY} on ${rule.item?.name ?? "unknown item"}: could not evaluate within`, error);
+		return NaN;
+	}
+}
+
 function getAreaShape(rule, geometry, originToken, distance) {
 	const width = rule.width === undefined || rule.width === null
-		? canvas.dimensions.distance
-		: Number(rule.resolveValue(rule.width, canvas.dimensions.distance));
+		? 5
+		: Number(rule.resolveValue(rule.width, 5));
 	if (!Number.isFinite(distance) || distance <= 0 || !Number.isFinite(width) || width <= 0) {
 		console.error(`${MODULE_ID} | Skipping ${RULE_KEY} on ${rule.item?.name ?? "unknown item"}: area dimensions must resolve to positive numbers`);
 		return null;
@@ -452,7 +528,7 @@ function getAreaShape(rule, geometry, originToken, distance) {
 	const radius = distance * pixelsPerDistance;
 	const widthPixels = width * pixelsPerDistance;
 	const common = { x: geometry.x, y: geometry.y };
-	switch (rule.type ?? "burst") {
+	switch (rule.type) {
 		case "burst":
 		case "cylinder":
 			return { type: "circle", ...common, radius };
@@ -516,7 +592,7 @@ function getRelationship(sourceDisposition, targetDisposition) {
 function isAffectedByRule(rule, sourceToken, targetToken) {
 	const sourceDisposition = normalizeToken(sourceToken)?.disposition;
 	const targetDisposition = normalizeToken(targetToken)?.disposition;
-	const affects = rule.affects ?? "all";
+	const affects = rule.affects ?? "hostile";
 	return affects === "all" || affects === getRelationship(sourceDisposition, targetDisposition);
 }
 
@@ -704,6 +780,8 @@ function getBounceDistance(left, right, distanceCache) {
 function getBounceTargets(
 	currentToken,
 	maxDistance,
+	originToken,
+	within,
 	counts,
 	limit,
 	eligibleTargets,
@@ -713,7 +791,8 @@ function getBounceTargets(
 	return eligibleTargets.filter(token => {
 		if (token.id === current.id) return false;
 		if (limit > 0 && (counts.get(token.id) ?? 0) >= limit) return false;
-		return getBounceDistance(current, token, distanceCache) <= maxDistance;
+		if (getBounceDistance(current, token, distanceCache) > maxDistance) return false;
+		return within === null || getBounceDistance(originToken, token, distanceCache) <= within;
 	});
 }
 
@@ -3778,6 +3857,7 @@ function prepareBounceDamage(
 	damageDealerToken,
 	damageOriginToken,
 	maxDistance,
+	within,
 	amount,
 	damageRoll,
 	sourceParams
@@ -3829,6 +3909,8 @@ function prepareBounceDamage(
 			let candidates = getBounceTargets(
 				currentToken,
 				maxDistance,
+				damageOriginToken,
+				within,
 				counts,
 				bounceLimit,
 				eligibleTargets,
@@ -3843,7 +3925,8 @@ function prepareBounceDamage(
 					currentTokenId: currentToken.id,
 					bounce,
 					maxDistance,
-					affects: rule.affects ?? "all",
+					within,
+					affects: rule.affects ?? "hostile",
 					sceneTokenIds: [...scene.tokens].map(token => token.id)
 				});
 				break;
@@ -4365,6 +4448,14 @@ async function applyCollateralDamage(
 			});
 			continue;
 		}
+		const within = resolveCollateralWithin(rule, damageItem, damageDealer);
+		if (within !== null && !Number.isFinite(within)) {
+			logBurstFireCollateral("within range did not resolve", params, {
+				rule: rule.item?.name ?? rule.label ?? RULE_KEY,
+				within: rule.within
+			});
+			continue;
+		}
 
 		if (rule.type === "bounce") {
 			const bounce = prepareBounceDamage(
@@ -4373,6 +4464,7 @@ async function applyCollateralDamage(
 				sourceToken,
 				targetToken,
 				distance,
+				within,
 				amount,
 				params.damage,
 				params
@@ -4383,15 +4475,17 @@ async function applyCollateralDamage(
 			continue;
 		}
 
-		const geometries = getPlacementGeometries(rule.placement ?? "target", sourceToken, targetToken);
+		const placement = rule.placement ?? "self";
+		const geometries = getPlacementGeometries(placement, sourceToken, targetToken);
 		if (!geometries?.length) {
 			console.error(`${MODULE_ID} | Could not apply ${RULE_KEY}: source and target positions are unavailable`);
 			continue;
 		}
-		const originToken = rule.placement === "self" ? sourceToken : targetToken;
+		const originToken = placement === "self" ? sourceToken : targetToken;
 		const shapeGeometries = rule.type === "emanation" ? geometries.slice(0, 1) : geometries;
+		const areaDistance = within === null ? distance : Math.min(distance, within);
 		const areaShapes = shapeGeometries
-			.map(geometry => getAreaShape(rule, geometry, originToken, distance))
+			.map(geometry => getAreaShape(rule, geometry, originToken, areaDistance))
 			.filter(Boolean);
 		if (!areaShapes.length) continue;
 		const region = getRegionForShapes(scene, areaShapes);
@@ -4399,7 +4493,7 @@ async function applyCollateralDamage(
 		shapes.push(...areaShapes);
 		if (slug) seenSlugs.add(slug);
 
-		const targets = getAreaTargets(region, sourceToken, targetToken, originToken, rule, distance);
+		const targets = getAreaTargets(region, sourceToken, targetToken, originToken, rule, areaDistance);
 		if (!targets.length) continue;
 		const amounts = rule.divided ? splitAmount(amount, targets.length) : targets.map(() => amount);
 		const sourceLabel = rule.item?.name ?? rule.label ?? RULE_KEY;

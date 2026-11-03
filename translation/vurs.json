@@ -101,6 +101,7 @@
                     "bounce": "Bounce"
                 },
                 "Distance": "Distance",
+                "Within": "Within",
                 "Width": "Width",
                 "Threshold": "Collateral Damage Threshold",
                 "BounceShots": "Bounce Shots",

@@ -628,19 +628,18 @@ function registerLifestealRuleElement({ quiet = false } = {}) {
 				value: new ResolvableValueField({
 					required: true,
 					nullable: false,
-					initial: 1,
 					label: localizeRuleElementFormText("Common.Value", "Value")
 				}),
 				lifestealThreshold: new ResolvableValueField({
 					required: false,
-					nullable: false,
-					initial: 20,
+					nullable: true,
+					initial: null,
 					label: localizeRuleElementFormText("Lifesteal.Threshold", "Lifesteal Threshold")
 				}),
 				mode: new fields.StringField({
 					required: false,
-					nullable: false,
-					initial: "threshold",
+					nullable: true,
+					initial: null,
 					label: localizeRuleElementFormText("Common.Mode", "Mode"),
 					choices: {
 						threshold: localizeRuleElementFormText("Common.Modes.Threshold", "Threshold"),
@@ -650,18 +649,29 @@ function registerLifestealRuleElement({ quiet = false } = {}) {
 				}),
 				type: new fields.StringField({
 					required: false,
-					nullable: false,
+					nullable: true,
 					label: localizeRuleElementFormText("Common.ModifierType", "Modifier Type"),
 					choices: localizeRuleElementModifierTypes(MODIFIER_TYPES),
-					initial: "untyped"
+					initial: null
 				}),
 				selector: new fields.StringField({
-					required: false,
-					nullable: true,
-					initial: undefined,
+					required: true,
+					nullable: false,
+					blank: false,
 					label: localizeRuleElementFormText("Common.Selector", "Selector")
 				})
 			};
+		}
+
+		beforePrepareData() {
+			if (this.ignored) return;
+			if (this.value === null || this.value === undefined || this.value === "") {
+				this.failValidation("value is required");
+				return;
+			}
+			if (!this.resolveInjectedProperties(this.selector)) {
+				this.failValidation("selector is required");
+			}
 		}
 	};
 
@@ -823,7 +833,7 @@ function getLifestealHealing(attacker, damageRoll, damage, rollOptions, selector
 
 		const slug = typeof rule.slug === "string" ? rule.slug.trim() : "";
 		if (slug && seenSlugs.has(slug)) continue;
-		const value = Number(rule.resolveValue(rule.value, 0));
+		const value = Number(rule.resolveValue(rule.value));
 		if (!Number.isFinite(value) || value <= 0) continue;
 
 		let healing;

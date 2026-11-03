@@ -38,6 +38,7 @@ const RULE_ELEMENT_FORM_TRANSLATIONS = {
 			bounce: "Bounce"
 		},
 		Distance: "Distance",
+		Within: "Within",
 		Width: "Width",
 		Threshold: "Collateral Damage Threshold",
 		BounceShots: "Bounce Shots",

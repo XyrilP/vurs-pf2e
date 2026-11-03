@@ -62,14 +62,15 @@ function registerCriticalProtectionRuleElement({ quiet = false } = {}) {
 				}),
 				type: new foundry.data.fields.StringField({
 					required: false,
-					nullable: false,
+					nullable: true,
 					label: localizeRuleElementFormText("Common.ModifierType", "Modifier Type"),
 					choices: localizeRuleElementModifierTypes(MODIFIER_TYPES),
-					initial: "untyped"
+					initial: null
 				}),
 				definition: new PredicateField({
 					required: false,
-					initial: undefined,
+					nullable: true,
+					initial: null,
 					label: localizeRuleElementFormText("CriticalProtection.Definition", "Definition")
 				})
 			};
@@ -78,6 +79,10 @@ function registerCriticalProtectionRuleElement({ quiet = false } = {}) {
 		beforePrepareData() {
 			if (this.ignored) return;
 
+			if (this.value === null || this.value === undefined || this.value === "") {
+				this.failValidation("value is required");
+				return;
+			}
 			const deferredSkillFormula = isNpcActorSkillFormula(this, this.value);
 			const value = deferredSkillFormula ? null : Number(this.resolveValue(this.value));
 			const type = this.type ?? "untyped";
