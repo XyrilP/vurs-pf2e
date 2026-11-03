@@ -3,6 +3,22 @@
 	outline-offset: 1px;
 }
 
+.vurs-burst-fire-item-settings .vurs-burst-fire-stat-fields {
+	gap: var(--space-8);
+}
+
+.vurs-burst-fire-item-settings .vurs-burst-fire-stat-input {
+	align-items: center;
+	display: flex;
+	gap: var(--space-4);
+}
+
+.vurs-burst-fire-item-settings .vurs-burst-fire-stat-input input {
+	flex: 1 1 4rem;
+	min-width: 4rem;
+	width: 4rem;
+}
+
 .actor.sheet.character section.window-content .crb-style .sheet-body .sheet-content > .tab.active.actions ol.actions-list li.strike .button-group.tags.vurs-burst-fire-armed,
 .actor.sheet.attack-popout section.window-content .tab.actions ol.actions-list li.strike .button-group.tags.vurs-burst-fire-armed {
 	flex-wrap: nowrap;

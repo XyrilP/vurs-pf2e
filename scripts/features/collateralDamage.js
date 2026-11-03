@@ -5,8 +5,8 @@ import {
 	getDamageSourceMessage,
 	getDamageSelectors,
 	getDamageModifierBreakdown,
-	queueDamageTransactionApplication,
 	queueDamageTransactionRequest,
+	runDamageTransaction,
 	registerDamageTransactionFinalizer
 } from "./lifesteal.js";
 import {
@@ -20,14 +20,35 @@ const RULE_KEY = "Collateral Damage";
 const DAMAGE_HANDLER_KEY = Symbol.for(`${MODULE_ID}.applyDamageHandlers`);
 const damageHandlers = globalThis[DAMAGE_HANDLER_KEY] ??= new Set();
 const activeDamageParams = new WeakSet();
-const collateralDamageApplications = new WeakSet();
-const secretDamageActors = new Map();
+const pendingPrimaryDamageUpdates = new Map();
+const applyingPrimaryCollateralDamage = new Set();
+const applyingGroupedCollateralDamage = new Set();
+const applyingRelayedDamage = new Set();
+const autoRolledToolbeltSaves = new Set();
+const autoAppliedToolbeltDamage = new Set();
+const autoRolledDamageMessages = new Set();
+const autoRolledStrikeMessages = new Set();
+const pendingAreaDamageRolls = new Map();
+const pendingToolbeltSpellDamageRolls = new Map();
+const pendingAutomatedDamageSources = new Map();
+const automatedDamageSourceByMessage = new Map();
+const pendingToolbeltDamageSources = new Map();
+const pendingToolbeltDamageSourceTimeouts = new Map();
+const toolbeltDamageSourceByMessage = new Map();
+const transferringToolbeltSaves = new Set();
+const pendingNativeDamageMessages = new Set();
+const pendingToolbeltNativeFallbacks = new Map();
+const nativeDamageRetries = new Map();
+const toolbeltDamageObservers = new Map();
+const wrappedRegionLayers = new WeakSet();
 const activeOverlays = new Map();
 const pendingOverlays = new Map();
 let CollateralDamageRuleElement = null;
 let socketHandlerInstalled = false;
+let damageSocket = null;
 let secretDamageHookInstalled = false;
 let groupedDamageUndoInstalled = false;
+let damageAutomationInstalled = false;
 let elevationDistanceWarningShown = false;
 
 const OVERLAY_CHANNEL = `module.${MODULE_ID}`;
@@ -841,15 +862,19 @@ function groupDamageEffects(effects) {
 function getVisibleGroupedDamageEntries(entries, primaryTokenId) {
 	return entries
 		.map((entry, index) => ({ entry, index }))
-		.filter(({ entry }) => !(
-			entry.tokenId === primaryTokenId &&
-			getGroupedEntryEffects(entry).every(effect =>
-				(effect.appliedDamage?.isHealing || effect.type === "lifesteal") &&
-				!effect.fullHealth &&
-				!effect.healingEffectiveness?.length
-			)
-		))
-		.filter(({ entry }) => getGroupedEntryEffects(entry).length > 0);
+		.filter(({ entry }) => {
+			const effects = getGroupedEntryEffects(entry);
+			return entry.tokenId !== primaryTokenId || effects.length === 0 ||
+				!effects.every(effect =>
+					(effect.appliedDamage?.isHealing || effect.type === "lifesteal") &&
+					!effect.fullHealth &&
+					!effect.healingEffectiveness?.length
+				);
+		})
+		.filter(({ entry }) =>
+			getGroupedEntryEffects(entry).length > 0 ||
+			entry.collateralDamageCards?.length > 0
+		);
 }
 
 function renderGroupedDamageEffects(damageTaken, primaryTokenId, entries, primaryUndoButton, sceneId) {
@@ -859,6 +884,19 @@ function renderGroupedDamageEffects(damageTaken, primaryTokenId, entries, primar
 	const summary = document.createElement("summary");
 	summary.textContent = `Affected creatures (${visibleEntries.length})`;
 	details.append(summary);
+	damageTaken.querySelector(".vurs-apply-all-secondary-damage")?.remove();
+	const pendingCards = visibleEntries.flatMap(({ entry }) =>
+		entry.collateralDamageCards ?? []
+	).filter(card => !card.isApplied);
+	if (pendingCards.length) {
+		const applyAll = document.createElement("button");
+		applyAll.type = "button";
+		applyAll.classList.add("vurs-apply-all-secondary-damage");
+		applyAll.dataset.vursApplyAllCollateral = "true";
+		if (pendingCards.some(card => card.hidden)) applyAll.dataset.visibility = "gm";
+		applyAll.innerHTML = '<i class="fa-solid fa-heart-crack fa-fw" inert></i> <span class="label">Apply Secondary Damage</span>';
+		damageTaken.append(applyAll);
+	}
 
 	const list = document.createElement("ul");
 	for (const { entry: groupedEntry, index } of visibleEntries) {
@@ -898,11 +936,19 @@ function renderGroupedDamageEffects(damageTaken, primaryTokenId, entries, primar
 		const effectLabel = document.createElement("span");
 		effectLabel.classList.add("vurs-damage-effect-label");
 		if (groupedEntry.isReverted) effectLabel.classList.add("reverted");
-		effectLabel.append(target, document.createTextNode(
-			` — ${amountParts.join(" / ") || "0"}`
-		));
-		row.append(effectLabel, createDamageEffectIndicator(causes));
-		if (!groupedEntry.isReverted && activeEffects.some(effect => effect.appliedDamage)) {
+		effectLabel.append(target);
+		if (amountParts.length || !groupedEntry.collateralDamageCards?.length) {
+			effectLabel.append(document.createTextNode(
+				` — ${amountParts.join(" / ") || "0"}`
+			));
+		}
+		row.append(effectLabel);
+		if (causes.length) row.append(createDamageEffectIndicator(causes));
+		const hasAppliedDamage = activeEffects.some(effect => effect.appliedDamage) ||
+			(groupedEntry.collateralDamageCards ?? []).some(card =>
+				card.appliedDamage && !card.isReverted
+			);
+		if (!groupedEntry.isReverted && hasAppliedDamage) {
 			const undo = createDamageRevertButton();
 			undo.dataset.vursUndoEntry = String(index);
 			undo.dataset.visibility = groupedEntry.hidden ? "gm" : "owner";
@@ -912,10 +958,170 @@ function renderGroupedDamageEffects(damageTaken, primaryTokenId, entries, primar
 			row.append(primaryUndoButton);
 		}
 		entry.append(row);
+		for (const effect of effects) {
+			if (!effect.receivedHtml || effect.collateralCardIds?.length ||
+				effect.sourceCollateralCardIds?.length) continue;
+			const receivedDetails = document.createElement("details");
+			receivedDetails.classList.add("vurs-secondary-damage-card");
+			if (effect.hidden) receivedDetails.dataset.visibility = "gm";
+			const receivedSummary = document.createElement("summary");
+			const receivedAmount = effect.appliedDamage?.isHealing
+				? `+${effect.amount} healing`
+				: `-${effect.amount} damage`;
+			receivedSummary.textContent =
+				`${effect.label || getEffectName(effect.type)} — ${receivedAmount}`;
+			receivedDetails.append(receivedSummary);
+			const receivedContent = document.createElement("div");
+			receivedContent.classList.add("vurs-collateral-damage-content");
+			const receivedTemplate = document.createElement("template");
+			receivedTemplate.innerHTML = effect.receivedHtml;
+			receivedTemplate.content.querySelector(".damage-application")?.remove();
+			for (const control of receivedTemplate.content.querySelectorAll("button")) {
+				control.remove();
+			}
+			receivedContent.append(receivedTemplate.content);
+			receivedDetails.append(receivedContent);
+			entry.append(receivedDetails);
+		}
+		for (const card of groupedEntry.collateralDamageCards ?? []) {
+			const cardDetails = document.createElement("details");
+			cardDetails.classList.add("vurs-collateral-damage-card");
+			if (card.hidden) cardDetails.dataset.visibility = "gm";
+			const summary = document.createElement("summary");
+			summary.textContent = `${card.label} — ${card.amount} damage`;
+			cardDetails.append(summary);
+			const content = document.createElement("div");
+			content.classList.add("vurs-collateral-damage-content");
+			const cardContent = document.createElement("template");
+			cardContent.innerHTML = card.receivedHtml ?? card.html;
+			if (card.isApplied || card.receivedHtml) {
+				cardContent.content.querySelector(".damage-application")?.remove();
+				// Embedded PF2e actions would otherwise resolve against the parent chat message.
+				for (const control of cardContent.content.querySelectorAll("button")) {
+					control.remove();
+				}
+			} else {
+				for (const apply of cardContent.content.querySelectorAll(
+					'button[data-action="applyDamage"]'
+				)) {
+					apply.removeAttribute("data-action");
+					apply.dataset.vursApplyCollateral = card.id;
+					apply.dataset.vursDamageMultiplier = apply.dataset.multiplier ?? "1";
+					if (card.hidden) apply.dataset.visibility = "gm";
+				}
+				const shieldBlock = cardContent.content.querySelector(
+					'button[data-action="shieldBlock"]'
+				);
+				if (shieldBlock) {
+					shieldBlock.removeAttribute("data-action");
+					shieldBlock.dataset.vursCollateralShield = card.id;
+					shieldBlock.dataset.visibility = "gm";
+					shieldBlock.setAttribute("aria-pressed", String(Boolean(card.shieldBlockRequest)));
+					shieldBlock.classList.toggle("active", Boolean(card.shieldBlockRequest));
+				}
+			}
+			content.append(cardContent.content);
+			const lifestealEffects = entries.flatMap(candidate =>
+				getGroupedEntryEffects(candidate)
+			).filter(effect =>
+				effect.type === "lifesteal" &&
+				effect.sourceCollateralCardIds?.includes(card.id) &&
+				effect.receivedHtml
+			);
+			for (const effect of lifestealEffects) {
+				const healingDetails = document.createElement("details");
+				healingDetails.classList.add("vurs-secondary-damage-card");
+				if (effect.hidden) healingDetails.dataset.visibility = "gm";
+				const healingSummary = document.createElement("summary");
+				healingSummary.textContent =
+					`${effect.label || "Lifesteal"} — +${effect.amount} healing`;
+				healingDetails.append(healingSummary);
+				const healingContent = document.createElement("div");
+				healingContent.classList.add("vurs-collateral-damage-content");
+				const healingTemplate = document.createElement("template");
+				healingTemplate.innerHTML = effect.receivedHtml;
+				healingTemplate.content.querySelector(".damage-application")?.remove();
+				for (const control of healingTemplate.content.querySelectorAll("button")) {
+					control.remove();
+				}
+				healingContent.append(healingTemplate.content);
+				healingDetails.append(healingContent);
+				content.append(healingDetails);
+			}
+			if (card.isApplied) {
+				const applied = document.createElement("span");
+				applied.classList.add("vurs-collateral-damage-applied");
+				applied.textContent = card.isReverted ? "Reverted" : "Applied";
+				content.append(applied);
+			}
+			cardDetails.append(content);
+			entry.append(cardDetails);
+		}
 		list.append(entry);
 	}
 	details.append(list);
 	damageTaken.append(details);
+}
+
+function mergeCollateralDamageCards(entries, cards) {
+	const byTarget = new Map(entries.map(entry => [
+		getDamageEffectTargetKey(entry),
+		entry
+	]));
+	for (const card of cards) {
+		const key = getDamageEffectTargetKey(card);
+		let entry = byTarget.get(key);
+		if (!entry) {
+			entry = {
+				actorUuid: card.actorUuid,
+				actorId: card.actorId,
+				tokenId: card.tokenId,
+				targetName: card.targetName,
+				hidden: Boolean(card.hidden),
+				effects: [],
+				sourceIndexes: [],
+				isReverted: false
+			};
+			entries.push(entry);
+			byTarget.set(key, entry);
+		}
+		entry.collateralDamageCards ??= [];
+		const existing = entry.collateralDamageCards.find(candidate => candidate.id === card.id);
+		if (existing) {
+			Object.assign(existing, card);
+		} else {
+			entry.collateralDamageCards.push(card);
+		}
+	}
+}
+
+async function renderCollateralDamageCard(application) {
+	const { actor, damageParams, effect } = application;
+	const damageRoll = damageParams.damage;
+	const template = document.createElement("template");
+	template.innerHTML = await damageRoll.render();
+	const token = normalizeToken(damageParams.token);
+	return {
+		id: foundry.utils.randomID(),
+		actorUuid: actor.uuid,
+		actorId: actor.id,
+		tokenId: token?.id ?? null,
+		sceneId: token?.parent?.id ?? token?.scene?.id ?? canvas.scene?.id ?? null,
+		targetName: effect.targetName,
+		hidden: false,
+		label: effect.label,
+		amount: damageRoll.total,
+		formula: damageRoll.toJSON().formula,
+		itemUuid: damageParams.item?.uuid ?? null,
+		modifiers: effect.modifiers ?? [],
+		rollOptions: [
+			...(damageParams.rollOptions instanceof Set
+				? damageParams.rollOptions
+				: Array.isArray(damageParams.rollOptions) ? damageParams.rollOptions : [])
+		],
+		html: template.innerHTML,
+		isApplied: false
+	};
 }
 
 function updateGroupedDamageTokenNames(message, html) {
@@ -983,8 +1189,1273 @@ function renderGroupedDamageSection(container, group, wasOpen, sceneId) {
 	return damageTaken;
 }
 
+function getToolbeltTargetData(message) {
+	return foundry.utils.getProperty(message, "flags.pf2e-toolbelt.targetHelper") ?? null;
+}
+
+function isToolbeltTargetHelperActive() {
+	return game.modules.get("pf2e-toolbelt")?.active === true;
+}
+
+function getToolbeltTargetTokens(targetUuids = []) {
+	return [...new Set(targetUuids)]
+		.map(target => {
+			const uuid = typeof target === "string" ? target : target?.uuid;
+			return typeof uuid === "string" ? fromUuidSync(uuid) : null;
+		})
+		.filter(token => token?.actor);
+}
+
+function getRenderedChatMessageElement(messageId) {
+	return [...document.querySelectorAll(
+		`li.chat-message[data-message-id="${messageId}"]`
+	)].find(element => element.isConnected && element.closest("#chat")) ?? null;
+}
+
+function clickRenderedChatButton(
+	messageId,
+	selector,
+	onMissing,
+	shouldClick = () => true,
+	eventOptions = null
+) {
+	let attempt = 0;
+	const click = () => {
+		if (!shouldClick()) return;
+		const messageElement = getRenderedChatMessageElement(messageId);
+		const button = messageElement?.querySelector(selector);
+		if (button) {
+			if (eventOptions) {
+				button.dispatchEvent(new MouseEvent("click", {
+					bubbles: true,
+					cancelable: true,
+					...eventOptions
+				}));
+			} else {
+				button.click();
+			}
+			return;
+		}
+		if (attempt++ < 20) {
+			setTimeout(click, 50);
+			return;
+		}
+		onMissing();
+	};
+	setTimeout(click, 0);
+}
+
+function getToolbeltSaveVariant(data, message = null) {
+	const variants = data?.saveVariants ?? {};
+	const variantId = message?.item?.variantId ?? "null";
+	return variants[variantId] ??
+		(Object.keys(variants).length === 1 ? Object.values(variants)[0] : null);
+}
+
+function isResolvedToolbeltSave(save) {
+	const outcome = save?.unadjustedOutcome ?? save?.success;
+	const normalized = (Number.isInteger(outcome)
+		? ["criticalfailure", "failure", "success", "criticalsuccess"][outcome]
+		: String(outcome ?? "").toLowerCase().replace(/[-_\s]/g, ""));
+	return ["criticalfailure", "failure", "success", "criticalsuccess"].includes(normalized);
+}
+
+function getPendingToolbeltSaveTokens(data, variant = getToolbeltSaveVariant(data)) {
+	if (!variant?.statistic) return [];
+	return getToolbeltTargetTokens([
+		...(data.targets ?? []),
+		...(data.splashTargets ?? [])
+	]).filter(token =>
+		!isResolvedToolbeltSave(variant.saves?.[token.id])
+	);
+}
+
+function minimizeSheetsForTemplatePlacement() {
+	const minimized = [];
+	const minimizing = [];
+	for (const app of Object.values(ui.windows ?? {})) {
+		if (!app.rendered || app._minimized || typeof app.minimize !== "function") continue;
+		try {
+			const result = app.minimize();
+			minimized.push(app);
+			if (result?.then) {
+				minimizing.push(Promise.resolve(result).catch(error => {
+					console.error(`${MODULE_ID} | Could not minimize an open sheet for template placement`, error);
+				}));
+			}
+		} catch (error) {
+			console.error(`${MODULE_ID} | Could not minimize an open sheet for template placement`, error);
+		}
+	}
+	return {
+		ready: Promise.all(minimizing),
+		restore: async () => {
+			const restoring = [];
+			for (const app of minimized) {
+				if (!app.rendered || !app._minimized || typeof app.maximize !== "function") continue;
+				try {
+					const result = app.maximize();
+					if (result?.then) {
+						restoring.push(Promise.resolve(result).catch(error => {
+							console.error(`${MODULE_ID} | Could not restore a sheet after template placement`, error);
+						}));
+					}
+				} catch (error) {
+					console.error(`${MODULE_ID} | Could not restore a sheet after template placement`, error);
+				}
+			}
+			await Promise.all(restoring);
+		}
+	};
+}
+
+function installTemplatePlacementSheetMinimizer() {
+	const regions = canvas.regions;
+	if (!regions || wrappedRegionLayers.has(regions)) return;
+	const placeRegion = regions.placeRegion;
+	if (typeof placeRegion !== "function") return;
+
+	regions.placeRegion = function (data, ...args) {
+		const messageId = foundry.utils.getProperty(data, "flags.pf2e.messageId");
+		const flow = typeof messageId === "string"
+			? pendingAreaDamageRolls.get(messageId)
+			: null;
+		if (typeof messageId !== "string") {
+			return placeRegion.call(this, data, ...args);
+		}
+
+		const sheets = minimizeSheetsForTemplatePlacement();
+		return sheets.ready
+			.then(() => placeRegion.call(this, data, ...args))
+			.then(
+				async result => {
+					await sheets.restore();
+					if (result === null && flow &&
+						pendingAreaDamageRolls.get(messageId) === flow) {
+						clearTimeout(flow.targetTimer);
+						clearTimeout(flow.removedTemplateTimer);
+						pendingAreaDamageRolls.delete(messageId);
+						autoRolledDamageMessages.delete(`${messageId}:${flow.templateAction}`);
+					}
+					return result;
+				},
+				async error => {
+					await sheets.restore();
+					throw error;
+				}
+			);
+	};
+	wrappedRegionLayers.add(regions);
+}
+
+function getNativeDamageTargetTokens(message) {
+	const targetUuid = message.flags?.pf2e?.context?.target?.token ??
+		message.flags?.pf2e?.target?.token;
+	if (typeof targetUuid === "string") {
+		const target = canvas.tokens?.placeables?.find(token =>
+			token.document?.uuid === targetUuid
+		);
+		if (target) return [target];
+	}
+
+	const options = message.flags?.pf2e?.context?.options ?? [];
+	const signatures = [...new Set(options
+		.filter(option => typeof option === "string" && option.startsWith("target:signature:"))
+		.map(option => option.slice("target:signature:".length)))];
+	if (!signatures.length || !canvas.tokens?.placeables) return [];
+
+	const targets = [];
+	for (const signature of signatures) {
+		const targetOption = `target:signature:${signature}`;
+		const matches = canvas.tokens.placeables.filter(token =>
+			token.actor?.getSelfRollOptions?.("target")?.includes(targetOption)
+		);
+		if (matches.length !== 1) return [];
+		targets.push(matches[0]);
+	}
+	return targets;
+}
+
+function isActiveGM() {
+	return game.user.isGM && (!game.users.activeGM || game.users.activeGM.id === game.user.id);
+}
+
+function getSuccessfulStrikeOutcome(message) {
+	const context = message.flags?.pf2e?.context;
+	if (message.isDamageRoll || context?.type !== "attack-roll") return null;
+	const options = message.flags?.pf2e?.context?.options ?? [];
+	if (!options.includes("action:strike")) return null;
+
+	const checkOutcome = [...options].reverse().find(option =>
+		typeof option === "string" && option.startsWith("check:outcome:")
+	)?.slice("check:outcome:".length);
+	const rollOutcome = {
+		0: "criticalFailure",
+		1: "failure",
+		2: "success",
+		3: "criticalSuccess"
+	}[message.rolls?.[0]?.options?.degreeOfSuccess];
+	const outcome = checkOutcome ?? rollOutcome ?? context?.outcome;
+	const normalized = String(outcome ?? "").toLowerCase().replace(/[-_\s]/g, "");
+	if (normalized === "criticalsuccess") return "critical";
+	if (normalized === "success") return "success";
+	return null;
+}
+
+function getAcceptedToolbeltTargets(data) {
+	const targetUuids = [...new Set([
+		...(data?.targets ?? []),
+		...(data?.splashTargets ?? [])
+	].map(target => typeof target === "string" ? target : target?.uuid)
+		.filter(uuid => typeof uuid === "string"))];
+	return targetUuids.length > 0 &&
+		getToolbeltTargetTokens(targetUuids).length === targetUuids.length;
+}
+
+function getSupportedDamageWorkflow(message, data) {
+	const variant = getToolbeltSaveVariant(data, message);
+	if (!variant?.basic || !variant.statistic) return null;
+	if (data.type === "spell" && message.item?.type === "spell") {
+		return "basic-save-spell";
+	}
+	if (data.type === "area" &&
+		["area-fire", "auto-fire"].includes(data.area) &&
+		variant.statistic === "reflex") {
+		return "area-fire";
+	}
+	return null;
+}
+
+function clearPendingAutomatedDamageSource(messageId) {
+	const pending = pendingAutomatedDamageSources.get(messageId);
+	if (!pending) return;
+	clearTimeout(pending.timeout);
+	pendingAutomatedDamageSources.delete(messageId);
+}
+
+function registerPendingAutomatedDamageSource(message, workflow) {
+	clearPendingAutomatedDamageSource(message.id);
+	const pending = {
+		workflow,
+		startedAt: Date.now(),
+		timeout: setTimeout(() => clearPendingAutomatedDamageSource(message.id), 15000)
+	};
+	pendingAutomatedDamageSources.set(message.id, pending);
+}
+
+function findPendingAutomatedDamageSource(damageMessage) {
+	return [...pendingAutomatedDamageSources.entries()]
+		.map(([messageId, pending]) => ({
+			message: game.messages.get(messageId),
+			messageId,
+			pending
+		}))
+		.filter(({ message }) =>
+			message?.author?.id === damageMessage.author?.id &&
+			message.item?.uuid === damageMessage.item?.uuid &&
+			(!message.actor?.uuid ||
+				!damageMessage.actor?.uuid ||
+				message.actor.uuid === damageMessage.actor.uuid)
+		)
+		.sort((a, b) => a.pending.startedAt - b.pending.startedAt)[0] ?? null;
+}
+
+function findRecentSuccessfulStrike(damageMessage) {
+	return [...game.messages.contents]
+		.filter(message =>
+			message.id !== damageMessage.id &&
+			message.author?.id === damageMessage.author?.id &&
+			message.item?.uuid === damageMessage.item?.uuid &&
+			(!message.actor?.uuid ||
+				!damageMessage.actor?.uuid ||
+				message.actor.uuid === damageMessage.actor.uuid) &&
+			message.timestamp <= damageMessage.timestamp &&
+			damageMessage.timestamp - message.timestamp <= 15000 &&
+			getSuccessfulStrikeOutcome(message) !== null
+		)
+		.sort((a, b) => b.timestamp - a.timestamp)[0] ?? null;
+}
+
+function tagAutomatedDamageMessage(message, userId) {
+	if ((userId && userId !== game.user.id) ||
+		!message.isDamageRoll ||
+		!message.item?.uuid) return;
+	const pending = findPendingAutomatedDamageSource(message);
+	const sourceMessage = pending?.message ?? findRecentSuccessfulStrike(message);
+	if (!sourceMessage) return;
+	message.updateSource({
+		flags: {
+			[MODULE_ID]: {
+				automatedDamageSource: {
+					sourceId: pending?.messageId ?? sourceMessage.id,
+					workflow: pending?.pending.workflow ?? "strike"
+				}
+			}
+		}
+	});
+}
+
+function associateAutomatedDamageSource(damageMessage) {
+	let source = foundry.utils.getProperty(
+		damageMessage,
+		`flags.${MODULE_ID}.automatedDamageSource`
+	);
+	if ((!source?.sourceId || !source.workflow) && damageMessage.isDamageRoll) {
+		const strike = findRecentSuccessfulStrike(damageMessage);
+		if (strike) {
+			source = { sourceId: strike.id, workflow: "strike" };
+		}
+	}
+	if (!source?.sourceId || !source.workflow) return;
+	if (source.workflow === "strike") {
+		const strike = game.messages.get(source.sourceId);
+		if (!strike || !getSuccessfulStrikeOutcome(strike)) return;
+	}
+	clearPendingAutomatedDamageSource(source.sourceId);
+	const association = {
+		sourceId: source.sourceId,
+		workflow: source.workflow,
+		timeout: setTimeout(() => automatedDamageSourceByMessage.delete(damageMessage.id), 60000)
+	};
+	automatedDamageSourceByMessage.set(damageMessage.id, association);
+}
+
+function getAutomatedDamageSource(message) {
+	return foundry.utils.getProperty(
+		message,
+		`flags.${MODULE_ID}.automatedDamageSource`
+	) ??
+		automatedDamageSourceByMessage.get(message.id) ??
+		null;
+}
+
+function canAutoApplyDamageMessage(message, data) {
+	const association = getAutomatedDamageSource(message);
+	if (!association?.sourceId || !association.workflow) return false;
+	const sourceMessage = game.messages.get(association.sourceId);
+	if (!sourceMessage) return false;
+
+	if (association.workflow === "strike") {
+		return getSuccessfulStrikeOutcome(sourceMessage) !== null;
+	}
+
+	if (!isToolbeltTargetHelperActive()) return false;
+	const sourceData = getToolbeltTargetData(sourceMessage);
+	const workflow = getSupportedDamageWorkflow(sourceMessage, sourceData);
+	if (workflow !== association.workflow ||
+		!getAcceptedToolbeltTargets(sourceData) ||
+		getPendingToolbeltSaveTokens(sourceData, getToolbeltSaveVariant(sourceData, sourceMessage)).length) {
+		return false;
+	}
+
+	return areToolbeltDamageSavesReady(message, data);
+}
+
+function autoRollSuccessfulStrike(message, html) {
+	if (message.author?.id !== game.user.id ||
+		game.settings.get(MODULE_ID, "automaticDamageRolls") !== true ||
+		!message.actor || !message.item || !(html instanceof HTMLElement)) return;
+
+	const outcome = getSuccessfulStrikeOutcome(message);
+	if (!outcome || autoRolledStrikeMessages.has(message.id)) return;
+	const buttonOutcome = outcome === "critical" ? "critical-success" : "success";
+	const button = html.querySelector(
+		`[data-action="strike-damage"][data-outcome="${buttonOutcome}"]`
+	);
+	if (!button) return;
+
+	autoRolledStrikeMessages.add(message.id);
+	registerPendingAutomatedDamageSource(message, "strike");
+	setTimeout(() => {
+		const renderedMessage = [...document.querySelectorAll(
+			`li.chat-message[data-message-id="${message.id}"]`
+		)].find(element =>
+			element.closest(".chat-log")?.getBoundingClientRect().height > 0
+		);
+		const renderedButton = renderedMessage?.querySelector(
+			`[data-action="strike-damage"][data-outcome="${buttonOutcome}"]`
+		);
+		if (!renderedButton) {
+			autoRolledStrikeMessages.delete(message.id);
+			clearPendingAutomatedDamageSource(message.id);
+			return;
+		}
+		renderedButton.click();
+	}, 0);
+}
+
+function autoRollCardDamage(message, html) {
+	if (message.author?.id !== game.user.id || message.isDamageRoll) return;
+
+	const damageAction = html.querySelector(
+		'[data-action="roll-area-damage"], [data-action="spell-damage"]'
+	)?.dataset.action;
+	if (!damageAction) return;
+
+	const automaticDamage = game.settings.get(MODULE_ID, "automaticDamageRolls") === true;
+	const templateAction = html.querySelector(
+		'[data-action="place-area-template"], [data-action="spell-template"]'
+	)?.dataset.action;
+	const data = getToolbeltTargetData(message);
+	const workflow = getSupportedDamageWorkflow(message, data);
+	if (!workflow || !isToolbeltTargetHelperActive()) return;
+
+	if (templateAction) {
+		const autoPlace = game.settings.get(MODULE_ID, "automaticTemplatePlacement") === true;
+		const automaticSaves = game.settings.get(MODULE_ID, "automaticNpcSavingThrows") === true;
+		if (autoPlace || automaticDamage || automaticSaves) {
+			startToolbeltAreaDamageFlow(message, templateAction, damageAction, {
+				autoPlace,
+				autoDamage: automaticDamage,
+				workflow
+			});
+			autoRollAreaDamageAfterToolbeltTargets(message, data);
+		}
+		return;
+	}
+
+	if (!automaticDamage) return;
+	pendingToolbeltSpellDamageRolls.set(message.id, { action: damageAction, workflow });
+	autoRollToolbeltSaves(message, data);
+	finishPendingToolbeltSpellDamage(message, data);
+}
+
+function autoClickDamageAction(message, action, workflow) {
+	const key = `${message.id}:${action}`;
+	if (autoRolledDamageMessages.has(key)) return;
+	autoRolledDamageMessages.add(key);
+	const targetData = getToolbeltTargetData(message);
+	const hasSaveVariants = Object.keys(targetData?.saveVariants ?? {}).length > 0;
+	registerPendingAutomatedDamageSource(message, workflow);
+	if (hasSaveVariants && ["spell-damage", "roll-area-damage"].includes(action)) {
+		clearTimeout(pendingToolbeltDamageSourceTimeouts.get(message.id));
+		pendingToolbeltDamageSources.set(message.id, Date.now());
+		pendingToolbeltDamageSourceTimeouts.set(message.id, setTimeout(() => {
+			pendingToolbeltDamageSources.delete(message.id);
+			pendingToolbeltDamageSourceTimeouts.delete(message.id);
+		}, 15000));
+	}
+	clickRenderedChatButton(
+		message.id,
+		`[data-action="${action}"]`,
+		() => {
+			autoRolledDamageMessages.delete(key);
+			clearPendingAutomatedDamageSource(message.id);
+			clearTimeout(pendingToolbeltDamageSourceTimeouts.get(message.id));
+			pendingToolbeltDamageSources.delete(message.id);
+			pendingToolbeltDamageSourceTimeouts.delete(message.id);
+			console.warn(
+				`${MODULE_ID} | Could not find the rendered ${action} button for chat message ${message.id}`
+			);
+		},
+		() => game.messages.get(message.id)?.author?.id === game.user.id,
+		{ shiftKey: Boolean(game.user.settings.showDamageDialogs) }
+	);
+}
+
+function startToolbeltAreaDamageFlow(message, templateAction, damageAction, {
+	autoPlace = true,
+	autoDamage = true,
+	workflow
+} = {}) {
+	const key = `${message.id}:${templateAction}`;
+	if (autoRolledDamageMessages.has(key) || pendingAreaDamageRolls.has(message.id)) return;
+	pendingAreaDamageRolls.set(message.id, {
+		templateAction,
+		damageAction,
+		workflow,
+		autoPlace,
+		autoDamage,
+		placed: false,
+		targetTimer: null,
+		removedTemplateTimer: null
+	});
+
+	installTemplatePlacementSheetMinimizer();
+	autoRolledDamageMessages.add(key);
+	if (!autoPlace) return;
+	clickRenderedChatButton(
+		message.id,
+		`[data-action="${templateAction}"]`,
+		() => {
+			autoRolledDamageMessages.delete(key);
+			pendingAreaDamageRolls.delete(message.id);
+			console.warn(
+				`${MODULE_ID} | Could not find the rendered ${templateAction} button for chat message ${message.id}`
+			);
+		},
+		() => game.messages.get(message.id)?.author?.id === game.user.id
+	);
+}
+
+function installAutoAreaDamageFlow() {
+	installTemplatePlacementSheetMinimizer();
+	Hooks.on("canvasReady", installTemplatePlacementSheetMinimizer);
+	Hooks.on("createRegion", region => {
+		const messageId = foundry.utils.getProperty(region, "flags.pf2e.messageId") ??
+			region?.getFlag?.("pf2e", "messageId");
+		const flow = typeof messageId === "string"
+			? pendingAreaDamageRolls.get(messageId)
+			: null;
+		if (flow) flow.placed = true;
+	});
+
+	Hooks.on("deleteRegion", region => {
+		const messageId = foundry.utils.getProperty(region, "flags.pf2e.messageId") ??
+			region?.getFlag?.("pf2e", "messageId");
+		const flow = typeof messageId === "string"
+			? pendingAreaDamageRolls.get(messageId)
+			: null;
+		if (!flow) return;
+		if (isToolbeltTargetHelperActive()) {
+			flow.placed = true;
+			clearTimeout(flow.removedTemplateTimer);
+			flow.removedTemplateTimer = setTimeout(() => {
+				if (pendingAreaDamageRolls.get(messageId) !== flow) return;
+				clearTimeout(flow.targetTimer);
+				pendingAreaDamageRolls.delete(messageId);
+				autoRolledDamageMessages.delete(`${messageId}:${flow.templateAction}`);
+			}, 60000);
+			const message = game.messages.get(messageId);
+			if (message) {
+				autoRollAreaDamageAfterToolbeltTargets(message, getToolbeltTargetData(message));
+			}
+			return;
+		}
+		clearTimeout(flow.targetTimer);
+		pendingAreaDamageRolls.delete(messageId);
+		autoRolledDamageMessages.delete(`${messageId}:${flow.templateAction}`);
+	});
+
+	Hooks.on("targetToken", user => {
+		if (user?.id !== game.user.id || game.modules.get("pf2e-toolbelt")?.active) return;
+		for (const [messageId, flow] of pendingAreaDamageRolls) {
+			if (!flow.placed) continue;
+			clearTimeout(flow.targetTimer);
+			flow.targetTimer = setTimeout(() => {
+				if (pendingAreaDamageRolls.get(messageId) !== flow ||
+					!game.user.targets.size) return;
+				const message = game.messages.get(messageId);
+				if (message?.author?.id === game.user.id) {
+					finishAutoAreaDamageFlow(message, getToolbeltTargetData(message), flow);
+				}
+			}, 600);
+		}
+	});
+}
+
+function finishAutoAreaDamageFlow(message, data, flow = pendingAreaDamageRolls.get(message.id)) {
+	if (!flow) return;
+	if (!flow.placed) return;
+	if (!isToolbeltTargetHelperActive() ||
+		!getAcceptedToolbeltTargets(data) ||
+		getSupportedDamageWorkflow(message, data) !== flow.workflow) return;
+	if (getPendingToolbeltSaveTokens(data, getToolbeltSaveVariant(data, message)).length) {
+		if (game.settings.get(MODULE_ID, "automaticNpcSavingThrows") === true) {
+			autoRollToolbeltSaves(message, data);
+		}
+		return;
+	}
+	pendingAreaDamageRolls.delete(message.id);
+	clearTimeout(flow.targetTimer);
+	clearTimeout(flow.removedTemplateTimer);
+	if (flow.autoDamage && message.author?.id === game.user.id) {
+		autoClickDamageAction(message, flow.damageAction, flow.workflow);
+	}
+}
+
+function autoRollAreaDamageAfterToolbeltTargets(message, data) {
+	const flow = pendingAreaDamageRolls.get(message.id);
+	if (!flow || !(data?.targets?.length || data?.splashTargets?.length)) return;
+	finishAutoAreaDamageFlow(message, data, flow);
+}
+
+function finishPendingToolbeltSpellDamage(message, data) {
+	const pending = pendingToolbeltSpellDamageRolls.get(message.id);
+	if (!pending ||
+		!isToolbeltTargetHelperActive() ||
+		!getAcceptedToolbeltTargets(data) ||
+		getSupportedDamageWorkflow(message, data) !== pending.workflow ||
+		getPendingToolbeltSaveTokens(data, getToolbeltSaveVariant(data, message)).length) return;
+	pendingToolbeltSpellDamageRolls.delete(message.id);
+	autoClickDamageAction(message, pending.action, pending.workflow);
+}
+
+function associateToolbeltDamageSource(damageMessage) {
+	if (!damageMessage.isDamageRoll || !damageMessage.item?.uuid) return;
+	const automatedSourceId = foundry.utils.getProperty(
+		damageMessage,
+		`flags.${MODULE_ID}.automatedDamageSource.sourceId`
+	);
+	const automatedSourceMessage = automatedSourceId
+		? game.messages.get(automatedSourceId)
+		: null;
+	if (automatedSourceMessage &&
+		Object.keys(getToolbeltTargetData(automatedSourceMessage)?.saveVariants ?? {}).length) {
+		clearTimeout(pendingToolbeltDamageSourceTimeouts.get(automatedSourceId));
+		pendingToolbeltDamageSourceTimeouts.delete(automatedSourceId);
+		pendingToolbeltDamageSources.delete(automatedSourceId);
+		toolbeltDamageSourceByMessage.set(damageMessage.id, automatedSourceId);
+		return;
+	}
+	const pendingCandidate = [...pendingToolbeltDamageSources.entries()]
+		.map(([messageId, startedAt]) => ({
+			message: game.messages.get(messageId),
+			messageId,
+			startedAt
+		}))
+		.filter(({ message }) =>
+			message?.author?.id === damageMessage.author?.id &&
+			message.item?.uuid === damageMessage.item.uuid &&
+			message.actor?.uuid === damageMessage.actor?.uuid
+		)
+		.sort((a, b) => a.startedAt - b.startedAt)[0];
+	const candidate = pendingCandidate ?? [...game.messages.contents]
+		.map(message => ({
+			message,
+			messageId: message.id,
+			data: getToolbeltTargetData(message)
+		}))
+		.filter(({ message, data }) =>
+			message.id !== damageMessage.id &&
+			message.author?.id === damageMessage.author?.id &&
+			message.item?.uuid === damageMessage.item.uuid &&
+			message.actor?.uuid === damageMessage.actor?.uuid &&
+			message.timestamp <= damageMessage.timestamp &&
+			["spell", "area"].includes(data?.type) &&
+			Object.keys(data.saveVariants ?? {}).length > 0 &&
+			(!data.targets?.length ||
+				!getToolbeltTargetData(damageMessage)?.targets?.length ||
+				data.targets.every(uuid =>
+					getToolbeltTargetData(damageMessage).targets.includes(uuid)
+				))
+		)
+		.sort((a, b) => b.message.timestamp - a.message.timestamp)[0];
+	if (!candidate) return;
+	clearTimeout(pendingToolbeltDamageSourceTimeouts.get(candidate.messageId));
+	pendingToolbeltDamageSourceTimeouts.delete(candidate.messageId);
+	pendingToolbeltDamageSources.delete(candidate.messageId);
+	toolbeltDamageSourceByMessage.set(damageMessage.id, candidate.messageId);
+	pendingToolbeltDamageSourceTimeouts.set(damageMessage.id, setTimeout(() => {
+		toolbeltDamageSourceByMessage.delete(damageMessage.id);
+		pendingToolbeltDamageSourceTimeouts.delete(damageMessage.id);
+	}, 15000));
+}
+
+async function transferToolbeltSpellSavesToDamage(damageMessage) {
+	const sourceId = toolbeltDamageSourceByMessage.get(damageMessage.id);
+	if (!sourceId || !game.modules.get("pf2e-toolbelt")?.active) return;
+	const sourceMessage = game.messages.get(sourceId);
+	const sourceData = getToolbeltTargetData(sourceMessage);
+	const damageData = getToolbeltTargetData(damageMessage);
+	const variants = sourceData?.saveVariants;
+	if (!variants || !damageData) return;
+	const itemVariant = sourceMessage.item?.variantId ?? "null";
+	const sourceVariant = variants[itemVariant] ??
+		(Object.keys(variants).length === 1 ? Object.values(variants)[0] : null);
+	if (!sourceVariant?.saves || !Object.keys(sourceVariant.saves).length) return;
+	const currentVariant = damageData.saveVariants?.null;
+	const currentSaves = currentVariant?.saves ?? {};
+	const saves = {
+		...currentSaves,
+		...sourceVariant.saves
+	};
+	const hasDifferentSourceOutcome =
+		currentVariant?.basic !== sourceVariant.basic ||
+		currentVariant?.statistic !== sourceVariant.statistic ||
+		currentVariant?.dc !== sourceVariant.dc ||
+		Object.entries(sourceVariant.saves).some(([tokenId, sourceSave]) => {
+			const currentSave = currentSaves[tokenId];
+			return currentSave?.success !== sourceSave.success ||
+				currentSave?.unadjustedOutcome !== sourceSave.unadjustedOutcome;
+		});
+	if (!hasDifferentSourceOutcome) {
+		clearTimeout(pendingToolbeltDamageSourceTimeouts.get(damageMessage.id));
+		pendingToolbeltDamageSourceTimeouts.delete(damageMessage.id);
+		toolbeltDamageSourceByMessage.delete(damageMessage.id);
+		return;
+	}
+	if (transferringToolbeltSaves.has(damageMessage.id)) return;
+
+	transferringToolbeltSaves.add(damageMessage.id);
+	try {
+		await damageMessage.update({
+			"flags.pf2e-toolbelt.targetHelper.saveVariants": {
+				null: {
+					...foundry.utils.deepClone(sourceVariant),
+					saves
+				}
+			}
+		});
+	} catch (error) {
+		console.error(
+			`${MODULE_ID} | Could not transfer Toolbelt saving throws to damage card ${damageMessage.id}`,
+			error
+		);
+		return;
+	} finally {
+		transferringToolbeltSaves.delete(damageMessage.id);
+	}
+	clearTimeout(pendingToolbeltDamageSourceTimeouts.get(damageMessage.id));
+	pendingToolbeltDamageSourceTimeouts.delete(damageMessage.id);
+	toolbeltDamageSourceByMessage.delete(damageMessage.id);
+}
+
+function transferPendingToolbeltDamageSaves(sourceMessage) {
+	for (const [damageMessageId, sourceMessageId] of toolbeltDamageSourceByMessage) {
+		if (sourceMessageId !== sourceMessage.id) continue;
+		const damageMessage = game.messages.get(damageMessageId);
+		if (damageMessage) void transferToolbeltSpellSavesToDamage(damageMessage);
+	}
+}
+function stopNativeDamageRetry(messageId) {
+	const pending = nativeDamageRetries.get(messageId);
+	if (!pending) return;
+	clearInterval(pending.interval);
+	clearTimeout(pending.timeout);
+	nativeDamageRetries.delete(messageId);
+}
+
+function cancelPendingNativeDamage(messageId) {
+	pendingNativeDamageMessages.delete(messageId);
+	const timeout = pendingToolbeltNativeFallbacks.get(messageId);
+	if (timeout) clearTimeout(timeout);
+	pendingToolbeltNativeFallbacks.delete(messageId);
+	stopNativeDamageRetry(messageId);
+}
+
+function retryNativeDamageApplication(message) {
+	if (!pendingNativeDamageMessages.has(message.id) ||
+		nativeDamageRetries.has(message.id)) return;
+
+	const interval = setInterval(() => {
+		if (!pendingNativeDamageMessages.has(message.id)) {
+			stopNativeDamageRetry(message.id);
+			return;
+		}
+		const updatedMessage = game.messages.get(message.id);
+		const updatedContent = getRenderedChatMessageElement(message.id);
+		if (updatedMessage && updatedContent) {
+			autoApplyNativeDamage(updatedMessage, updatedContent);
+		}
+	}, 100);
+	const timeout = setTimeout(() => {
+		stopNativeDamageRetry(message.id);
+	}, 10000);
+	nativeDamageRetries.set(message.id, { interval, timeout });
+}
+
+function autoApplyNativeDamage(message, html) {
+	if (!pendingNativeDamageMessages.has(message.id)) return;
+	if (!isActiveGM() ||
+		game.settings.get(MODULE_ID, "manualDamageApplication") === true ||
+		!message.isDamageRoll ||
+		message.item?.system?.save?.statistic) {
+		pendingNativeDamageMessages.delete(message.id);
+		return;
+	}
+	if (!canAutoApplyDamageMessage(message, getToolbeltTargetData(message) ?? {})) {
+		cancelPendingNativeDamage(message.id);
+		return;
+	}
+	if (!areToolbeltDamageSavesReady(message, getToolbeltTargetData(message) ?? {})) {
+		void transferToolbeltSpellSavesToDamage(message);
+		cancelPendingNativeDamage(message.id);
+		return;
+	}
+	if (game.modules.get("pf2e-toolbelt")?.active) {
+		const toolbeltData = getToolbeltTargetData(message);
+		if (toolbeltData?.type === "damage" &&
+			Object.keys(toolbeltData.saveVariants ?? {}).length > 0) {
+			cancelPendingNativeDamage(message.id);
+			return;
+		}
+		if (hasPendingToolbeltSaveResult(message)) {
+			cancelPendingNativeDamage(message.id);
+			return;
+		}
+		const toolbeltTargets = toolbeltData?.targets;
+		const toolbeltRows = html.querySelector(
+			".pf2e-toolbelt-target-damage .damage-application[data-target-uuid][data-target-roll-index]"
+		);
+		if (toolbeltTargets?.length || toolbeltRows) {
+			cancelPendingNativeDamage(message.id);
+			return;
+		}
+		if (!pendingToolbeltNativeFallbacks.has(message.id)) {
+			const timeout = setTimeout(() => {
+				pendingToolbeltNativeFallbacks.delete(message.id);
+				const updatedMessage = game.messages.get(message.id);
+				const updatedHtml = getRenderedChatMessageElement(message.id);
+				if (updatedMessage && updatedHtml) {
+					autoApplyNativeDamage(updatedMessage, updatedHtml);
+				}
+			}, 5000);
+			pendingToolbeltNativeFallbacks.set(message.id, timeout);
+		}
+		return;
+	}
+
+	const targets = getNativeDamageTargetTokens(message);
+	const applications = [...html.querySelectorAll(".damage-application[data-roll-index]")];
+	if (!targets.length || !applications.length) {
+		retryNativeDamageApplication(message);
+		return;
+	}
+
+	cancelPendingNativeDamage(message.id);
+	const previouslyControlled = [...canvas.tokens.controlled];
+	try {
+		for (const target of targets) {
+			target.control({ releaseOthers: true });
+			if (!canvas.tokens.controlled.includes(target)) continue;
+
+			for (const application of applications) {
+				const rollIndex = Number(application.dataset.rollIndex);
+				const roll = message.rolls?.[rollIndex];
+				if (!Number.isInteger(rollIndex) || !roll) continue;
+				const multiplier = roll.options?.healingOnly === true ? -1 : 1;
+				const button = application.querySelector(
+					`button[data-action="applyDamage"][data-multiplier="${multiplier}"]`
+				);
+				if (!button) continue;
+				button.click();
+			}
+		}
+	} finally {
+		for (const token of [...canvas.tokens.controlled]) token.release();
+		for (const token of previouslyControlled) token.control({ releaseOthers: false });
+	}
+}
+
+function getToolbeltRowSaveOutcome(row) {
+	return ["criticalFailure", "failure", "success", "criticalSuccess"]
+		.find(outcome => row.classList.contains(outcome)) ?? null;
+}
+
+function getToolbeltRowDamageMultiplier(row) {
+	const outcome = getToolbeltRowSaveOutcome(row);
+	if (!outcome) return undefined;
+	return {
+		success: 0.5,
+		failure: 1,
+		criticalFailure: 2
+	}[outcome] ?? null;
+}
+
+function hasPendingToolbeltSaveResult(message, token = null) {
+	if (!isToolbeltTargetHelperActive()) return false;
+	const sourceId = toolbeltDamageSourceByMessage.get(message.id);
+	const sourceMessage = sourceId ? game.messages.get(sourceId) : null;
+	const sourceData = getToolbeltTargetData(sourceMessage);
+	if (!sourceData) return false;
+
+	const sourceTargets = [
+		...(sourceData.targets ?? []),
+		...(sourceData.splashTargets ?? [])
+	];
+	return Object.values(sourceData.saveVariants ?? []).some(variant =>
+		variant?.statistic &&
+		(token
+			? sourceTargets.includes(token.uuid) || variant.saves?.[token.id]
+			: sourceTargets.length > 0 || Object.keys(variant.saves ?? {}).length > 0)
+	);
+}
+
+function areToolbeltDamageSavesReady(message, data) {
+	if (!isToolbeltTargetHelperActive()) return true;
+	const automatedSource = automatedDamageSourceByMessage.get(message.id);
+	const sourceId = toolbeltDamageSourceByMessage.get(message.id) ??
+		(["basic-save-spell", "area-fire"].includes(automatedSource?.workflow)
+			? automatedSource.sourceId
+			: null);
+	if (!sourceId) return true;
+
+	const sourceMessage = game.messages.get(sourceId);
+	const sourceData = getToolbeltTargetData(sourceMessage);
+	if (!sourceMessage || !sourceData) return false;
+	const sourceVariant = sourceData.saveVariants?.[sourceMessage.item?.variantId ?? "null"] ??
+		(Object.keys(sourceData.saveVariants ?? {}).length === 1
+			? Object.values(sourceData.saveVariants)[0]
+			: null);
+	if (Object.keys(sourceData.saveVariants ?? {}).length && !sourceVariant) return false;
+	if (!sourceVariant?.statistic) return true;
+	if (getPendingToolbeltSaveTokens(sourceData, sourceVariant).length) return false;
+
+	const damageVariant = data.saveVariants?.null;
+	if (!damageVariant ||
+		damageVariant.basic !== sourceVariant.basic ||
+		damageVariant.statistic !== sourceVariant.statistic ||
+		damageVariant.dc !== sourceVariant.dc) return false;
+
+	return Object.entries(sourceVariant.saves ?? {}).every(([tokenId, sourceSave]) => {
+		const damageSave = damageVariant.saves?.[tokenId];
+		return damageSave?.success === sourceSave.success &&
+			damageSave?.unadjustedOutcome === sourceSave.unadjustedOutcome;
+	});
+}
+
+async function rollToolbeltSave(target, message, variant, item, extraRollOptions, isPrivate) {
+	const statistic = target.actor?.getStatistic(variant.statistic);
+	if (!statistic) return null;
+
+	return new Promise((resolve, reject) => {
+		const rollPromise = statistic.check.roll({
+			dc: { value: variant.dc },
+			item,
+			origin: message.actor,
+			skipDialog: true,
+			extraRollOptions,
+			createMessage: false,
+			callback: async (roll, success, rollMessage) => {
+				try {
+					const context = rollMessage?.flags?.[game.system.id]?.context;
+					if (!context) throw new Error(`Missing save-roll context for ${target.name}`);
+					const modifiers = (rollMessage.flags?.[game.system.id]?.modifiers ?? [])
+						.filter(modifier => modifier.enabled)
+						.map(modifier => ({
+							excluded: false,
+							label: modifier.label,
+							modifier: modifier.modifier,
+							slug: modifier.slug ?? "unknown"
+						}));
+					const save = {
+						die: roll.terms[0].total,
+						dosAdjustments: context.dosAdjustments ?? {},
+						modifiers,
+						notes: context.notes,
+						private: isPrivate ||
+							(rollMessage.whisper ?? []).some(userId =>
+								userId && game.users.get(userId)?.isGM
+							),
+						roll: JSON.stringify(roll.toJSON()),
+						significantModifiers:
+							window.pf2eMm?.getSignificantModifiersOfMessage(rollMessage) ?? [],
+						statistic: variant.statistic,
+						success,
+						unadjustedOutcome: context.unadjustedOutcome,
+						value: roll.total
+					};
+					Hooks.callAll("pf2e-toolbelt.rollSave", {
+						data: save,
+						message,
+						roll,
+						rollMessage,
+						target
+					});
+					resolve({
+						targetId: target.id,
+						save
+					});
+				} catch (error) {
+					reject(error);
+				}
+			}
+		});
+		if (typeof rollPromise?.catch === "function") rollPromise.catch(reject);
+	});
+}
+
+async function rollAllPendingToolbeltSaves(message, data, variant, pending) {
+	const item = data.item ? await fromUuid(data.item) : message.item;
+	const traits = data.traits ?? [];
+	const unsavable = pending.filter(target =>
+		!target.actor?.getStatistic?.(variant.statistic)
+	);
+	if (unsavable.length) {
+		throw new Error(
+			`Could not find ${variant.statistic} saves for ${unsavable.map(target => target.name).join(", ")}`
+		);
+	}
+	const extraRollOptions = [
+		...traits,
+		...traits
+			.filter(trait => trait in CONFIG.PF2E.actionTraits)
+			.map(trait => `item:trait:${trait}`),
+		...(data.options ?? [])
+	];
+	if (variant.basic && !extraRollOptions.includes("damaging-effect")) {
+		extraRollOptions.push("damaging-effect");
+	}
+	const saves = await Promise.all(pending.map(target =>
+		rollToolbeltSave(target, message, variant, item, [...new Set(extraRollOptions)], data.private)
+	));
+	const latestMessage = game.messages.get(message.id) ?? message;
+	const latestData = getToolbeltTargetData(latestMessage);
+	const variantId = message.item?.variantId ?? "null";
+	const latestVariant = latestData?.saveVariants?.[variantId] ?? variant;
+	const updatedSaves = { ...(latestVariant.saves ?? {}) };
+	for (const result of saves) {
+		if (result && !isResolvedToolbeltSave(updatedSaves[result.targetId])) {
+			updatedSaves[result.targetId] = result.save;
+		}
+	}
+	const updatedVariants = foundry.utils.deepClone(latestData?.saveVariants ?? {});
+	updatedVariants[variantId] = {
+		...foundry.utils.deepClone(latestVariant),
+		saves: updatedSaves
+	};
+	await message.update({
+		"flags.pf2e-toolbelt.targetHelper.saveVariants": updatedVariants
+	});
+}
+
+function autoRollToolbeltSaves(message, data) {
+	if (!isToolbeltTargetHelperActive() ||
+		!isActiveGM() ||
+		game.settings.get(MODULE_ID, "automaticNpcSavingThrows") !== true ||
+		!getSupportedDamageWorkflow(message, data) ||
+		!getAcceptedToolbeltTargets(data)) return;
+	const areaFlow = pendingAreaDamageRolls.get(message.id);
+	if (areaFlow && !areaFlow.placed) return;
+	const variant = getToolbeltSaveVariant(data, message);
+	if (!variant?.basic || !variant.statistic) return;
+
+	const pending = getPendingToolbeltSaveTokens(data, variant);
+	if (!pending.length) return;
+	const key = `${message.id}:${pending.map(token => token.uuid).sort().join(",")}`;
+	if (autoRolledToolbeltSaves.has(key)) return;
+	autoRolledToolbeltSaves.add(key);
+
+	void rollAllPendingToolbeltSaves(message, data, variant, pending).catch(error => {
+		console.error(
+			`${MODULE_ID} | Could not roll all pending Toolbelt saves for chat message ${message.id}`,
+			error
+		);
+		ui.notifications.error("Could not roll all targeted saving throws. Damage was not applied.");
+	});
+}
+
+function autoApplyToolbeltTargetedDamage(message, html, data) {
+	if (!isActiveGM() ||
+		game.settings.get(MODULE_ID, "manualDamageApplication") === true ||
+		data.type !== "damage" ||
+		!Array.isArray(message.rolls) ||
+		!message.rolls.length) return;
+	if (!canAutoApplyDamageMessage(message, data)) return;
+	if (!areToolbeltDamageSavesReady(message, data)) {
+		void transferToolbeltSpellSavesToDamage(message);
+		return;
+	}
+
+	const rows = [
+		...html.querySelectorAll(
+			".pf2e-toolbelt-target-damage .damage-application[data-target-uuid][data-target-roll-index]"
+		)
+	];
+	for (const row of rows) {
+		const token = getToolbeltTargetTokens([row.dataset.targetUuid])[0];
+		const rollIndex = Number(row.dataset.targetRollIndex);
+		if (!token || !Number.isInteger(rollIndex) || !message.rolls[rollIndex]) continue;
+
+		const applied = data.applied?.[token.id]?.[rollIndex];
+		if (applied) {
+			autoAppliedToolbeltDamage.delete(`${message.id}:${token.uuid}:${rollIndex}`);
+			cancelPendingNativeDamage(message.id);
+			continue;
+		}
+
+		const isHealing = message.rolls[rollIndex]?.options?.healingOnly === true;
+		const rowMultiplier = getToolbeltRowDamageMultiplier(row);
+		let multiplier;
+		if (isHealing) {
+			multiplier = -1;
+		} else if (getAutomatedDamageSource(message)?.workflow === "strike") {
+			multiplier = 1;
+		} else if (rowMultiplier !== undefined) {
+			multiplier = rowMultiplier;
+		} else {
+			multiplier = Object.keys(data.saveVariants ?? {}).length ||
+				hasPendingToolbeltSaveResult(message, token)
+				? null
+				: 1;
+		}
+		if (multiplier === null || multiplier === 0) continue;
+
+		const key = `${message.id}:${token.uuid}:${rollIndex}`;
+		if (autoAppliedToolbeltDamage.has(key)) continue;
+		const button = row.querySelector(
+			`button[data-action="target-applyDamage"][data-multiplier="${multiplier}"]`
+		);
+		if (!button) continue;
+		autoAppliedToolbeltDamage.add(key);
+		cancelPendingNativeDamage(message.id);
+		clickRenderedChatButton(
+			message.id,
+			`.pf2e-toolbelt-target-damage .damage-application[data-target-uuid="${row.dataset.targetUuid}"][data-target-roll-index="${rollIndex}"] button[data-action="target-applyDamage"][data-multiplier="${multiplier}"]`,
+			() => {
+				autoAppliedToolbeltDamage.delete(key);
+				console.warn(
+					`${MODULE_ID} | Could not find the rendered Toolbelt damage button for ${token.name}`
+				);
+			},
+			() => {
+				const latestData = getToolbeltTargetData(game.messages.get(message.id));
+				if (latestData?.applied?.[token.id]?.[rollIndex]) {
+					autoAppliedToolbeltDamage.delete(key);
+					return false;
+				}
+				return true;
+			}
+		);
+	}
+}
+
+function observeToolbeltDamageRows(message) {
+	if (!isActiveGM() ||
+		game.settings.get(MODULE_ID, "manualDamageApplication") === true ||
+		!game.modules.get("pf2e-toolbelt")?.active ||
+		!canAutoApplyDamageMessage(message, getToolbeltTargetData(message) ?? {}) ||
+		getToolbeltTargetData(message)?.type !== "damage" ||
+		toolbeltDamageObservers.has(message.id)) return;
+
+	const messageElement = getRenderedChatMessageElement(message.id);
+	const content = messageElement?.querySelector(".message-content");
+	if (!content) return;
+
+	const observer = new MutationObserver(() => {
+		const updatedMessage = game.messages.get(message.id);
+		const updatedContent = getRenderedChatMessageElement(message.id)
+			?.querySelector(".message-content");
+		const rows = updatedContent?.querySelector(
+			".pf2e-toolbelt-target-damage .damage-application[data-target-uuid][data-target-roll-index]"
+		);
+		if (!updatedMessage || !updatedContent || !rows) return;
+
+		observer.disconnect();
+		clearTimeout(timeout);
+		toolbeltDamageObservers.delete(message.id);
+		const apply = () => {
+			const latestMessage = game.messages.get(message.id);
+			const latestContent = getRenderedChatMessageElement(message.id)
+				?.querySelector(".message-content");
+			const data = getToolbeltTargetData(latestMessage);
+			if (latestMessage && latestContent && data) {
+				autoApplyToolbeltTargetedDamage(latestMessage, latestContent, data);
+			}
+		};
+		setTimeout(apply, isActiveGM() ? 0 : 1000);
+	});
+	const timeout = setTimeout(() => {
+		observer.disconnect();
+		toolbeltDamageObservers.delete(message.id);
+	}, 10000);
+	toolbeltDamageObservers.set(message.id, observer);
+	observer.observe(content, { childList: true, subtree: true });
+
+	const existingRows = content.querySelector(
+		".pf2e-toolbelt-target-damage .damage-application[data-target-uuid][data-target-roll-index]"
+	);
+	if (existingRows) {
+		const updatedMessage = game.messages.get(message.id);
+		const data = getToolbeltTargetData(updatedMessage);
+		observer.disconnect();
+		clearTimeout(timeout);
+		toolbeltDamageObservers.delete(message.id);
+		if (updatedMessage && data) {
+			setTimeout(() => {
+				const latestMessage = game.messages.get(message.id);
+				const latestContent = getRenderedChatMessageElement(message.id)
+					?.querySelector(".message-content");
+				const latestData = getToolbeltTargetData(latestMessage);
+				if (latestMessage && latestContent && latestData) {
+					autoApplyToolbeltTargetedDamage(latestMessage, latestContent, latestData);
+				}
+			}, isActiveGM() ? 0 : 1000);
+		}
+	}
+}
+
+function installDamageAutomation() {
+	if (damageAutomationInstalled) return;
+	installAutoAreaDamageFlow();
+	Hooks.on("preCreateChatMessage", (message, _data, _options, userId) => {
+		tagAutomatedDamageMessage(message, userId);
+	});
+	Hooks.on("createChatMessage", message => {
+		associateAutomatedDamageSource(message);
+		associateToolbeltDamageSource(message);
+		void transferToolbeltSpellSavesToDamage(message);
+		if (!isActiveGM() ||
+			game.settings.get(MODULE_ID, "manualDamageApplication") === true ||
+			!message.isDamageRoll) return;
+		pendingNativeDamageMessages.add(message.id);
+	});
+	Hooks.on("renderChatMessageHTML", async (message, html) => {
+		if (!(html instanceof HTMLElement)) return;
+		await transferToolbeltSpellSavesToDamage(message);
+		const updatedMessage = game.messages.get(message.id) ?? message;
+		autoRollSuccessfulStrike(updatedMessage, html);
+		autoRollCardDamage(updatedMessage, html);
+		autoApplyNativeDamage(updatedMessage, html);
+		if (game.modules.get("pf2e-toolbelt")?.active) {
+			const data = getToolbeltTargetData(updatedMessage);
+			if (data) {
+				autoRollToolbeltSaves(updatedMessage, data);
+				observeToolbeltDamageRows(updatedMessage);
+				autoApplyToolbeltTargetedDamage(updatedMessage, html, data);
+			}
+		}
+		setTimeout(() => {
+			const latestMessage = game.messages.get(message.id);
+			const updatedHtml = getRenderedChatMessageElement(message.id);
+			if (!latestMessage || !updatedHtml) return;
+			autoApplyNativeDamage(latestMessage, updatedHtml);
+			if (!game.modules.get("pf2e-toolbelt")?.active) return;
+			const updatedData = getToolbeltTargetData(latestMessage);
+			if (updatedData) {
+				observeToolbeltDamageRows(latestMessage);
+				autoApplyToolbeltTargetedDamage(latestMessage, updatedHtml, updatedData);
+			}
+		}, 0);
+	});
+	Hooks.on("updateChatMessage", message => {
+		if (!message?.id) return;
+		setTimeout(() => {
+			const updatedMessage = game.messages.get(message.id);
+			const html = getRenderedChatMessageElement(message.id);
+			if (!updatedMessage) return;
+			const data = game.modules.get("pf2e-toolbelt")?.active
+				? getToolbeltTargetData(updatedMessage)
+				: null;
+			if (data && ["spell", "area"].includes(data.type)) {
+				transferPendingToolbeltDamageSaves(updatedMessage);
+				autoRollToolbeltSaves(updatedMessage, data);
+				if (updatedMessage.author?.id === game.user.id) {
+					if (html instanceof HTMLElement) {
+						autoRollCardDamage(updatedMessage, html);
+					}
+					autoRollAreaDamageAfterToolbeltTargets(updatedMessage, data);
+					finishPendingToolbeltSpellDamage(updatedMessage, data);
+				}
+			}
+			if (!isActiveGM() || !html) return;
+			autoApplyNativeDamage(updatedMessage, html);
+			if (!data) return;
+			if (data.type === "damage") {
+				observeToolbeltDamageRows(updatedMessage);
+				autoApplyToolbeltTargetedDamage(updatedMessage, html, data);
+			}
+		}, 0);
+	});
+	Hooks.on("pf2e-toolbelt.rollSave", ({ message } = {}) => {
+		if (!isActiveGM() || !game.modules.get("pf2e-toolbelt")?.active || !message?.id) return;
+		setTimeout(() => {
+			const updatedMessage = game.messages.get(message.id);
+			const html = getRenderedChatMessageElement(message.id);
+			const data = getToolbeltTargetData(updatedMessage);
+			if (updatedMessage && html && data) {
+				observeToolbeltDamageRows(updatedMessage);
+				autoApplyToolbeltTargetedDamage(updatedMessage, html, data);
+			}
+		}, 300);
+	});
+	damageAutomationInstalled = true;
+}
+
 async function finalizeGroupedDamageCard(transaction) {
-	if (!transaction.rootMessageId || !transaction.effects.length) return;
+	if (!transaction.rootMessageId ||
+		(!transaction.effects.length && !transaction.collateralDamageCards?.length)) return;
 	const message = game.messages?.get(transaction.rootMessageId);
 	if (!message) {
 		console.error(`${MODULE_ID} | Could not find the primary damage card for grouped effects`);
@@ -996,9 +2467,64 @@ async function finalizeGroupedDamageCard(transaction) {
 			!effect.healingEffectiveness?.length) &&
 		!(effect.tokenId === transaction.rootTokenId && effect.appliedDamage?.isHealing)
 	);
-	if (!effects.length) return;
-
 	const entries = groupDamageEffects(effects);
+	const existingGroup = getGroupedDamageData(message);
+	mergeCollateralDamageCards(
+		entries,
+		existingGroup?.entries?.flatMap(entry => entry.collateralDamageCards ?? []) ?? []
+	);
+	const cards = (transaction.collateralDamageCards ?? [])
+		.filter(card => !card.secret);
+	const receivedMessages = [];
+	const pendingCollateralEffects = effects.filter(effect => effect.type === "collateral");
+	for (const effect of effects) {
+		if (!effect.receivedMessageId) continue;
+		const receivedMessage = game.messages?.get(effect.receivedMessageId);
+		delete effect.receivedMessageId;
+		if (receivedMessage) {
+			effect.receivedHtml ??= receivedMessage.content;
+			receivedMessages.push(receivedMessage);
+		}
+	}
+	for (const effect of pendingCollateralEffects) {
+		const card = cards.find(candidate =>
+			effect.collateralCardIds?.includes(candidate.id)
+		);
+		if (card && effect.receivedHtml) {
+			card.receivedHtml = effect.receivedHtml;
+		}
+	}
+	for (const card of cards) {
+		if (!card.receivedMessageId) continue;
+		const receivedMessage = game.messages?.get(card.receivedMessageId);
+		delete card.receivedMessageId;
+		const appliedDamage = receivedMessage && foundry.utils.deepClone(foundry.utils.getProperty(
+			receivedMessage,
+			`flags.${game.system.id}.appliedDamage`
+		));
+		if (!receivedMessage || typeof appliedDamage?.uuid !== "string") {
+			console.error(`${MODULE_ID} | Could not capture the secondary damage-received card for ${card.targetName}`);
+			ui.notifications.warn(
+				`Damage was applied to ${card.targetName}, but its damage-received card could not be nested.`
+			);
+			continue;
+		}
+		card.receivedHtml = receivedMessage.content;
+		const effectIndex = pendingCollateralEffects.findIndex(effect =>
+			effect.actorUuid === card.actorUuid &&
+			effect.tokenId === card.tokenId &&
+			effect.appliedDamage?.uuid === appliedDamage.uuid &&
+			(effect.collateralCardIds?.includes(card.id) || effect.label === card.label)
+		);
+		if (effectIndex >= 0) {
+			pendingCollateralEffects.splice(effectIndex, 1);
+		} else {
+			card.appliedDamage = appliedDamage;
+		}
+		receivedMessages.push(receivedMessage);
+	}
+	mergeCollateralDamageCards(entries, cards);
+	if (!entries.length) return;
 	const group = { entries, primaryTokenId: transaction.rootTokenId, isReverted: false };
 	const container = document.createElement("div");
 	container.innerHTML = message.content ?? "";
@@ -1029,6 +2555,22 @@ async function finalizeGroupedDamageCard(transaction) {
 			})
 		}
 	});
+	for (const receivedMessage of receivedMessages) {
+		await receivedMessage.delete();
+	}
+	if (!game.settings.get(MODULE_ID, "manualDamageApplication") &&
+		entries.some(entry => entry.collateralDamageCards?.some(card => !card.isApplied))) {
+		try {
+			if (game.user.isGM) {
+				await applyAllGroupedCollateralDamage(message);
+			} else {
+				await requestDamageApplication("apply-all-secondary", message);
+			}
+		} catch (error) {
+			console.error(`${MODULE_ID} | Automatic ${RULE_KEY} damage application failed`, error);
+			ui.notifications.warn("Collateral damage was prepared but could not be applied automatically. Use its Apply button.");
+		}
+	}
 }
 
 function getGroupedDamageData(message) {
@@ -1056,7 +2598,11 @@ function getGroupedDamageData(message) {
 }
 
 function getEffectDamageOperations(entry) {
-	return getGroupedEntryEffects(entry)
+	const effects = [
+		...getGroupedEntryEffects(entry),
+		...(entry.collateralDamageCards ?? [])
+	];
+	return effects
 		.filter(effect => !effect.isReverted && effect.appliedDamage)
 		.map(effect => ({ record: effect.appliedDamage, effect }))
 		.reverse();
@@ -1077,7 +2623,7 @@ async function undoDamageOperations(operations) {
 	const byActor = new Map();
 	for (const operation of operations) {
 		const actor = getUndoActor(operation.record);
-		const actorKey = actor.id ?? actor.uuid;
+		const actorKey = actor.uuid ?? actor.id;
 		const actorOperations = byActor.get(actorKey) ?? [];
 		actorOperations.push({ ...operation, actor });
 		byActor.set(actorKey, actorOperations);
@@ -1209,6 +2755,8 @@ async function undoGroupedDamage(message, entryIndex = null) {
 		const error = await undoDamageOperations(getEffectDamageOperations(entry));
 		entry.isReverted = getGroupedEntryEffects(entry).every(effect =>
 			effect.isReverted || !effect.appliedDamage
+		) && (entry.collateralDamageCards ?? []).every(card =>
+			card.isReverted || !card.appliedDamage
 		);
 		await updateGroupedDamageState(message, group);
 		if (error) throw error;
@@ -1240,6 +2788,8 @@ async function undoGroupedDamage(message, entryIndex = null) {
 	for (const entry of group.entries) {
 		entry.isReverted = getGroupedEntryEffects(entry).every(effect =>
 			effect.isReverted || !effect.appliedDamage
+		) && (entry.collateralDamageCards ?? []).every(card =>
+			card.isReverted || !card.appliedDamage
 		);
 	}
 	group.isReverted = Boolean(primaryDamage?.isReverted) &&
@@ -1251,15 +2801,826 @@ async function undoGroupedDamage(message, entryIndex = null) {
 	if (error) throw error;
 }
 
+function getNestedCollateralCard(group, cardId) {
+	return group?.entries
+		?.flatMap(entry => entry.collateralDamageCards ?? [])
+		.find(candidate => candidate.id === cardId);
+}
+
+async function updatePendingPrimaryDamageRequest(message, requestId, update) {
+	const requests = foundry.utils.deepClone(getPendingPrimaryDamage(message));
+	const request = requests.find(candidate => candidate.id === requestId);
+	if (!request) throw new Error("Could not find the pending primary damage request");
+	update(request);
+	await message.update({
+		[`flags.${MODULE_ID}.pendingPrimaryDamage`]: requests
+	});
+	return request;
+}
+
+async function updatePendingCollateralCard(message, cardId, update) {
+	const burstCards = foundry.utils.deepClone(
+		foundry.utils.getProperty(message, `flags.${MODULE_ID}.pendingBurstFireCollateral`) ?? []
+	);
+	const burstCard = burstCards.find(candidate => candidate.id === cardId);
+	if (burstCard) {
+		update(burstCard);
+		const records = foundry.utils.getProperty(
+			message,
+			`flags.${MODULE_ID}.pendingBurstFireDamage`
+		) ?? [];
+		const isApplied = Boolean(foundry.utils.getProperty(
+			message,
+			`flags.${MODULE_ID}.pendingBurstFireApplied`
+		));
+		await message.update({
+			content: renderBurstFirePendingControls(
+				message.content ?? "",
+				records,
+				isApplied,
+				Boolean(foundry.utils.getProperty(
+					message,
+					`flags.${MODULE_ID}.pendingBurstFireSecretMessageId`
+				))
+			),
+			[`flags.${MODULE_ID}.pendingBurstFireCollateral`]: burstCards
+		});
+		return burstCard;
+	}
+
+	const cards = foundry.utils.deepClone(
+		foundry.utils.getProperty(message, `flags.${MODULE_ID}.pendingCollateralApplications`) ?? []
+	);
+	const card = cards.find(candidate => candidate.id === cardId);
+	if (!card) return null;
+	update(card);
+	const content = document.createElement("div");
+	content.classList.add("vurs-secret-collateral-applications");
+	for (const candidate of cards) content.append(renderPendingCollateralCard(candidate));
+	await message.update({
+		content: content.innerHTML,
+		[`flags.${MODULE_ID}.pendingCollateralApplications`]: cards
+	});
+	return card;
+}
+
+async function createCollateralDamageApplication(card, multiplier = 1) {
+	const actor = fromUuidSync(card.actorUuid);
+	if (!actor || typeof actor.applyDamage !== "function") {
+		throw new Error(`Could not find the actor to apply collateral damage to ${card.targetName}`);
+	}
+	const scene = game.scenes?.get(card.sceneId);
+	const token = scene?.tokens.get(card.tokenId) ?? canvas.scene?.tokens.get(card.tokenId);
+	if (!token || token.actor?.uuid !== actor.uuid) {
+		throw new Error(`Could not find the target token for ${card.targetName}`);
+	}
+	const item = card.itemUuid ? await fromUuid(card.itemUuid) : null;
+	if (card.itemUuid && !item) {
+		throw new Error(`Could not find the damage source item ${card.itemUuid}`);
+	}
+	const DamageRoll = CONFIG.Dice?.rolls?.find(rollClass => rollClass.name === "DamageRoll");
+	if (!DamageRoll) throw new Error("The system DamageRoll class is unavailable");
+	const damage = new DamageRoll(card.formula).evaluateSync();
+	if (!Number.isFinite(damage.total) || damage.total !== card.amount ||
+		damage.dice?.length > 0 ||
+		damage.instances?.some(instance => instance.dice?.length > 0)) {
+		throw new Error("The nested collateral damage roll is invalid");
+	}
+	if (![0.5, 1, 2].includes(multiplier)) {
+		throw new Error(`Unsupported collateral damage multiplier: ${multiplier}`);
+	}
+	const adjustedDamage = multiplier === 1 ? damage : damage.alter(multiplier, 0);
+	const damageParams = {
+		damage: adjustedDamage,
+		token: token.object ?? token,
+		item,
+		rollOptions: new Set(card.rollOptions),
+		vursDamageModifiers: card.modifiers,
+		shieldBlockRequest: Boolean(card.shieldBlockRequest),
+		vursCollateralDamageCard: true
+	};
+	const effect = {
+		type: "collateral",
+		label: card.label,
+		amount: adjustedDamage.total,
+		targetName: card.targetName,
+		hidden: Boolean(card.hidden),
+		modifiers: card.modifiers,
+		collateralCardIds: [card.id]
+	};
+	return { actor, token, damageParams, effect };
+}
+
+async function applyCollateralDamageCard(card, multiplier = 1, transactionParams = null) {
+	const { actor, token, damageParams, effect } =
+		await createCollateralDamageApplication(card, multiplier);
+	const previousMessageIds = transactionParams && !card.hidden
+		? new Set((game.messages?.contents ?? []).map(candidate => candidate.id))
+		: null;
+	if (transactionParams) {
+		await applyDamageInTransaction(actor, damageParams, transactionParams, effect);
+	} else {
+		await actor.applyDamage(damageParams);
+	}
+	if (previousMessageIds) {
+		const receivedMessage = findNewDamageTakenMessage(previousMessageIds, actor, token);
+		if (receivedMessage) card.receivedMessageId = receivedMessage.id;
+	}
+}
+
+function getPendingCollateralCards(message) {
+	const primaryCards = getPendingPrimaryDamage(message)
+		.flatMap(request => request.collateralApplications ?? []);
+	const burstCards = foundry.utils.getProperty(
+		message,
+		`flags.${MODULE_ID}.pendingBurstFireCollateral`
+	) ?? [];
+	const standaloneCards = foundry.utils.getProperty(
+		message,
+		`flags.${MODULE_ID}.pendingCollateralApplications`
+	) ?? [];
+	const groupedCards = (getGroupedDamageData(message)?.entries ?? [])
+		.flatMap(entry => entry.collateralDamageCards ?? []);
+	return [...primaryCards, ...burstCards, ...standaloneCards, ...groupedCards];
+}
+
+function getDamageSourceActor(record) {
+	if (record?.damageDealerUuid) {
+		const actor = fromUuidSync(record.damageDealerUuid);
+		if (actor) return actor;
+	}
+	if (!record?.itemUuid) return null;
+	const item = fromUuidSync(record.itemUuid);
+	return item?.actor ?? item?.parent ?? null;
+}
+
+function getRelayedDamageRecords(message, action, cardId) {
+	if (action === "apply-burst-fire") {
+		const records = foundry.utils.getProperty(
+			message,
+			`flags.${MODULE_ID}.pendingBurstFireDamage`
+		) ?? [];
+		const cards = foundry.utils.getProperty(
+			message,
+			`flags.${MODULE_ID}.pendingBurstFireCollateral`
+		) ?? [];
+		const secretMessageId = foundry.utils.getProperty(
+			message,
+			`flags.${MODULE_ID}.pendingBurstFireSecretMessageId`
+		);
+		const secretMessage = secretMessageId ? game.messages?.get(secretMessageId) : null;
+		const secretRecords = secretMessage
+			? foundry.utils.getProperty(
+				secretMessage,
+				`flags.${MODULE_ID}.pendingBurstFireDamageApplications`
+			) ?? []
+			: [];
+		const secretCards = secretMessage
+			? foundry.utils.getProperty(
+				secretMessage,
+				`flags.${MODULE_ID}.pendingCollateralApplications`
+			) ?? []
+			: [];
+		const pending = [
+			...records.filter(record => !record.isApplied),
+			...cards.filter(card => !card.isApplied),
+			...secretRecords.filter(record => !record.isApplied),
+			...secretCards.filter(card => !card.isApplied)
+		];
+		if (!pending.length ||
+			(game.settings.get(MODULE_ID, "manualDamageApplication") &&
+				pending.some(record => record.hidden))) {
+			throw new Error("There is no prepared Burst-Fire damage available to apply.");
+		}
+		return pending;
+	}
+
+	if (action === "apply-all-secondary") {
+		const cards = (getGroupedDamageData(message)?.entries ?? [])
+			.flatMap(entry => entry.collateralDamageCards ?? [])
+			.filter(card => !card.isApplied);
+		if (!cards.length ||
+			(game.settings.get(MODULE_ID, "manualDamageApplication") &&
+				cards.some(card => card.hidden))) {
+			throw new Error("There is no secondary damage available to apply.");
+		}
+		return cards;
+	}
+
+	if (action === "apply-collateral") {
+		const card = getPendingCollateralCards(message)
+			.find(candidate => candidate.id === cardId);
+		if (!card || card.isApplied || card.hidden) {
+			throw new Error("That public collateral damage card is no longer available.");
+		}
+		return [card];
+	}
+
+	throw new Error("Unsupported damage application request.");
+}
+
+function canUserApplyRelayedDamage(user, message, records) {
+	if (message.author?.id === user.id || message.user?.id === user.id) return true;
+	const sourceActors = records.map(getDamageSourceActor);
+	return sourceActors.length > 0 &&
+		sourceActors.every(actor => actor?.testUserPermission(user, "OWNER"));
+}
+
+async function applyPreparedDamageAsGM({ action, messageId, cardId, multiplier } = {}) {
+	const requesterId = this.socketdata?.userId;
+	const requester = game.users?.get(requesterId);
+	if (!requester) throw new Error("Could not verify the damage request user.");
+	if (typeof messageId !== "string") throw new Error("The damage source message is invalid.");
+	if (action === "apply-collateral" && ![0.5, 1, 2].includes(multiplier)) {
+		throw new Error("Unsupported collateral damage multiplier.");
+	}
+
+	const message = game.messages?.get(messageId);
+	if (!message) throw new Error("Could not find the damage source card.");
+	const records = getRelayedDamageRecords(message, action, cardId);
+	if (!requester.isGM && !canUserApplyRelayedDamage(requester, message, records)) {
+		throw new Error("You must have created this damage card or own its source actor to apply it.");
+	}
+
+	const lockKey = `${messageId}:${action}:${cardId ?? "all"}`;
+	if (applyingRelayedDamage.has(lockKey)) return;
+	applyingRelayedDamage.add(lockKey);
+	try {
+		if (action === "apply-burst-fire") {
+			await applyPendingBurstFireDamage(message);
+		} else if (action === "apply-all-secondary") {
+			await applyAllGroupedCollateralDamage(message);
+		} else {
+			await applyNestedCollateralDamage(message, cardId, multiplier);
+		}
+	} finally {
+		applyingRelayedDamage.delete(lockKey);
+	}
+}
+
+async function requestDamageApplication(action, message, options = {}) {
+	if (!damageSocket) {
+		throw new Error("Damage relaying is unavailable. Ensure SocketLib is active and try again.");
+	}
+	await damageSocket.executeAsGM("applyPreparedDamage", {
+		action,
+		messageId: message.id,
+		...options
+	});
+}
+
+function registerDamageRelay() {
+	if (damageSocket) return;
+	if (!globalThis.socketlib?.registerModule) {
+		console.error(`${MODULE_ID} | SocketLib is required for player damage application`);
+		return;
+	}
+	const socket = globalThis.socketlib.registerModule(MODULE_ID);
+	if (!socket || typeof socket.register !== "function") {
+		console.error(`${MODULE_ID} | SocketLib did not register the module socket; enable "socket" in module.json and reload the world`);
+		return;
+	}
+	damageSocket = socket;
+	damageSocket.register("applyPreparedDamage", applyPreparedDamageAsGM);
+}
+
+async function applyPendingPrimaryCollateralDamage(message, requestId) {
+	if (!game.user.isGM) {
+		ui.notifications.warn("Only the GM can apply this primary damage.");
+		return;
+	}
+	if (applyingPrimaryCollateralDamage.has(requestId)) return;
+	applyingPrimaryCollateralDamage.add(requestId);
+	try {
+		let claimed = false;
+		const request = await updatePendingPrimaryDamageRequest(message, requestId, candidate => {
+			if (candidate.isApplied || candidate.isApplying) return;
+			candidate.isApplying = true;
+			claimed = true;
+		});
+		if (!claimed) return;
+
+		const actor = fromUuidSync(request.actorUuid);
+		if (!actor || typeof actor.applyDamage !== "function") {
+			throw new Error(`Could not find the primary target actor ${request.actorUuid}`);
+		}
+		const scene = game.scenes?.get(request.sceneId);
+		const token = scene?.tokens.get(request.tokenId) ?? canvas.scene?.tokens.get(request.tokenId);
+		if (!token || token.actor?.uuid !== actor.uuid) {
+			throw new Error(`Could not find the primary target token for ${request.targetName ?? "the hidden creature"}`);
+		}
+		const item = request.itemUuid ? await fromUuid(request.itemUuid) : null;
+		if (request.itemUuid && !item) {
+			throw new Error(`Could not find the damage source item ${request.itemUuid}`);
+		}
+		const damageDealer = request.damageDealerUuid
+			? fromUuidSync(request.damageDealerUuid)
+			: null;
+		if (request.damageDealerUuid && !damageDealer) {
+			throw new Error(`Could not find the damage source actor ${request.damageDealerUuid}`);
+		}
+		let damage;
+		if (request.damage.type === "number") {
+			damage = request.damage.value;
+		} else if (request.damage.type === "roll") {
+			const DamageRoll = CONFIG.Dice?.rolls?.find(rollClass =>
+				rollClass.name === "DamageRoll"
+			);
+			if (!DamageRoll) throw new Error("The system DamageRoll class is unavailable");
+			damage = DamageRoll.fromData(request.damage.value);
+		} else {
+			throw new Error("The pending primary damage data is invalid");
+		}
+		const primaryParams = {
+			damage,
+			token: token.object ?? token,
+			item,
+			rollOptions: new Set(request.rollOptions),
+			vursDamageModifiers: request.vursDamageModifiers,
+			skipIWR: request.skipIWR,
+			shieldBlockRequest: request.shieldBlockRequest,
+			breakdown: request.breakdown,
+			notes: request.notes,
+			outcome: request.outcome,
+			final: request.final,
+			vursDamageDealer: damageDealer,
+			vursCollateralPrimaryApply: true,
+			vursCollateralPreparedApply: true
+		};
+		const secretMessage = request.secretMessageId
+			? game.messages?.get(request.secretMessageId)
+			: null;
+		if (request.secretMessageId && !secretMessage) {
+			throw new Error("Could not find the GM-only collateral damage card");
+		}
+		const secretCards = secretMessage
+			? foundry.utils.deepClone(foundry.utils.getProperty(
+				secretMessage,
+				`flags.${MODULE_ID}.pendingCollateralApplications`
+			) ?? [])
+			: [];
+		const pendingCards = [
+			...(request.collateralApplications ?? []).filter(card => !card.isApplied),
+			...secretCards.filter(card => !card.isApplied)
+		];
+		await runDamageTransaction(actor, primaryParams, async (rootParams, transaction) => {
+			transaction.collateralDamageCards = pendingCards.filter(card => !card.hidden);
+			if (!request.primaryApplied) {
+				await actor.applyDamage(rootParams);
+				await updatePendingPrimaryDamageRequest(message, requestId, candidate => {
+					candidate.primaryApplied = true;
+				});
+			}
+		});
+		await updatePendingPrimaryDamageRequest(message, requestId, candidate => {
+			candidate.isApplying = false;
+			candidate.isApplied = Boolean(candidate.primaryApplied);
+		});
+	} catch (error) {
+		try {
+			await updatePendingPrimaryDamageRequest(message, requestId, candidate => {
+				candidate.isApplying = false;
+			});
+		} catch (updateError) {
+			console.error(`${MODULE_ID} | Could not restore pending primary ${RULE_KEY} damage`, updateError);
+		}
+		throw error;
+	} finally {
+		applyingPrimaryCollateralDamage.delete(requestId);
+	}
+}
+
+async function applyAllPendingPrimaryCollateralDamage(message) {
+	for (const request of getPendingPrimaryDamage(message)) {
+		if (!request.isApplied) {
+			await applyPendingPrimaryCollateralDamage(message, request.id);
+		}
+	}
+}
+
+async function restoreBurstFireDamageRecord(record) {
+	const actor = fromUuidSync(record.actorUuid);
+	if (!actor || typeof actor.applyDamage !== "function") {
+		throw new Error(`Could not find the Burst-Fire damage target ${record.actorUuid}`);
+	}
+	const scene = game.scenes?.get(record.sceneId);
+	const token = scene?.tokens.get(record.tokenId) ?? canvas.scene?.tokens.get(record.tokenId);
+	if (!token || token.actor?.uuid !== actor.uuid) {
+		throw new Error(`Could not find the Burst-Fire target token for ${record.targetName ?? "the hidden creature"}`);
+	}
+	const DamageRoll = CONFIG.Dice?.rolls?.find(rollClass => rollClass.name === "DamageRoll");
+	if (!DamageRoll) throw new Error("The system DamageRoll class is unavailable");
+	const item = record.itemUuid ? await fromUuid(record.itemUuid) : null;
+	if (record.itemUuid && !item) {
+		throw new Error(`Could not find the Burst-Fire damage source item ${record.itemUuid}`);
+	}
+	return {
+		actor,
+		damageParams: {
+			damage: DamageRoll.fromData(record.damage),
+			token: token.object ?? token,
+			item,
+			rollOptions: new Set(record.rollOptions),
+			vursDamageModifiers: record.vursDamageModifiers,
+			outcome: record.outcome,
+			vursDamageDealer: fromUuidSync(record.damageDealerUuid),
+			vursBurstFireCollateralHandled: true,
+			vursCollateralPreparedApply: true
+		},
+		effect: foundry.utils.deepClone(record.effect)
+	};
+}
+
+async function applyPendingBurstFireDamage(message) {
+	if (!game.user.isGM) {
+		return requestDamageApplication("apply-burst-fire", message);
+	}
+	if (foundry.utils.getProperty(message, `flags.${MODULE_ID}.pendingBurstFireApplied`) ||
+		message._vursBurstFireApplying) return;
+	message._vursBurstFireApplying = true;
+	try {
+		const records = foundry.utils.deepClone(foundry.utils.getProperty(
+			message,
+			`flags.${MODULE_ID}.pendingBurstFireDamage`
+		) ?? []);
+		const cards = foundry.utils.deepClone(foundry.utils.getProperty(
+			message,
+			`flags.${MODULE_ID}.pendingBurstFireCollateral`
+		) ?? []);
+		const secretMessageId = foundry.utils.getProperty(
+			message,
+			`flags.${MODULE_ID}.pendingBurstFireSecretMessageId`
+		);
+		const secretMessage = secretMessageId ? game.messages?.get(secretMessageId) : null;
+		if (secretMessageId && !secretMessage) {
+			throw new Error("Could not find the GM-only Burst-Fire damage card");
+		}
+		const secretRecords = secretMessage
+			? foundry.utils.deepClone(foundry.utils.getProperty(
+				secretMessage,
+				`flags.${MODULE_ID}.pendingBurstFireDamageApplications`
+			) ?? [])
+			: [];
+		const secretCards = secretMessage
+			? foundry.utils.deepClone(foundry.utils.getProperty(
+				secretMessage,
+				`flags.${MODULE_ID}.pendingCollateralApplications`
+			) ?? [])
+			: [];
+		const allRecords = [...records, ...secretRecords];
+		const pendingRecords = allRecords.filter(record => !record.isApplied);
+		const pendingCards = [...cards, ...secretCards].filter(card => !card.isApplied);
+		if (!allRecords.length && !pendingCards.length) {
+			throw new Error("There is no prepared Burst-Fire damage to apply");
+		}
+		const rootRecord = allRecords[0];
+		if (!rootRecord) throw new Error("Could not find a prepared Burst-Fire damage roll");
+		const applications = await Promise.all([
+			...pendingRecords.map(async record => {
+				const application = await restoreBurstFireDamageRecord(record);
+				application.recordId = record.id;
+				application.onApplied = () => {
+					record.isApplied = true;
+				};
+				return application;
+			}),
+			...pendingCards.map(async card => {
+				const application = await createCollateralDamageApplication(card);
+				application.onApplied = effect => {
+					card.isApplying = false;
+					card.isApplied = true;
+					if (effect.receivedMessageId) {
+						card.receivedMessageId = effect.receivedMessageId;
+					}
+				};
+				return application;
+			})
+		]);
+		const rootApplication = applications.find(application =>
+			application.recordId === rootRecord.id
+		) ?? await restoreBurstFireDamageRecord(rootRecord);
+		let applied = false;
+		try {
+			await runDamageTransaction(
+				rootApplication.actor,
+				rootApplication.damageParams,
+				async (rootParams, transaction) => {
+					transaction.collateralDamageCards = cards;
+					await applyDamageApplications(applications, rootParams);
+				}
+			);
+			applied = true;
+		} finally {
+			const publicRecordIds = new Set(records.filter(record => record.isApplied).map(record => record.id));
+			const secretRecordIds = new Set(secretRecords.filter(record => record.isApplied).map(record => record.id));
+			const publicCardIds = new Set(cards.filter(card => card.isApplied).map(card => card.id));
+			const secretCardIds = new Set(secretCards.filter(card => card.isApplied).map(card => card.id));
+			const messageUpdate = {
+				[`flags.${MODULE_ID}.pendingBurstFireDamage`]: records.map(record => ({
+					...record,
+					isApplied: publicRecordIds.has(record.id)
+				})),
+				[`flags.${MODULE_ID}.pendingBurstFireCollateral`]: cards.map(card => ({
+					...card,
+					isApplied: publicCardIds.has(card.id),
+					isApplying: false
+				}))
+			};
+			if (applied) {
+				messageUpdate.content = renderBurstFirePendingControls(
+					message.content ?? "",
+					records,
+					true,
+					Boolean(secretMessageId)
+				);
+				messageUpdate[`flags.${MODULE_ID}.pendingBurstFireApplied`] = true;
+			}
+			const updates = [message.update(messageUpdate)];
+			if (secretMessage) {
+				updates.push(secretMessage.update({
+					[`flags.${MODULE_ID}.pendingBurstFireDamageApplications`]: secretRecords.map(record => ({
+						...record,
+						isApplied: secretRecordIds.has(record.id)
+					})),
+					[`flags.${MODULE_ID}.pendingCollateralApplications`]: secretCards.map(card => ({
+						...card,
+						isApplied: secretCardIds.has(card.id),
+						isApplying: false
+					}))
+				}));
+			}
+			await Promise.all(updates);
+		}
+	} finally {
+		message._vursBurstFireApplying = false;
+	}
+}
+
+async function toggleNestedCollateralShield(message, cardId) {
+	if (!game.user.isGM) {
+		ui.notifications.warn("Only the GM can configure this collateral damage.");
+		return;
+	}
+	const pendingCard = getPendingPrimaryDamage(message).some(request =>
+		request.collateralApplications?.some(card => card.id === cardId)
+	) || (foundry.utils.getProperty(
+		message,
+		`flags.${MODULE_ID}.pendingBurstFireCollateral`
+	) ?? []).some(card => card.id === cardId) || Boolean(foundry.utils.getProperty(
+		message,
+		`flags.${MODULE_ID}.pendingCollateralApplications`
+	));
+	if (pendingCard) {
+		await updatePendingCollateralCard(message, cardId, card => {
+			card.shieldBlockRequest = !card.shieldBlockRequest;
+		});
+		return;
+	}
+	const group = foundry.utils.deepClone(getGroupedDamageData(message));
+	const card = getNestedCollateralCard(group, cardId);
+	if (!card || card.isApplied) return;
+	card.shieldBlockRequest = !card.shieldBlockRequest;
+	await updateGroupedDamageState(message, group);
+}
+
+async function togglePrimaryCollateralShield(message, requestId) {
+	if (!game.user.isGM) {
+		ui.notifications.warn("Only the GM can configure this damage.");
+		return;
+	}
+	await updatePendingPrimaryDamageRequest(message, requestId, request => {
+		if (!request.primaryApplied && !request.isApplying) {
+			request.shieldBlockRequest = !request.shieldBlockRequest;
+		}
+	});
+}
+
+async function applyNestedCollateralDamage(message, cardId, multiplier = 1) {
+	if (!game.user.isGM) {
+		return requestDamageApplication("apply-collateral", message, { cardId, multiplier });
+	}
+	const hasPendingCards = getPendingPrimaryDamage(message).some(request =>
+		request.collateralApplications?.some(card => card.id === cardId)
+	) || (foundry.utils.getProperty(
+		message,
+		`flags.${MODULE_ID}.pendingBurstFireCollateral`
+	) ?? []).some(card => card.id === cardId) || Boolean(foundry.utils.getProperty(
+		message,
+		`flags.${MODULE_ID}.pendingCollateralApplications`
+	));
+	if (hasPendingCards) {
+		let card = null;
+		let claimed = false;
+		await updatePendingCollateralCard(message, cardId, candidate => {
+			if (candidate.isApplied || candidate.isApplying) return;
+			candidate.isApplying = true;
+			card = candidate;
+			claimed = true;
+		});
+		if (!claimed || !card) return;
+		try {
+			await applyCollateralDamageCard(card, multiplier);
+			await updatePendingCollateralCard(message, cardId, candidate => {
+				candidate.isApplying = false;
+				candidate.isApplied = true;
+			});
+		} catch (error) {
+			await updatePendingCollateralCard(message, cardId, candidate => {
+				candidate.isApplying = false;
+			});
+			throw error;
+		}
+		return;
+	}
+	const group = foundry.utils.deepClone(getGroupedDamageData(message));
+	const card = getNestedCollateralCard(group, cardId);
+	if (!card || card.isApplied) return;
+
+	const actor = fromUuidSync(card.actorUuid);
+	if (!actor || typeof actor.applyDamage !== "function") {
+		throw new Error(`Could not find the actor to apply collateral damage to ${card.targetName}`);
+	}
+	const scene = game.scenes?.get(card.sceneId);
+	const token = scene?.tokens.get(card.tokenId) ?? canvas.scene?.tokens.get(card.tokenId);
+	if (!token) throw new Error(`Could not find the target token for ${card.targetName}`);
+	const item = card.itemUuid ? await fromUuid(card.itemUuid) : null;
+	if (card.itemUuid && !item) {
+		throw new Error(`Could not find the damage source item ${card.itemUuid}`);
+	}
+	const DamageRoll = CONFIG.Dice?.rolls?.find(rollClass => rollClass.name === "DamageRoll");
+	if (!DamageRoll) throw new Error("The system DamageRoll class is unavailable");
+	const damage = new DamageRoll(card.formula).evaluateSync();
+	if (!Number.isFinite(damage.total) || damage.total !== card.amount ||
+		damage.dice?.length > 0 ||
+		damage.instances?.some(instance => instance.dice?.length > 0)) {
+		throw new Error("The nested collateral damage roll is invalid");
+	}
+	if (![0.5, 1, 2].includes(multiplier)) {
+		throw new Error(`Unsupported collateral damage multiplier: ${multiplier}`);
+	}
+	const adjustedDamage = multiplier === 1 ? damage : damage.alter(multiplier, 0);
+	const previousMessageIds = new Set((game.messages?.contents ?? []).map(candidate => candidate.id));
+	await actor.applyDamage({
+		damage: adjustedDamage,
+		token: token.object ?? token,
+		item,
+		rollOptions: new Set(card.rollOptions),
+		vursDamageModifiers: card.modifiers,
+		shieldBlockRequest: Boolean(card.shieldBlockRequest),
+		vursCollateralDamageCard: true
+	});
+
+	const receivedMessage = findNewDamageTakenMessage(previousMessageIds, actor, token);
+	const appliedDamage = receivedMessage && foundry.utils.deepClone(foundry.utils.getProperty(
+		receivedMessage,
+		`flags.${game.system.id}.appliedDamage`
+	));
+	card.isApplied = true;
+	if (receivedMessage && typeof appliedDamage?.uuid === "string") {
+		card.receivedHtml = receivedMessage.content;
+		card.appliedDamage = appliedDamage;
+	} else {
+		console.error(`${MODULE_ID} | Could not capture the secondary damage-received card for ${actor.name}`);
+		ui.notifications.warn(
+			`Damage was applied to ${actor.name}, but its damage-received card could not be nested.`
+		);
+	}
+	await updateGroupedDamageState(message, group);
+	if (receivedMessage && typeof appliedDamage?.uuid === "string") {
+		await receivedMessage.delete();
+	}
+}
+
+function findNewDamageTakenMessage(previousMessageIds, actor, token) {
+	const matching = (game.messages?.contents ?? []).filter(candidate => {
+		if (previousMessageIds.has(candidate.id) ||
+			foundry.utils.getProperty(candidate, `flags.${game.system.id}.context.type`) !== "damage-taken") {
+			return false;
+		}
+		const actorUuid = foundry.utils.getProperty(
+			candidate,
+			`flags.${game.system.id}.appliedDamage.uuid`
+		);
+		const tokenId = candidate.speaker?.token ??
+			/\.Token\.([^.]+)\.Actor\./.exec(actorUuid ?? "")?.[1];
+		return actorUuid === actor.uuid && tokenId === token.id;
+	});
+	return matching.sort((left, right) => (left.timestamp ?? 0) - (right.timestamp ?? 0))[0] ?? null;
+}
+
+async function applyAllGroupedCollateralDamage(message) {
+	if (!game.user.isGM) {
+		return requestDamageApplication("apply-all-secondary", message);
+	}
+	if (applyingGroupedCollateralDamage.has(message.id)) return;
+	applyingGroupedCollateralDamage.add(message.id);
+	try {
+		const group = foundry.utils.deepClone(getGroupedDamageData(message));
+		const cards = (group?.entries ?? [])
+			.flatMap(entry => entry.collateralDamageCards ?? [])
+			.filter(card => !card.isApplied);
+		if (!cards.length) return;
+
+		const applications = await Promise.all(cards.map(async card => {
+			const application = await createCollateralDamageApplication(card);
+			application.effect.collateralCardIds = [card.id];
+			application.onApplied = () => {
+				card.isApplied = true;
+				card.isApplying = false;
+			};
+			return application;
+		}));
+		const root = applications[0];
+		await runDamageTransaction(
+			root.actor,
+			root.damageParams,
+			async (rootParams, transaction) => {
+				transaction.collateralDamageCards = cards;
+				await applyDamageApplications(applications, rootParams);
+			},
+			{
+				rootMessageId: message.id,
+				rootTokenId: group.primaryTokenId
+			}
+		);
+	} finally {
+		applyingGroupedCollateralDamage.delete(message.id);
+	}
+}
+
 function installGroupedDamageUndo() {
 	if (groupedDamageUndoInstalled) return;
 	Hooks.on("renderChatMessageHTML", updateGroupedDamageTokenNames);
 	document.addEventListener("click", event => {
-		const button = event.target?.closest?.("[data-vurs-undo-group], [data-vurs-undo-entry]");
+		const button = event.target?.closest?.(
+			"[data-vurs-undo-group], [data-vurs-undo-entry], [data-vurs-apply-collateral], [data-vurs-apply-all-collateral], [data-vurs-collateral-shield], [data-vurs-apply-burst-fire]"
+		);
 		if (!button) return;
 		const messageElement = button.closest(".message");
 		const message = game.messages?.get(messageElement?.dataset.messageId);
-		if (!message || !getGroupedDamageData(message)) return;
+		if (!message) return;
+		if (button.hasAttribute("data-vurs-apply-all-collateral")) {
+			event.preventDefault();
+			event.stopImmediatePropagation();
+			button.disabled = true;
+			void applyAllGroupedCollateralDamage(message).catch(error => {
+				console.error(`${MODULE_ID} | Failed to apply all secondary ${RULE_KEY} damage`, error);
+				ui.notifications.error(error.message);
+				button.disabled = false;
+			});
+			return;
+		}
+		if (button.hasAttribute("data-vurs-apply-burst-fire")) {
+			event.preventDefault();
+			event.stopImmediatePropagation();
+			button.disabled = true;
+			void applyPendingBurstFireDamage(message).catch(error => {
+				console.error(`${MODULE_ID} | Failed to apply prepared Burst-Fire damage`, error);
+				ui.notifications.error(error.message);
+				button.disabled = false;
+			});
+			return;
+		}
+		if (button.hasAttribute("data-vurs-collateral-shield")) {
+			if (!getGroupedDamageData(message) &&
+				!getPendingPrimaryDamage(message).length &&
+				!foundry.utils.getProperty(message, `flags.${MODULE_ID}.pendingBurstFireCollateral`) &&
+				!foundry.utils.getProperty(message, `flags.${MODULE_ID}.pendingCollateralApplications`)) return;
+			event.preventDefault();
+			event.stopImmediatePropagation();
+			void toggleNestedCollateralShield(message, button.dataset.vursCollateralShield)
+				.catch(error => {
+					console.error(`${MODULE_ID} | Failed to configure nested ${RULE_KEY} shield block`, error);
+					ui.notifications.error(error.message);
+				});
+			return;
+		}
+		if (button.hasAttribute("data-vurs-apply-collateral")) {
+			if (!getGroupedDamageData(message) &&
+				!getPendingPrimaryDamage(message).length &&
+				!foundry.utils.getProperty(message, `flags.${MODULE_ID}.pendingBurstFireCollateral`) &&
+				!foundry.utils.getProperty(message, `flags.${MODULE_ID}.pendingCollateralApplications`)) return;
+			event.preventDefault();
+			event.stopImmediatePropagation();
+			const cardContainer = button.closest(".vurs-collateral-damage-card");
+			cardContainer?.querySelectorAll("button").forEach(control => {
+				control.disabled = true;
+			});
+			void applyNestedCollateralDamage(
+				message,
+				button.dataset.vursApplyCollateral,
+				Number(button.dataset.vursDamageMultiplier)
+			)
+				.catch(error => {
+					console.error(`${MODULE_ID} | Failed to apply nested ${RULE_KEY} damage`, error);
+					cardContainer?.querySelectorAll("button").forEach(control => {
+						control.disabled = false;
+					});
+					ui.notifications.error(error.message);
+				});
+			return;
+		}
+		if (!getGroupedDamageData(message)) return;
 		event.preventDefault();
 		event.stopImmediatePropagation();
 		const index = button.dataset.vursUndoEntry;
@@ -1274,21 +3635,18 @@ function installGroupedDamageUndo() {
 
 async function finalizeCollateralDamageApplications(transaction) {
 	const applications = (transaction.collateralApplications ?? []).splice(0).flat();
+	transaction.collateralDamageCards ??= [];
 	for (const application of applications) {
-		const { actor, damageParams, effect, secret } = application;
-		if (!queueDamageTransactionApplication(transaction.rootParams, {
-			actor,
-			damageParams,
-			effect,
-			secret,
-			apply: (targetActor, params, rootParams, targetEffect) => {
-				collateralDamageApplications.add(params);
-				return applySecretDamageCard(targetActor, secret, () =>
-					applyDamageInTransaction(targetActor, params, rootParams, targetEffect)
-				).finally(() => collateralDamageApplications.delete(params));
-			}
-		})) {
-			console.error(`${MODULE_ID} | Could not queue ${RULE_KEY} damage for ${application.targetName}`);
+		if (application.secret) {
+			await createCollateralDamageCard(
+				application.damageParams,
+				application.effect,
+				true
+			);
+		} else {
+			transaction.collateralDamageCards.push(
+				await renderCollateralDamageCard(application)
+			);
 		}
 	}
 }
@@ -1296,17 +3654,52 @@ async function finalizeCollateralDamageApplications(transaction) {
 registerDamageTransactionFinalizer(finalizeCollateralDamageApplications, "prepare");
 registerDamageTransactionFinalizer(finalizeGroupedDamageCard, "render");
 
-function applySecretDamageCard(actor, secret, callback) {
-	if (!secret) return callback();
-	const count = secretDamageActors.get(actor.uuid) ?? 0;
-	secretDamageActors.set(actor.uuid, count + 1);
-	return Promise.resolve()
-		.then(callback)
-		.finally(() => {
-			const activeCount = secretDamageActors.get(actor.uuid) ?? 0;
-			if (activeCount <= 1) secretDamageActors.delete(actor.uuid);
-			else secretDamageActors.set(actor.uuid, activeCount - 1);
-		});
+async function createCollateralDamageCard(damageParams, effect, secret) {
+	const damageRoll = damageParams.damage;
+	if (typeof damageRoll?.toMessage !== "function") {
+		console.error(`${MODULE_ID} | Could not create a ${RULE_KEY} damage card: DamageRoll.toMessage is unavailable`);
+		ui.notifications.error(`Could not create a ${RULE_KEY} damage card.`);
+		return;
+	}
+
+	let whisper;
+	if (secret) {
+		whisper = ChatMessage.getWhisperRecipients("GM").map(user => user.id);
+		if (!whisper.length) {
+			console.error(`${MODULE_ID} | Could not create a private ${RULE_KEY} damage card: no GM recipients are available`);
+			ui.notifications.error(`Could not send the private ${RULE_KEY} damage card to a GM.`);
+			return;
+		}
+	}
+
+	const item = damageParams.item;
+	const sourceActor = damageParams.vursDamageDealer ?? item?.actor ?? item?.parent ?? null;
+	const systemFlags = {
+		context: {
+			type: "damage-roll",
+			options: [
+				...(damageParams.rollOptions instanceof Set
+					? damageParams.rollOptions
+					: Array.isArray(damageParams.rollOptions) ? damageParams.rollOptions : [])
+			]
+		}
+	};
+	if (item?.uuid || sourceActor?.uuid) {
+		systemFlags.origin = {
+			...(item?.uuid ? { uuid: item.uuid } : {}),
+			...(sourceActor?.uuid ? { actor: sourceActor.uuid } : {})
+		};
+	}
+
+	await damageRoll.toMessage({
+		speaker: ChatMessage.getSpeaker(sourceActor ? { actor: sourceActor } : {}),
+		flavor: `${effect.label}: ${effect.targetName}`,
+		...(secret ? { whisper, blind: true } : {}),
+		flags: {
+			[game.system.id]: systemFlags,
+			[MODULE_ID]: { collateralDamageCard: true }
+		}
+	});
 }
 
 function prepareCollateralDamageForTarget(
@@ -1360,15 +3753,19 @@ function prepareCollateralDamageForTarget(
 
 export async function applyPreparedCollateralDamageBatch(applications, transactionParams) {
 	if (!applications.length) return;
-	await applyDamageApplications(applications.map(application => ({
-		...application,
-		apply: (actor, damageParams, rootParams, effect) => {
-			collateralDamageApplications.add(damageParams);
-			return applySecretDamageCard(actor, application.secret, () =>
-				applyDamageInTransaction(actor, damageParams, rootParams, effect)
-			).finally(() => collateralDamageApplications.delete(damageParams));
-		}
-	})), transactionParams);
+	if (queueDamageTransactionRequest(
+		transactionParams,
+		"collateralApplications",
+		applications
+	)) return;
+
+	for (const application of applications) {
+		await createCollateralDamageCard(
+			application.damageParams,
+			application.effect,
+			application.secret
+		);
+	}
 }
 
 function prepareBounceDamage(
@@ -1515,11 +3912,6 @@ function installSecretDamageCardHook() {
 			}
 		}
 
-		const actorUuid = foundry.utils.getProperty(data, "flags.pf2e.appliedDamage.uuid");
-		if (!secretDamageActors.has(actorUuid)) return;
-		const recipients = ChatMessage.getWhisperRecipients("GM").map(user => user.id);
-		data.whisper = recipients.length ? recipients : [game.user.id];
-		data.blind = true;
 	});
 	secretDamageHookInstalled = true;
 }
@@ -1895,7 +4287,7 @@ async function applyCollateralDamage(
 			hasScene: Boolean(scene),
 			itemName: damageItem?.name
 		});
-		return { shapes: [], paths: [] };
+		return { shapes: [], paths: [], applications: [] };
 	}
 	const targetToken = getDamageTargetToken(actor, providedTargetToken, scene);
 	if (!targetToken) {
@@ -1906,7 +4298,7 @@ async function applyCollateralDamage(
 			sceneId: scene.id
 		});
 		console.error(`${MODULE_ID} | Could not apply ${RULE_KEY}: no token for the damage recipient in the current scene`);
-		return { shapes: [], paths: [] };
+		return { shapes: [], paths: [], applications: [] };
 	}
 	if (providedTargetToken && providedTargetToken !== targetToken) {
 		console.warn(
@@ -1923,7 +4315,7 @@ async function applyCollateralDamage(
 			sceneId: scene.id
 		});
 		console.error(`${MODULE_ID} | Could not apply ${RULE_KEY}: no source token for ${damageDealer.name} in the current scene`);
-		return { shapes: [], paths: [] };
+		return { shapes: [], paths: [], applications: [] };
 	}
 	logBurstFireCollateral("damage event", params, {
 		damageDealerId: damageDealer.id,
@@ -2024,10 +4416,483 @@ async function applyCollateralDamage(
 	return { shapes, paths, applications };
 }
 
+function getPendingPrimaryDamage(message) {
+	return foundry.utils.getProperty(message, `flags.${MODULE_ID}.pendingPrimaryDamage`) ?? [];
+}
+
+function renderBurstFirePendingControls(
+	content,
+	records,
+	isApplied = false,
+	requiresGM = false
+) {
+	const template = document.createElement("template");
+	template.innerHTML = content;
+	template.content
+		.querySelectorAll(".vurs-burst-fire-card .vurs-collateral-damage-card")
+		.forEach(card => card.remove());
+	let section = template.content.querySelector(".vurs-burst-fire-damage-controls");
+	if (!section) {
+		section = document.createElement("section");
+		section.classList.add("vurs-burst-fire-damage-controls");
+		template.content.querySelector(".vurs-burst-fire-card")?.append(section);
+	}
+	section.replaceChildren();
+	if (isApplied) {
+		const applied = document.createElement("span");
+		applied.classList.add("vurs-collateral-damage-applied");
+		applied.textContent = "Burst-Fire damage applied";
+		applied.dataset.visibility = "gm";
+		section.append(applied);
+	} else if (records.length) {
+		const button = document.createElement("button");
+		button.type = "button";
+		button.dataset.vursApplyBurstFire = "true";
+		if (requiresGM) button.dataset.visibility = "gm";
+		button.textContent = "Apply All Damage";
+		section.append(button);
+	}
+	return template.innerHTML;
+}
+
+function renderPendingCollateralCard(card) {
+	const details = document.createElement("details");
+	details.classList.add("vurs-collateral-damage-card");
+	if (card.hidden) details.dataset.visibility = "gm";
+	details.dataset.vursCollateralCard = card.id;
+	const summary = document.createElement("summary");
+	summary.textContent = `${card.targetName} — ${card.label} — ${card.amount} damage`;
+	details.append(summary);
+	const content = document.createElement("div");
+	content.classList.add("vurs-collateral-damage-content");
+	const template = document.createElement("template");
+	template.innerHTML = card.html;
+	if (card.isApplied) {
+		template.content.querySelector(".damage-application")?.remove();
+	} else {
+		for (const apply of template.content.querySelectorAll('button[data-action="applyDamage"]')) {
+			apply.removeAttribute("data-action");
+			apply.dataset.vursApplyCollateral = card.id;
+			apply.dataset.vursDamageMultiplier = apply.dataset.multiplier ?? "1";
+			if (card.hidden) apply.dataset.visibility = "gm";
+		}
+		const shieldBlock = template.content.querySelector('button[data-action="shieldBlock"]');
+		if (shieldBlock) {
+			shieldBlock.removeAttribute("data-action");
+			shieldBlock.dataset.vursCollateralShield = card.id;
+			shieldBlock.dataset.visibility = "gm";
+			shieldBlock.setAttribute("aria-pressed", String(Boolean(card.shieldBlockRequest)));
+			shieldBlock.classList.toggle("active", Boolean(card.shieldBlockRequest));
+		}
+	}
+	content.append(template.content);
+	if (card.isApplied) {
+		const applied = document.createElement("span");
+		applied.classList.add("vurs-collateral-damage-applied");
+		applied.textContent = "Applied";
+		content.append(applied);
+	}
+	details.append(content);
+	return details;
+}
+
+function calculateHealthDamage(actor, params, finalDamage) {
+	let damage = Math.max(0, finalDamage);
+	const shield = actor.attributes?.shield;
+	const shieldBlock = Boolean(!params.final && params.shieldBlockRequest && shield?.raised &&
+		!shield.broken && !shield.destroyed && damage > 0);
+	if (shieldBlock) damage -= Math.min(Number(shield.hardness) || 0, damage);
+
+	let hardness = params.final ? 0 : Number(actor.hardness) || 0;
+	if (hardness > 0 && params.damage?.materials?.has?.("adamantine")) {
+		const item = params.item;
+		const standardThreshold = item?.isOfType?.("weapon")
+			? ({ low: 0, standard: 10, high: 13 }[item.system.material.grade ?? "standard"])
+			: 10;
+		if (standardThreshold >= hardness) hardness = Math.floor(hardness / 2);
+	}
+	damage = Math.max(0, damage - Math.min(hardness, damage));
+	const hp = actor.attributes?.hp;
+	if (!hp || hp.max === 0) return 0;
+	const healthDelta = actor.calculateHealthDelta?.({
+		hp,
+		sp: actor.isOfType?.("character") ? hp.sp : null,
+		delta: damage
+	});
+	return Number.isFinite(healthDelta?.totalApplied) ? healthDelta.totalApplied : damage;
+}
+
+function calculateExpectedAppliedDamage(actor, params) {
+	const damage = params.damage;
+	const total = typeof damage === "number" ? damage : Number(damage?.total);
+	if (!Number.isFinite(total) || total <= 0) return 0;
+	if (actor.isDead) return 0;
+	if (params.skipIWR || params.final || !game.pf2e?.settings?.iwr ||
+		typeof damage === "number") {
+		return calculateHealthDamage(actor, params, total);
+	}
+
+	const instances = Array.isArray(damage.instances) ? damage.instances : [];
+	if (!instances.length) return calculateHealthDamage(actor, params, total);
+	const immunities = actor.attributes?.immunities ?? [];
+	const weaknesses = actor.attributes?.weaknesses ?? [];
+	const resistances = actor.attributes?.resistances ?? [];
+	const damageOptions = getDamageRollOptions(damage, params.rollOptions);
+	const bypass = damage.options?.bypass;
+	if (bypass?.immunity?.redirect?.length || bypass?.resistance?.redirect?.length) {
+		throw new Error("Collateral Damage cannot be prepared with redirected immunity or resistance");
+	}
+	const ignoredResistances = damage.options?.bypass?.resistance?.ignore ?? [];
+	const isCriticalSuccess = params.outcome === "criticalSuccess" ||
+		damage.options?.degreeOfSuccess === 3;
+	let adjustmentTotal = 0;
+	const onceWeaknesses = new Set(weaknesses.filter(weakness =>
+		weakness.applyOnce && instances.some(instance => {
+			const options = new Set([
+				...(instance.formalDescription ?? []),
+				...damageOptions
+			]);
+			return weakness.test(options);
+		})
+	));
+
+	for (const instance of instances) {
+		const amount = Math.max(Number(instance.total) || 0, 0);
+		if (amount <= 0) continue;
+		const options = new Set([
+			...(instance.formalDescription ?? []),
+			...damageOptions
+		]);
+		if (typeof actor.isAffectedBy === "function" && !actor.isAffectedBy(instance.type)) {
+			adjustmentTotal -= amount;
+			continue;
+		}
+		const matchingImmunities = immunities.filter(immunity =>
+			immunity.type !== "critical-hits" && immunity.test(options)
+		);
+		if (matchingImmunities.length) {
+			adjustmentTotal -= amount;
+			continue;
+		}
+
+		const criticalImmunity = immunities.find(immunity =>
+			immunity.type === "critical-hits" && immunity.test(options)
+		);
+		const critImmuneTotal = Number(instance.critImmuneTotal) || 0;
+		let instanceAdjustment = 0;
+		if (isCriticalSuccess && criticalImmunity && critImmuneTotal < amount) {
+			instanceAdjustment -= amount - critImmuneTotal;
+		}
+		const precisionDamage = Number(instance.componentTotal?.("precision")) || 0;
+		const precisionImmunity = immunities.find(immunity =>
+			immunity.type === "precision" &&
+			immunity.test(new Set([...options, "damage:component:precision"]))
+		);
+		if (precisionDamage > 0 && precisionImmunity) {
+			instanceAdjustment -= Math.min(
+				precisionDamage,
+				Math.max(0, amount + instanceAdjustment)
+			);
+		}
+		if (amount + instanceAdjustment <= 0) {
+			adjustmentTotal += instanceAdjustment;
+			continue;
+		}
+		const splashDamage = Number(instance.componentTotal?.("splash")) || 0;
+		const additionalWeaknesses = weaknesses.filter(weakness =>
+			!onceWeaknesses.has(weakness) && weakness.test(options)
+		);
+		if (precisionDamage > 0) {
+			const precisionWeakness = weaknesses.find(weakness =>
+				weakness.type === "precision" &&
+				weakness.test(new Set([...options, "damage:component:precision"]))
+			);
+			if (precisionWeakness) additionalWeaknesses.push(precisionWeakness);
+		}
+		if (splashDamage > 0) {
+			const splashWeakness = weaknesses.find(weakness => weakness.type === "splash-damage");
+			if (splashWeakness) additionalWeaknesses.push(splashWeakness);
+		}
+		const weakness = additionalWeaknesses.reduce((highest, current) =>
+			!highest || current.value > highest.value ? current : highest, null);
+		const weaknessValue = Number(weakness?.value) || 0;
+		instanceAdjustment += weaknessValue;
+
+		const matchingResistances = resistances.filter(resistance =>
+			resistance.test(options) &&
+			!matchingImmunities.some(immunity =>
+				immunity.type === resistance.type &&
+				(immunity.exceptions ?? []).every(exception =>
+					(resistance.exceptions ?? []).includes(exception)
+				)
+			)
+		);
+		const precisionResistance = precisionDamage > 0 && !precisionImmunity
+			? resistances.find(resistance =>
+				resistance.type === "precision" &&
+				resistance.test(new Set([...options, "damage:component:precision"]))
+			)
+			: null;
+		if (precisionResistance) matchingResistances.push(precisionResistance);
+		const criticalResistance = isCriticalSuccess && amount > critImmuneTotal
+			? resistances.find(resistance => resistance.type === "critical-hits")
+			: null;
+		if (criticalResistance) matchingResistances.push(criticalResistance);
+		const resistance = matchingResistances.reduce((highest, current) => {
+			const isIgnored = ignoredResistances.some(ignored =>
+				ignored.type === current.type && current.test(options)
+			);
+			if (isIgnored) return highest;
+			const resistanceValue = current.getDoubledValue(options);
+			const value = precisionResistance === current
+				? Math.min(resistanceValue, precisionDamage)
+				: criticalResistance === current
+					? Math.min(resistanceValue, amount - critImmuneTotal)
+					: resistanceValue;
+			return !highest || value > highest.value ? { value } : highest;
+		}, null);
+		if (resistance) {
+			instanceAdjustment -= Math.min(
+				Math.max(0, amount + instanceAdjustment),
+				resistance.value
+			);
+		}
+		adjustmentTotal += instanceAdjustment;
+	}
+
+	for (const weakness of onceWeaknesses) adjustmentTotal += Number(weakness.value) || 0;
+	return calculateHealthDamage(actor, params, Math.max(0, total + adjustmentTotal));
+}
+
+async function createPendingPrimaryDamageRequest(actor, params, damageContext) {
+	const token = normalizeToken(params.token);
+	const damage = params.damage;
+	if (!token?.id || !token.parent?.id || !actor?.uuid ||
+		(typeof damage !== "number" && typeof damage?.toJSON !== "function")) {
+		throw new Error("The primary target or damage data is unavailable");
+	}
+	const hidden = token.hidden || token.object?.isVisible === false;
+	const request = {
+		id: foundry.utils.randomID(),
+		actorUuid: actor.uuid,
+		tokenId: token.id,
+		sceneId: token.parent.id,
+		targetName: hidden ? null : token.name,
+		hidden,
+		damage: typeof damage === "number"
+			? { type: "number", value: damage }
+			: { type: "roll", value: damage.toJSON() },
+		itemUuid: params.item?.uuid ?? null,
+		damageDealerUuid: damageContext.damageDealer?.uuid ?? null,
+		rollOptions: [
+			...(params.rollOptions instanceof Set
+				? params.rollOptions
+				: Array.isArray(params.rollOptions) ? params.rollOptions : [])
+		],
+		vursDamageModifiers: foundry.utils.deepClone(params.vursDamageModifiers ?? []),
+		skipIWR: Boolean(params.skipIWR),
+		shieldBlockRequest: Boolean(params.shieldBlockRequest),
+		breakdown: foundry.utils.deepClone(params.breakdown ?? []),
+		notes: foundry.utils.deepClone(params.notes ?? []),
+		outcome: params.outcome ?? null,
+		final: Boolean(params.final),
+		collateralApplications: [],
+		isApplying: false,
+		isApplied: false
+	};
+	const secretApplications = [];
+	const appliedDamage = calculateExpectedAppliedDamage(actor, params);
+	const { applications } = await applyCollateralDamage(
+		actor,
+		params,
+		typeof damage === "number" ? damage : damage.total,
+		appliedDamage,
+		damageContext
+	);
+	for (const application of applications) {
+		const card = await renderCollateralDamageCard(application);
+		card.shieldBlockRequest = Boolean(application.damageParams.shieldBlockRequest);
+		if (application.secret) {
+			card.hidden = true;
+			secretApplications.push(card);
+		} else {
+			request.collateralApplications.push(card);
+		}
+	}
+	return { request, secretApplications };
+}
+
+async function createSecretCollateralApplicationsMessage(requestId, cards) {
+	if (!cards.length) return null;
+	const recipients = ChatMessage.getWhisperRecipients("GM").map(user => user.id);
+	if (!recipients.length) throw new Error("No GM is available to receive hidden collateral damage");
+	const content = document.createElement("div");
+	content.classList.add("vurs-secret-collateral-applications");
+	for (const card of cards) content.append(renderPendingCollateralCard(card));
+	const message = await ChatMessage.create({
+		content: content.innerHTML,
+		speaker: ChatMessage.getSpeaker(),
+		whisper: recipients,
+		blind: true,
+		flags: {
+			[MODULE_ID]: {
+				pendingCollateralRequestId: requestId,
+				pendingCollateralApplications: cards
+			}
+		}
+	});
+	if (!message?.id) throw new Error("Could not save hidden collateral damage applications");
+	return message.id;
+}
+
+function createBurstFireDamageRecord(application) {
+	const { actor, damageParams, effect } = application;
+	const token = normalizeToken(damageParams.token);
+	if (!token?.id || !token.parent?.id || !actor?.uuid ||
+		typeof damageParams.damage?.toJSON !== "function") {
+		throw new Error("A Burst-Fire damage target or roll could not be saved");
+	}
+	const hidden = Boolean(effect.hidden || token.hidden || token.object?.isVisible === false);
+	return {
+		id: foundry.utils.randomID(),
+		actorUuid: actor.uuid,
+		tokenId: token.id,
+		sceneId: token.parent.id,
+		targetName: hidden ? null : effect.targetName,
+		hidden,
+		damage: damageParams.damage.toJSON(),
+		itemUuid: damageParams.item?.uuid ?? null,
+		damageDealerUuid: damageParams.vursDamageDealer?.uuid ?? null,
+		rollOptions: [
+			...(damageParams.rollOptions instanceof Set
+				? damageParams.rollOptions
+				: Array.isArray(damageParams.rollOptions) ? damageParams.rollOptions : [])
+		],
+		vursDamageModifiers: foundry.utils.deepClone(damageParams.vursDamageModifiers ?? []),
+		outcome: damageParams.outcome ?? null,
+		isApplied: false,
+		effect: {
+			type: "burst-fire",
+			label: effect.label,
+			amount: calculateExpectedAppliedDamage(actor, damageParams),
+			targetName: hidden ? "Hidden creature" : effect.targetName,
+			hidden
+		}
+	};
+}
+
+async function createSecretBurstFireMessage(records, cards) {
+	if (!records.length && !cards.length) return null;
+	const recipients = ChatMessage.getWhisperRecipients("GM").map(user => user.id);
+	if (!recipients.length) throw new Error("No GM is available to receive hidden Burst-Fire damage");
+	const content = document.createElement("div");
+	content.classList.add("vurs-secret-collateral-applications");
+	for (const record of records) {
+		const entry = document.createElement("p");
+		entry.textContent = `${record.effect.label}: ${record.targetName ?? "Hidden creature"} — ${record.damage.total} damage`;
+		content.append(entry);
+	}
+	for (const card of cards) content.append(renderPendingCollateralCard(card));
+	const message = await ChatMessage.create({
+		content: content.innerHTML,
+		speaker: ChatMessage.getSpeaker(),
+		whisper: recipients,
+		blind: true,
+		flags: {
+			[MODULE_ID]: {
+				pendingBurstFireDamageApplications: records,
+				pendingCollateralApplications: cards
+			}
+		}
+	});
+	if (!message?.id) throw new Error("Could not save hidden Burst-Fire damage applications");
+	return message.id;
+}
+
+export async function prepareBurstFireDamage(message, applications) {
+	if (!message?.id || !applications.length) return;
+	const records = [];
+	const secretRecords = [];
+	const cards = [];
+	const secretCards = [];
+	for (const application of applications) {
+		const record = createBurstFireDamageRecord(application);
+		(record.hidden ? secretRecords : records).push(record);
+		const amount = typeof application.damageParams.damage === "number"
+			? application.damageParams.damage
+			: application.damageParams.damage.total;
+		const appliedDamage = calculateExpectedAppliedDamage(application.actor, application.damageParams);
+		const { applications: collateralApplications } = await applyCollateralDamage(
+			application.actor,
+			application.damageParams,
+			amount,
+			appliedDamage
+		);
+		for (const collateral of collateralApplications ?? []) {
+			const card = await renderCollateralDamageCard(collateral);
+			card.hidden = Boolean(collateral.secret);
+			card.shieldBlockRequest = Boolean(collateral.damageParams.shieldBlockRequest);
+			(card.hidden ? secretCards : cards).push(card);
+		}
+	}
+	const secretMessageId = await createSecretBurstFireMessage(secretRecords, secretCards);
+	await message.update({
+		content: renderBurstFirePendingControls(
+			message.content ?? "",
+			records,
+			false,
+			Boolean(secretMessageId)
+		),
+		[`flags.${MODULE_ID}.pendingBurstFireDamage`]: records,
+		[`flags.${MODULE_ID}.pendingBurstFireCollateral`]: cards,
+		[`flags.${MODULE_ID}.pendingBurstFireSecretMessageId`]: secretMessageId
+	});
+	if (!game.settings.get(MODULE_ID, "manualDamageApplication")) {
+		try {
+			await applyPendingBurstFireDamage(message);
+		} catch (error) {
+			console.error(`${MODULE_ID} | Automatic Burst-Fire damage application failed`, error);
+			ui.notifications.warn("Burst-Fire damage was prepared but could not be applied automatically. Use its Apply button.");
+		}
+	}
+}
+
+async function queuePrimaryCollateralDamage(message, request, secretApplications = []) {
+	if (!message?.id) throw new Error("The source damage card is unavailable");
+	const messageId = message.id;
+	const previous = pendingPrimaryDamageUpdates.get(messageId) ?? Promise.resolve();
+	const current = previous.then(async () => {
+		const latestMessage = game.messages?.get(messageId);
+		if (!latestMessage) throw new Error("Could not find the source damage card");
+		const requests = foundry.utils.deepClone(getPendingPrimaryDamage(latestMessage));
+		const storedRequest = foundry.utils.deepClone(request);
+		requests.push(storedRequest);
+		await latestMessage.update({
+			[`flags.${MODULE_ID}.pendingPrimaryDamage`]: requests
+		});
+		const secretMessageId = await createSecretCollateralApplicationsMessage(
+			storedRequest.id,
+			secretApplications
+		);
+		if (secretMessageId) {
+			const updatedRequests = foundry.utils.deepClone(getPendingPrimaryDamage(latestMessage));
+			const stored = updatedRequests.find(candidate => candidate.id === storedRequest.id);
+			if (!stored) throw new Error("Could not link hidden collateral damage to its primary damage");
+			stored.secretMessageId = secretMessageId;
+			await latestMessage.update({
+				[`flags.${MODULE_ID}.pendingPrimaryDamage`]: updatedRequests
+			});
+		}
+	});
+	pendingPrimaryDamageUpdates.set(messageId, current.catch(() => {}));
+	await current;
+}
+
 async function applyCollateralDamageHandler(actor, wrapped, args) {
 	const params = args[0];
-	if (params && collateralDamageApplications.has(params)) return wrapped(...args);
+	if (params?.vursCollateralPreparedApply) return wrapped(...args);
 	if (params?.vursBurstFireCollateralHandled) return wrapped(...args);
+	if (params?.vursCollateralDamageCard) return wrapped(...args);
 	if (!params || typeof params !== "object") return wrapped(...args);
 	if (activeDamageParams.has(params)) {
 		logBurstFireCollateral("skipped re-entrant damage parameters", params, {
@@ -2038,6 +4903,7 @@ async function applyCollateralDamageHandler(actor, wrapped, args) {
 	}
 	const damage = typeof params.damage === "number" ? params.damage : params.damage?.total;
 	const sourceMessage = getDamageSourceMessage(params.damage, params.item);
+	if (sourceMessage?.flags?.[MODULE_ID]?.collateralDamageCard) return wrapped(...args);
 	const damageDealer = getDamageDealer(params, sourceMessage);
 	if (typeof damage !== "number" || damage <= 0 || !damageDealer) {
 		logBurstFireCollateral("skipped damage event", params, {
@@ -2053,8 +4919,9 @@ async function applyCollateralDamageHandler(actor, wrapped, args) {
 	);
 	if (!collateralRules) return wrapped(...args);
 	const damageContext = getCollateralDamageContext(params, damageDealer, sourceMessage);
-	if (!damageContext.rules.length) return wrapped(...args);
-
+	if (!damageContext.rules.some(rule =>
+		testRuleElementPredicate(rule, damageContext.rollOptions)
+	)) return wrapped(...args);
 	activeDamageParams.add(params);
 	try {
 		const recipientActor = getDamageRecipientActor(actor, params);
@@ -2121,8 +4988,10 @@ damageHandlers.add(applyCollateralDamageHandler);
 function initializeCollateralDamage() {
 	registerCollateralDamageLocalization();
 	registerCollateralDamageRuleElement();
+	registerDamageRelay();
 	installSecretDamageCardHook();
 	installGroupedDamageUndo();
+	installDamageAutomation();
 	installOverlaySocket();
 }
 
@@ -2132,6 +5001,7 @@ Hooks.once("setup", registerCollateralDamageRuleElement);
 Hooks.once("pf2e.systemReady", initializeCollateralDamage);
 Hooks.once("sf2e.systemReady", initializeCollateralDamage);
 Hooks.once("ready", initializeCollateralDamage);
+Hooks.once("socketlib.ready", registerDamageRelay);
 Hooks.on("canvasReady", canvas => drawPendingOverlays(canvas.scene?.id));
 Hooks.on("canvasTearDown", () => {
 	clearAllOverlays();

@@ -141,12 +141,16 @@ function createDamageTransaction(actor, params) {
 		primaryDamage: null,
 		pending: [],
 		effects: [],
-		rootParams: params,
-		lifestealRequests: []
+		rootParams: params
 	};
 }
 
-export async function runDamageTransaction(actor, rootParams, operation) {
+export async function runDamageTransaction(
+	actor,
+	rootParams,
+	operation,
+	{ rootMessageId = null, rootTokenId = null } = {}
+) {
 	if (!actor || !rootParams || typeof rootParams !== "object" || typeof operation !== "function") {
 		throw new TypeError("A damage actor, root parameters, and operation are required");
 	}
@@ -155,6 +159,11 @@ export async function runDamageTransaction(actor, rootParams, operation) {
 	if (existingTransaction) return operation(rootParams, existingTransaction);
 
 	const transaction = createDamageTransaction(actor, rootParams);
+	if (rootMessageId) {
+		transaction.rootMessageId = rootMessageId;
+		transaction.rootMessagePending = false;
+		transaction.rootTokenId = rootTokenId ?? transaction.rootTokenId;
+	}
 	damageTransactionState.params.set(rootParams, transaction);
 	damageTransactionState.active.add(transaction);
 	try {
@@ -185,7 +194,7 @@ export async function applyDamageInTransaction(actor, damageParams, parentParams
 	const transaction = damageTransactionState.params.get(parentParams);
 	if (!transaction) return actor.applyDamage(damageParams);
 
-	const pendingEffect = transaction.rootMessageId
+	const pendingEffect = damageParams !== transaction.rootParams
 		? Object.assign(effect, {
 			actorUuid: actor.uuid,
 			actorId: actor.id,
@@ -198,7 +207,9 @@ export async function applyDamageInTransaction(actor, damageParams, parentParams
 	try {
 		return await actor.applyDamage(damageParams);
 	} finally {
-		damageTransactionState.params.delete(damageParams);
+		if (damageParams !== transaction.rootParams) {
+			damageTransactionState.params.delete(damageParams);
+		}
 		if (pendingEffect) {
 			const index = transaction.pending.indexOf(pendingEffect);
 			if (index >= 0) transaction.pending.splice(index, 1);
@@ -207,16 +218,18 @@ export async function applyDamageInTransaction(actor, damageParams, parentParams
 }
 
 function getDamageApplicationBatchKey(application) {
-	const { actor, damageParams, secret = false } = application;
+	const { actor, damageParams, effect, secret = false } = application;
 	const rollOptions = damageParams.rollOptions instanceof Set
 		? [...damageParams.rollOptions]
 		: Array.isArray(damageParams.rollOptions) ? damageParams.rollOptions : [];
 	return JSON.stringify([
 		actor.uuid ?? actor.id,
+		effect?.type ?? null,
 		damageParams.token?.document?.id ?? damageParams.token?.id ?? null,
 		damageParams.item?.uuid ?? null,
 		rollOptions.map(String).sort(),
 		Boolean(damageParams.skipIWR),
+		Boolean(damageParams.shieldBlockRequest),
 		damageParams.outcome ?? null,
 		Boolean(secret)
 	]);
@@ -274,9 +287,26 @@ function getBatchedDamageEffect(applications) {
 		label: effects.map(effect => effect.label).filter(Boolean).join(", "),
 		amount: effects.reduce((total, effect) => total + (Number(effect.amount) || 0), 0),
 		sources,
+		collateralCardIds: effects.flatMap(effect => effect.collateralCardIds ?? []),
 		hidden: effects.some(effect => effect.hidden),
 		modifiers: [...new Set(effects.flatMap(effect => effect.modifiers ?? []))]
 	};
+}
+
+function findNewDamageTakenMessage(previousMessageIds, actor, damageParams) {
+	const tokenId = damageParams.token?.document?.id ?? damageParams.token?.id ?? null;
+	return (game.messages?.contents ?? []).find(message => {
+		if (
+			previousMessageIds.has(message.id) ||
+			foundry.utils.getProperty(message, `flags.${game.system.id}.context.type`) !== "damage-taken"
+		) return false;
+		const appliedDamage = foundry.utils.getProperty(
+			message,
+			`flags.${game.system.id}.appliedDamage`
+		);
+		const messageTokenId = getDamageMessageTokenId(message, message, appliedDamage);
+		return appliedDamage?.uuid === actor.uuid && (!tokenId || messageTokenId === tokenId);
+	}) ?? null;
 }
 
 async function applyDamageApplicationBatch(applications, parentParams) {
@@ -289,12 +319,21 @@ async function applyDamageApplicationBatch(applications, parentParams) {
 		));
 		if (!combinedDamage) {
 			console.error(`${MODULE_ID} | Could not combine compatible damage applications to ${actor.name}; applying them individually`);
+			const errors = [];
 			for (const application of applications) {
 				try {
 					await applyDamageApplicationBatch([application], parentParams);
 				} catch (error) {
 					console.error(`${MODULE_ID} | Failed to apply grouped damage to ${actor.name}`, error);
+					errors.push(error);
 				}
+			}
+			if (errors.length) {
+				throw new Error(
+					`Failed to apply damage to ${actor.name}: ${
+						errors.map(error => error instanceof Error ? error.message : String(error)).join("; ")
+					}`
+				);
 			}
 			return;
 		}
@@ -306,7 +345,15 @@ async function applyDamageApplicationBatch(applications, parentParams) {
 		damageParams = {
 			...damageParams,
 			damage: combinedDamage,
-			vursDamageModifiers: modifiers
+			vursDamageModifiers: modifiers,
+			vursDamageBatchComponents: applications.flatMap(({ damageParams }) =>
+				damageParams.vursDamageBatchComponents ?? [{
+					damage: damageParams.damage,
+					item: damageParams.item,
+					rollOptions: damageParams.rollOptions,
+					vursDamageModifiers: damageParams.vursDamageModifiers
+				}]
+			)
 		};
 	}
 
@@ -314,11 +361,17 @@ async function applyDamageApplicationBatch(applications, parentParams) {
 	const healthBefore = currentHealthPool(actor);
 	const apply = first.apply ?? ((targetActor, params, rootParams, targetEffect) =>
 		applyDamageInTransaction(targetActor, params, rootParams, targetEffect));
+	const previousMessageIds = new Set(
+		(game.messages?.contents ?? []).map(message => message.id)
+	);
 	await apply(actor, damageParams, parentParams, effect);
 	const healthAfter = currentHealthPool(actor);
 	if (healthBefore !== null && healthAfter !== null) {
 		effect.amount = Math.max(0, healthBefore - healthAfter);
 	}
+	const receivedMessage = findNewDamageTakenMessage(previousMessageIds, actor, damageParams);
+	if (receivedMessage) effect.receivedMessageId = receivedMessage.id;
+	for (const application of applications) application.onApplied?.(effect);
 }
 
 export async function applyDamageApplications(applications, parentParams) {
@@ -329,15 +382,16 @@ export async function applyDamageApplications(applications, parentParams) {
 		const actorKey = application.actor.uuid ?? application.actor.id;
 		const actorApplications = byActor.get(actorKey) ?? [];
 		const key = getDamageApplicationBatchKey(application);
-		const lastBatch = actorApplications.at(-1);
-		if (lastBatch?.key === key) {
-			lastBatch.applications.push(application);
+		const matchingBatch = actorApplications.find(batch => batch.key === key);
+		if (matchingBatch) {
+			matchingBatch.applications.push(application);
 		} else {
 			actorApplications.push({ key, applications: [application] });
 		}
 		byActor.set(actorKey, actorApplications);
 	}
 
+	const errors = [];
 	await Promise.all([...byActor.values()].map(async batches => {
 		const actor = batches[0].applications[0].actor;
 		for (const batch of batches) {
@@ -347,9 +401,17 @@ export async function applyDamageApplications(applications, parentParams) {
 				);
 			} catch (error) {
 				console.error(`${MODULE_ID} | Failed to apply grouped damage to ${actor.name}`, error);
+				errors.push(error);
 			}
 		}
 	}));
+	if (errors.length) {
+		throw new Error(
+			`Failed to apply damage to ${errors.length} target${errors.length === 1 ? "" : "s"}: ${
+				errors.map(error => error instanceof Error ? error.message : String(error)).join("; ")
+			}`
+		);
+	}
 }
 
 function getDamageMessageTokenId(message, data, appliedDamage) {
@@ -398,11 +460,9 @@ function installDamageTransactionHooks() {
 
 		const activeTransactions = [...damageTransactionState.active];
 		for (const transaction of activeTransactions) {
-			const pendingEffects = transaction.rootMessageId
-				? [...transaction.pending].reverse().filter(effect =>
-					Boolean(tokenId) && effect.tokenId === tokenId
-				)
-				: [];
+			const pendingEffects = [...transaction.pending].reverse().filter(effect =>
+				Boolean(tokenId) && effect.tokenId === tokenId
+			);
 			const actorMatches = !tokenId
 				? [...transaction.pending].reverse().filter(effect =>
 					Boolean(actorUuid) && effect.actorUuid === actorUuid ||
@@ -422,6 +482,10 @@ function installDamageTransactionHooks() {
 						pendingEffect.hidden = true;
 					}
 					pendingEffect.appliedDamage = foundry.utils.deepClone(appliedDamage);
+					if (typeof data.content === "string") {
+						pendingEffect.receivedHtml = data.content;
+					}
+					pendingEffect.receivedMessageId = message.id ?? data._id ?? null;
 					if (!transaction.effects.includes(pendingEffect)) {
 						transaction.effects.push(pendingEffect);
 					}
@@ -437,11 +501,7 @@ function installDamageTransactionHooks() {
 				((Boolean(actorUuid) && transaction.rootActorUuid === actorUuid) ||
 					(Boolean(actorId) && transaction.rootActorId === actorId)))
 		);
-		const transaction = rootCandidates.length === 1
-			? rootCandidates[0]
-			: rootCandidates.length === 0 && unassignedTransactions.length === 1
-				? unassignedTransactions[0]
-				: null;
+		const transaction = rootCandidates.length === 1 ? rootCandidates[0] : null;
 		if (transaction) {
 			transaction.rootMessageId = message.id ?? data._id;
 			transaction.rootMessagePending = true;
@@ -468,11 +528,7 @@ function installDamageTransactionHooks() {
 			: (Boolean(actorUuid) && transaction.rootActorUuid === actorUuid) ||
 				(Boolean(actorId) && transaction.rootActorId === actorId)
 		);
-		const transaction = rootCandidates.length === 1
-			? rootCandidates[0]
-			: rootCandidates.length === 0 && activeTransactions.length === 1
-				? activeTransactions[0]
-				: null;
+		const transaction = rootCandidates.length === 1 ? rootCandidates[0] : null;
 		if (!transaction) return;
 
 		transaction.rootMessageId = message.id;
@@ -497,8 +553,9 @@ async function finalizeDamageTransaction(transaction) {
 			}
 		}
 		if (pass === 0 && !transaction.collateralApplications?.length &&
-			!transaction.damageReturnRequests?.length && !transaction.lifestealRequests?.length &&
-			!transaction.damageApplications?.length) {
+			!transaction.damageReturnRequests?.length &&
+			!transaction.damageApplications?.length &&
+			!transaction.lifestealRequests?.length) {
 			break;
 		}
 	}
@@ -518,34 +575,6 @@ async function finalizeQueuedDamageApplications(transaction) {
 }
 
 registerDamageTransactionFinalizer(finalizeQueuedDamageApplications, "apply");
-
-async function finalizeLifestealHealing(transaction) {
-	if (!transaction.lifestealRequests?.length) return;
-
-	const requestsByActor = new Map();
-	for (const request of transaction.lifestealRequests.splice(0)) {
-		const requests = requestsByActor.get(request.attacker.uuid) ?? [];
-		requests.push(request);
-		requestsByActor.set(request.attacker.uuid, requests);
-	}
-
-	await Promise.all([...requestsByActor.values()].map(async requests => {
-		const attacker = requests[0].attacker;
-		const healing = requests.reduce((total, request) => total + request.healing, 0);
-		const sources = requests.flatMap(request => request.sources);
-		const modifiers = [...new Set(requests.flatMap(request => request.modifiers))];
-		const healingEffectiveness = requests.flatMap(request => request.healingEffectiveness ?? []);
-		await runDamageTransactionActorOperation(transaction.rootParams, attacker, () =>
-			healDamageDealer(attacker, healing, transaction.rootParams, sources, {
-				findCard: false,
-				modifiers,
-				healingEffectiveness
-			})
-		);
-	}));
-}
-
-registerDamageTransactionFinalizer(finalizeLifestealHealing, "heal");
 
 function registerLifestealLocalization() {
 	const translations = game.i18n?.translations;
@@ -667,7 +696,7 @@ export function getDamageSelectors(damage, item = null) {
 	const selectors = new Set(["damage-received"]);
 	if (item?.isOfType?.("weapon", "melee")) {
 		selectors.add("strike-damage");
-		if (item.isRanged) selectors.add("ranged-damage");
+		selectors.add(item.isRanged ? "ranged-damage" : "melee-damage");
 	}
 	const modifiers = damage?.options?.damage?.modifiers;
 	if (Array.isArray(modifiers)) {
@@ -910,7 +939,12 @@ async function healDamageDealer(
 	amount,
 	parentParams,
 	sources,
-	{ findCard = true, modifiers = [], healingEffectiveness = [] } = {}
+	{
+		findCard = true,
+		modifiers = [],
+		healingEffectiveness = [],
+		sourceCollateralCardIds = []
+	} = {}
 ) {
 	const hp = attacker?.attributes?.hp;
 	if (!hp || !Number.isFinite(amount) || amount < 0) return { healing: 0, card: null };
@@ -931,6 +965,7 @@ async function healDamageDealer(
 					actorId: attacker.id,
 					tokenId: null,
 					fullHealth: isAtFullHealth(attacker),
+					sourceCollateralCardIds,
 					modifiers
 				};
 				const transaction = damageTransactionState.params.get(parentParams);
@@ -960,6 +995,7 @@ async function healDamageDealer(
 					actorUuid: attacker.uuid,
 					actorId: attacker.id,
 					tokenId: null,
+					sourceCollateralCardIds,
 					modifiers
 				});
 			}
@@ -968,7 +1004,8 @@ async function healDamageDealer(
 	}
 
 	const healthBefore = currentHealthPool(attacker);
-	const previousMessageIds = findCard
+	const transaction = damageTransactionState.params.get(parentParams);
+	const previousMessageIds = findCard || transaction
 		? new Set((game.messages?.contents ?? []).map(message => message.id))
 		: null;
 	const effect = {
@@ -978,9 +1015,9 @@ async function healDamageDealer(
 		sources: sources.map(source => ({ ...source })),
 		healingEffectiveness,
 		targetName: token.name,
+		sourceCollateralCardIds,
 		modifiers
 	};
-	const transaction = damageTransactionState.params.get(parentParams);
 	if (
 		healingEffectiveness.length > 0 &&
 		transaction &&
@@ -1019,8 +1056,78 @@ async function healDamageDealer(
 			transaction.effects.push(effect);
 		}
 	}
-	return { healing, card: previousMessageIds ? findHealingCard(previousMessageIds, attacker) : null };
+	const card = previousMessageIds ? findHealingCard(previousMessageIds, attacker) : null;
+	const appliedDamage = card && foundry.utils.deepClone(foundry.utils.getProperty(
+		card,
+		`flags.${game.system.id}.appliedDamage`
+	));
+	if (appliedDamage) {
+		effect.appliedDamage ??= appliedDamage;
+		effect.actorUuid = attacker.uuid;
+		effect.actorId = attacker.id;
+		effect.tokenId = token.document?.id ?? token.id ?? null;
+		effect.receivedHtml = card.content;
+		effect.receivedMessageId = card.id;
+		if (transaction && !transaction.effects.includes(effect)) {
+			transaction.effects.push(effect);
+		}
+	}
+	return { healing, card, effect };
 }
+
+async function finalizeQueuedLifesteal(transaction) {
+	const requests = (transaction.lifestealRequests ?? []).splice(0);
+	const byAttacker = new Map();
+	for (const request of requests) {
+		const key = request.attacker.uuid ?? request.attacker.id;
+		const batch = byAttacker.get(key) ?? [];
+		batch.push(request);
+		byAttacker.set(key, batch);
+	}
+
+	await Promise.all([...byAttacker.values()].map(async batch => {
+		const attacker = batch[0].attacker;
+		const sourcesByLabel = new Map();
+		for (const source of batch.flatMap(request => request.sources)) {
+			const total = sourcesByLabel.get(source.label) ?? 0;
+			sourcesByLabel.set(source.label, total + source.healing);
+		}
+		const sources = [...sourcesByLabel].map(([label, healing]) => ({ label, healing }));
+		const effectivenessByLabel = new Map();
+		for (const source of batch.flatMap(request => request.healingEffectiveness)) {
+			effectivenessByLabel.set(
+				source.label,
+				(effectivenessByLabel.get(source.label) ?? 0) + source.bonus
+			);
+		}
+		const healingEffectiveness = [...effectivenessByLabel].map(([label, bonus]) => ({
+			label,
+			bonus
+		}));
+		const modifiers = [...new Set(batch.flatMap(request => request.modifiers))];
+		const sourceCollateralCardIds = [...new Set(
+			batch.flatMap(request => request.sourceCollateralCardIds)
+		)];
+		await runDamageTransactionActorOperation(
+			transaction.rootParams,
+			attacker,
+			() => healDamageDealer(
+				attacker,
+				batch.reduce((total, request) => total + request.amount, 0),
+				transaction.rootParams,
+				sources,
+				{
+					findCard: false,
+					modifiers,
+					healingEffectiveness,
+					sourceCollateralCardIds
+				}
+			)
+		);
+	}));
+}
+
+registerDamageTransactionFinalizer(finalizeQueuedLifesteal, "heal");
 
 async function applyLifesteal(actor, wrapped, args) {
 	const params = args[0];
@@ -1045,42 +1152,110 @@ async function applyLifesteal(actor, wrapped, args) {
 		const damageApplied = Math.max(0, healthBefore - healthAfter);
 		if (damageApplied === 0) return result;
 
-		const rollOptions = getDamageRollOptions(params.damage, params.rollOptions);
-		const selectors = getDamageSelectors(params.damage, params.item);
-		const { healing, sources } = getLifestealHealing(
-			attacker,
-			params.damage,
-			damage,
-			rollOptions,
-			selectors
+		const components = params.vursDamageBatchComponents?.length
+			? params.vursDamageBatchComponents
+			: [{
+				damage: params.damage,
+				item: params.item,
+				rollOptions: params.rollOptions,
+				vursDamageModifiers: params.vursDamageModifiers
+			}];
+		const damageComponents = components.map(component => {
+			const value = typeof component.damage === "number"
+				? component.damage
+				: component.damage?.total;
+			return {
+				component,
+				damage: Number.isFinite(value) && value > 0 ? value : 0
+			};
+		}).filter(component => component.damage > 0);
+		const totalComponentDamage = damageComponents.reduce((total, component) =>
+			total + component.damage, 0
 		);
-		if (healing <= 0) return result;
+		let allocatedDamage = 0;
+		const healingRequests = [];
+		for (const [index, { component, damage: componentDamage }] of damageComponents.entries()) {
+			const appliedDamage = index === damageComponents.length - 1
+				? damageApplied - allocatedDamage
+				: Math.floor(damageApplied * componentDamage / totalComponentDamage);
+			allocatedDamage += appliedDamage;
+			if (appliedDamage <= 0) continue;
 
-		const healingEffectiveness = getLifestealHealingEffectiveness(
-			attacker,
-			healing,
-			rollOptions,
-			selectors
-		);
-		const healingEffectivenessSources = healingEffectiveness.sources.map(source => ({
-			label: source.label,
-			bonus: source.bonus
-		}));
-		const adjustedHealing = healingEffectiveness.total;
-		const modifiers = getDamageModifierBreakdown(params.damage, params.vursDamageModifiers);
+			const rollOptions = getDamageRollOptions(
+				component.damage,
+				component.rollOptions ?? params.rollOptions
+			);
+			const selectors = getDamageSelectors(
+				component.damage,
+				component.item ?? params.item
+			);
+			const { healing, sources } = getLifestealHealing(
+				attacker,
+				component.damage,
+				appliedDamage,
+				rollOptions,
+				selectors
+			);
+			if (healing <= 0) continue;
+			const healingEffectiveness = getLifestealHealingEffectiveness(
+				attacker,
+				healing,
+				rollOptions,
+				selectors
+			);
+			healingRequests.push({
+				amount: healingEffectiveness.total,
+				sources,
+				healingEffectiveness: healingEffectiveness.sources.map(source => ({
+					label: source.label,
+					bonus: source.bonus
+				})),
+				modifiers: getDamageModifierBreakdown(
+					component.damage,
+					component.vursDamageModifiers ?? params.vursDamageModifiers
+				)
+			});
+		}
+		if (!healingRequests.length) return result;
+
 		const transaction = damageTransactionState.params.get(params);
 		if (transaction) {
+			const targetTokenId = params.token?.document?.id ?? params.token?.id ?? null;
+			const sourceCollateralCardIds = transaction.pending
+				.filter(effect => effect.type === "collateral" && effect.tokenId === targetTokenId)
+				.flatMap(effect => effect.collateralCardIds ?? []);
 			transaction.lifestealRequests ??= [];
-			transaction.lifestealRequests.push({
+			transaction.lifestealRequests.push(...healingRequests.map(request => ({
 				attacker,
-				healing: adjustedHealing,
-				sources,
-				modifiers,
-				healingEffectiveness: healingEffectivenessSources
-			});
+				...request,
+				sourceCollateralCardIds
+			})));
 			return result;
 		}
 
+		const sourcesByLabel = new Map();
+		for (const source of healingRequests.flatMap(request => request.sources)) {
+			sourcesByLabel.set(
+				source.label,
+				(sourcesByLabel.get(source.label) ?? 0) + source.healing
+			);
+		}
+		const sources = [...sourcesByLabel].map(([label, healing]) => ({ label, healing }));
+		const effectivenessByLabel = new Map();
+		for (const source of healingRequests.flatMap(request => request.healingEffectiveness)) {
+			effectivenessByLabel.set(
+				source.label,
+				(effectivenessByLabel.get(source.label) ?? 0) + source.bonus
+			);
+		}
+		const healingEffectivenessSources = [...effectivenessByLabel].map(([label, bonus]) => ({
+			label,
+			bonus
+		}));
+		const adjustedHealing = healingRequests.reduce((total, request) =>
+			total + request.amount, 0
+		);
+		const modifiers = [...new Set(healingRequests.flatMap(request => request.modifiers))];
 		const { healing: healed, card } = await healDamageDealer(
 			attacker,
 			adjustedHealing,

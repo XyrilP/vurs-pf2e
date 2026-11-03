@@ -5,7 +5,19 @@ import {
 } from "./features/diceless.js";
 import { installVursCriticalDamage } from "./features/vursCriticalDamage.js";
 import { appendVursPlayCostIcons, createVursPlayCostElement } from "./features/playCostIcons.js";
-import { renderVursPlayResources } from "./features/playResources.js";
+import {
+	hasVursPlayResourcesDrawer,
+	refreshVursPlayResourcesDrawer,
+	renderVursPlayResourcesDrawer
+} from "./features/playResources.js";
+import {
+	addNpcConfigurationButton,
+	renderNpcRelationshipStatistics
+} from "./features/npcConfiguration.js";
+import {
+	addNpcRestButton,
+	installNpcSheetActions
+} from "./features/npcSheetActions.js";
 import { applyFullVursSkillAttributes, applyVursHitPoints } from "./features/modes/fullVurs.js";
 import { applyAgnosticVursSkillAttributes } from "./features/modes/agnosticVurs.js";
 import {
@@ -398,15 +410,17 @@ Hooks.on("renderApplicationV2", (app, element, context, options) => {
 			app?.options?.actor,
 			context?.actor,
 			options?.actor
-		].find(candidate => isSupportedVursActor(candidate)) ??
+		].find(candidate => candidate?.documentName === "Actor" || candidate?.type === "npc") ??
 			game.actors?.contents?.find(
 				candidate =>
 					candidate.apps?.[app?.id] === app &&
-					isSupportedVursActor(candidate)
+					candidate?.type === "npc"
 			);
 
 		// Do not render Play Resources in the generic ApplicationV2 hook.
 
+		addNpcRestButton(root, actor);
+		if (!isSupportedVursActor(actor)) return;
 		reorderAttributeBuilderColumns(root, actor);
 		reorderCharacterSheetAttributes(root, actor);
 		applyActorAbilityLabels(root, actor);
@@ -420,8 +434,34 @@ Hooks.on("renderApplicationV2", (app, element, context, options) => {
 		groupVursSkillsByAttribute(root, actor, localizeDefaultAbility);
 	});
 });
+function installPf2eRollDialogCompatibility() {
+	if (typeof globalThis.libWrapper?.register !== "function") {
+		console.error(`${MODULE_ID} | Could not install PF2E roll dialog compatibility: libWrapper is unavailable`);
+		return;
+	}
+
+	try {
+		globalThis.libWrapper.register(
+			MODULE_ID,
+			"Handlebars.helpers.selectOptions",
+			function (wrapped, choices, options) {
+				const messageModes = options?.data?.root?.messageModes;
+				if (choices === undefined && messageModes) {
+					return wrapped(messageModes, options);
+				}
+				return wrapped(choices, options);
+			},
+			"WRAPPER"
+		);
+	} catch (error) {
+		console.error(`${MODULE_ID} | Failed to install PF2E roll dialog compatibility`, error);
+	}
+}
+Hooks.once("ready", installPf2eRollDialogCompatibility);
+Hooks.once("ready", installNpcSheetActions);
 Hooks.on("renderActorSheet", (app, html) => {
 	installActorDamageActionContext(app?.actor);
+	addNpcRestButton(html, app?.actor);
 	applyActorSheetPresentation(app, html);
 });
 Hooks.on("renderItemSheet", (app, html) => addVursAbilityCostField(app, html));
@@ -444,7 +484,10 @@ Hooks.on("preUpdateItem", (item, changes) => {
 	changes.flags.vurs ??= {};
 	changes.flags.vurs["-=playCost"] = null;
 });
-Hooks.on("renderApplication", (app, html) => applyActorSheetPresentation(app, html));
+Hooks.on("renderApplication", (app, html) => {
+	if (app?.actor || app?.document?.documentName === "Actor" || app?.object?.documentName === "Actor") return;
+	applyActorSheetPresentation(app, html);
+});
 
 function syncVursConditionFlagsFromItem(item) {
 	if (item?.type !== "condition") return;
@@ -529,18 +572,13 @@ Hooks.on("updateActor", (actor, changes, options = {}) => {
 		applyBrokenState(root, actor);
 		applyCooldownChargeUpState(root, actor);
 
-		// Refresh only applications already identified as VURS actor sheets.
-		if (
-			root?.querySelector?.(
-				".vurs-play-resources, [data-vurs-play-resources]"
-			)
-		) {
+		if (hasVursPlayResourcesDrawer(root)) {
 			if (scheduledPlayResourceRefreshes.has(root)) continue;
 			scheduledPlayResourceRefreshes.set(root, true);
 			requestAnimationFrame(() => {
 				scheduledPlayResourceRefreshes.delete(root);
 				if (!root.isConnected) return;
-				renderVursPlayResources(root, actor);
+				refreshVursPlayResourcesDrawer(root, actor);
 				addVursMaxHpReductionControl(root, actor);
 			});
 		}
@@ -584,9 +622,13 @@ function applyActorSheetPresentation(app, element) {
 		app?.document?.actor,
 		app?.document,
 		app?.object
-	].find(candidate => isSupportedVursActor(candidate));
+	].find(candidate => candidate?.documentName === "Actor" || candidate?.type === "npc");
 	if (!root || !actor) return;
-	renderVursPlayResources(root, actor);
+	addNpcRestButton(root, actor);
+	if (!isSupportedVursActor(actor)) return;
+	renderVursPlayResourcesDrawer(root, actor);
+	addNpcConfigurationButton(root, actor);
+	renderNpcRelationshipStatistics(root, actor);
 	applyDisarmedStrikeState(root, actor);
 	applySilencedState(root, actor);
 	applyDragonblightState(root, actor);
@@ -610,27 +652,39 @@ function applyActorSheetPresentation(app, element) {
 	replaceVursPlayCostTokensOnActorSheet(root, actor);
 	if (!root.dataset.vursPlayResourceTokenObserver) {
 		root.dataset.vursPlayResourceTokenObserver = "true";
-		const observer = new MutationObserver(() => {
-			applySilencedState(root, actor);
-			applyDragonblightState(root, actor);
-			applyMutedState(root, actor);
-			applyConfusedState(root, actor);
-			applyFatiguedState(root, actor);
-			applyRootedState(root, actor);
-			applyImmobilizedState(root, actor);
-			applyProneState(root, actor);
-			applyRestrainedState(root, actor);
-			applyActingStatusState(root, actor, "staggered");
-			applyParalyzedState(root, actor);
-			applyActingStatusState(root, actor, "unconscious");
-			applyActingStatusState(root, actor, "cantAct");
-			applyActingStatusState(root, actor, "incapacitated");
-			applyActingStatusState(root, actor, "petrified");
-			applyActingStatusState(root, actor, "stunned");
-			applyBrokenState(root, actor);
-			applyCooldownChargeUpState(root, actor);
-			replaceVursPlayResourceTokens(root, actor);
-			replaceVursPlayCostTokensOnActorSheet(root, actor);
+		let updateScheduled = false;
+		let observer;
+		observer = new MutationObserver(() => {
+			if (updateScheduled) return;
+			updateScheduled = true;
+			requestAnimationFrame(() => {
+				updateScheduled = false;
+				if (!root.isConnected) {
+					observer.disconnect();
+					delete root.dataset.vursPlayResourceTokenObserver;
+					return;
+				}
+				applySilencedState(root, actor);
+				applyDragonblightState(root, actor);
+				applyMutedState(root, actor);
+				applyConfusedState(root, actor);
+				applyFatiguedState(root, actor);
+				applyRootedState(root, actor);
+				applyImmobilizedState(root, actor);
+				applyProneState(root, actor);
+				applyRestrainedState(root, actor);
+				applyActingStatusState(root, actor, "staggered");
+				applyParalyzedState(root, actor);
+				applyActingStatusState(root, actor, "unconscious");
+				applyActingStatusState(root, actor, "cantAct");
+				applyActingStatusState(root, actor, "incapacitated");
+				applyActingStatusState(root, actor, "petrified");
+				applyActingStatusState(root, actor, "stunned");
+				applyBrokenState(root, actor);
+				applyCooldownChargeUpState(root, actor);
+				replaceVursPlayResourceTokens(root, actor);
+				replaceVursPlayCostTokensOnActorSheet(root, actor);
+			});
 		});
 		observer.observe(root, { childList: true, subtree: true });
 	}
@@ -2042,8 +2096,9 @@ function installVursPlayCostRefreshPatch() {
 }
 
 function installActorVursPreparation(actor, reprepare = true) {
-	if (!actor?.isOfType?.("character")) return;
-	registerVursCharacterPreparationWrappers();
+	if (actor?.isOfType?.("character")) registerVursCharacterPreparationWrappers();
+	else if (actor?.isOfType?.("npc")) registerVursNpcPreparationWrappers();
+	else return;
 	if (reprepare) actor.prepareData?.();
 }
 
@@ -2223,6 +2278,32 @@ function registerVursCharacterPreparationWrappers(actorClass = CONFIG.PF2E?.Acto
 		if (!baseDamageMethods.has(method)) registerActorPreparationWrapper(actorClass, method, wrapper);
 	}
 
+}
+
+function registerVursNpcPreparationWrappers(actorClass = CONFIG.PF2E?.Actor?.documentClasses?.npc) {
+	if (!actorClass?.prototype) return;
+	if (typeof globalThis.libWrapper?.register !== "function") return;
+	const wrappers = {
+		preparePerception: function (wrapped, ...args) {
+			const usesVurs = actorUsesVursSystem(this);
+			if (usesVurs) addSavingThrowRuleSupport(this, ["perception"]);
+			const result = wrapped(...args);
+			if (usesVurs) addSavingThrowDomains(this, "perception");
+			return result;
+		},
+		prepareSkills: function (wrapped, ...args) {
+			const usesVurs = actorUsesVursSystem(this);
+			if (usesVurs) addSavingThrowRuleSupport(this, ["acquisition", "soul"]);
+			const result = wrapped(...args);
+			if (usesVurs) {
+				for (const slug of ["acquisition", "soul"]) addSavingThrowDomains(this, slug);
+			}
+			return result;
+		}
+	};
+	for (const [method, wrapper] of Object.entries(wrappers)) {
+		registerActorPreparationWrapper(actorClass, method, wrapper);
+	}
 }
 
 function registerActorPreparationWrapper(actorClass, method, wrapper) {
@@ -2430,7 +2511,8 @@ function addSavingThrowRuleSupport(actor, slugs) {
 }
 
 function addSavingThrowDomains(actor, slug) {
-	const current = actor.skills?.[slug];
+	const isPerception = slug === "perception";
+	const current = isPerception ? actor.perception : actor.skills?.[slug];
 	if (!current?.data) return;
 
 	// Rebuild the Statistic after extending its domains. Mutating the prepared
@@ -2443,12 +2525,15 @@ function addSavingThrowDomains(actor, slug) {
 	data.rollOptions = [...new Set([...(data.rollOptions ?? []), "saving-throw", `saving-throw:${slug}`])];
 
 	const statistic = new current.constructor(actor, data, current.config);
-	actor.skills[slug] = statistic;
-	const systemData = actor.system.skills?.[slug];
+	if (isPerception) actor.perception = statistic;
+	else actor.skills[slug] = statistic;
+	const systemData = isPerception ? actor.system.perception : actor.system.skills?.[slug];
 	if (systemData) {
-		actor.system.skills[slug] = Object.assign({}, systemData, statistic.getTraceData(), {
+		const updatedSystemData = Object.assign({}, systemData, statistic.getTraceData(), {
 			mod: statistic.check.mod
 		});
+		if (isPerception) actor.system.perception = updatedSystemData;
+		else actor.system.skills[slug] = updatedSystemData;
 	}
 }
 
@@ -2534,14 +2619,32 @@ function reorderAttributeBuilderColumns(element, actor) {
 function reorderCharacterSheetAttributes(element, actor) {
 	if (!actorUsesVursSystem(actor)) return;
 	const root = element instanceof HTMLElement ? element : element?.[0];
-	const lists = root?.matches?.(".subsection.attributes ul")
+	const selectors = [
+		".subsection.attributes ul",
+		".attribute-modifiers .section-body .list"
+	].join(", ");
+	const lists = root?.matches?.(selectors)
 		? [root]
-		: [...(root?.querySelectorAll?.(".subsection.attributes ul") ?? [])];
+		: [...(root?.querySelectorAll?.(selectors) ?? [])];
 	for (const list of lists) {
 		const order = ["str", "dex", "con", "int", "cha", "wis"];
-		const spirit = list.querySelector(':scope > li[data-attribute="wis"]');
-		const voidAttribute = list.querySelector(':scope > li[data-attribute="cha"]');
-		if (spirit && voidAttribute) spirit.before(voidAttribute);
+		const npcAttributes = list.matches(".attribute-modifiers .section-body .list");
+		const spiritSelector = npcAttributes ? ':scope > [data-attribute="wis"]' : ':scope > li[data-attribute="wis"]';
+		const voidSelector = npcAttributes ? ':scope > [data-attribute="cha"]' : ':scope > li[data-attribute="cha"]';
+		const spiritAttribute = list.querySelector(spiritSelector);
+		const voidAttribute = list.querySelector(voidSelector);
+		if (npcAttributes) {
+			if (spiritAttribute && voidAttribute) voidAttribute.before(spiritAttribute);
+			for (const [index, slug] of order.entries()) {
+				const item = list.querySelector(`:scope > [data-attribute="${slug}"]`);
+				if (!item) continue;
+				list.append(item);
+				item.style.gridColumn = String(index % 3 + 1);
+				item.style.gridRow = String(Math.floor(index / 3) + 1);
+			}
+			continue;
+		}
+		if (spiritAttribute && voidAttribute) spiritAttribute.before(voidAttribute);
 		const items = [...list.querySelectorAll(":scope > li[data-attribute]")];
 		for (const item of items) {
 			const position = order.indexOf(item.dataset.attribute);

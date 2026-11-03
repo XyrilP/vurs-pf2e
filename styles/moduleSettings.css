@@ -71,3 +71,27 @@
 .vurs-feature-settings-content .form-footer {
   margin-top: 1rem;
 }
+
+#vurs-pf2e-auto-clicker-settings .window-content {
+  padding: 0;
+}
+
+.vurs-auto-clicker-settings-content {
+  padding: 1rem;
+  overflow: auto;
+}
+
+.vurs-auto-clicker-settings-content .form-group {
+  padding: 0.65rem 0;
+  border-bottom: 1px solid var(--color-border-light-primary);
+}
+
+.vurs-auto-clicker-settings-content .form-group > p {
+  flex: 0 0 100%;
+  margin: 0.35rem 0 0;
+  font-size: var(--font-size-small);
+}
+
+.vurs-auto-clicker-settings-content .form-footer {
+  margin-top: 1rem;
+}

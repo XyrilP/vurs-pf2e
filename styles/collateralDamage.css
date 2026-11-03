@@ -38,3 +38,41 @@
 	margin-left: auto;
 	white-space: nowrap;
 }
+
+.chat-message .message-content .damage-taken .vurs-apply-all-secondary-damage {
+	margin-block: 0.25em;
+}
+
+.chat-message .message-content .vurs-collateral-damage-card,
+.chat-message .message-content .vurs-secondary-damage-card {
+	border-left: 2px solid var(--color-border-light-2);
+	margin: 0.25em 0 0 1em;
+	padding-left: 0.5em;
+}
+
+.chat-message .message-content .vurs-collateral-damage-content {
+	padding: 0.25em 0 0.25em 0.5em;
+}
+
+.chat-message .message-content .vurs-collateral-damage-content .damage-roll {
+	margin: 0;
+}
+
+.chat-message .message-content .vurs-collateral-damage-apply {
+	margin-top: 0.25em;
+}
+
+.chat-message .message-content .vurs-collateral-damage-applied {
+	font-style: italic;
+}
+
+.chat-message .message-content .vurs-burst-fire-damage-controls {
+	display: flex;
+	flex-wrap: wrap;
+	gap: 0.25em;
+	margin-top: 0.5em;
+}
+
+.chat-message .message-content .vurs-burst-fire-damage-controls > .vurs-collateral-damage-card {
+	flex-basis: 100%;
+}

@@ -1,26 +1,23 @@
 import { getEffectiveStrikeMAP } from "./attackSpeed.js";
-import {
-	applyDamageInTransaction,
-	getDamageModifierBreakdown,
-	runDamageTransaction
-} from "./lifesteal.js";
+import { getDamageModifierBreakdown } from "./lifesteal.js";
 import { createVursPlayCostElement } from "./playCostIcons.js";
 import {
-	applyBurstFireCollateralDamage,
-	applyPreparedCollateralDamageBatch,
 	displayCollateralArea,
 	getTokenCenter,
 	getTokenDistance,
 	getPlacementGeometries,
 	getTokensInCollateralShape,
+	prepareBurstFireDamage,
 } from "./collateralDamage.js";
 
 const MODULE_ID = "vurs-pf2e";
 const PREPARE_ATTACKS_WRAPPER = Symbol.for(`${MODULE_ID}.burstFirePrepareAttacks`);
 const AUTOMATIC_TRAIT = "automatic";
+const BURST_FIRE_ROLL_CONCURRENCY = 4;
 const DEGREE_OF_SUCCESS = ["criticalFailure", "failure", "success", "criticalSuccess"];
 const preparedBurstFires = new Map();
 const actorSheetRoots = new WeakSet();
+const weaponSheetRoots = new WeakSet();
 
 const BURST_FIRE_TRANSLATIONS = {
 	Title: "Burst-Fire",
@@ -29,8 +26,11 @@ const BURST_FIRE_TRANSLATIONS = {
 	RateOfFireShort: "RoF {shots}",
 	RateOfFire: "Rate of Fire",
 	Recoil: "Recoil",
+	Calculated: "Calculated",
+	Base: "Base",
+	Adjustment: "Adjustment",
 	AtMAP: "at MAP {map}",
-	Description: "<p><strong>Cost</strong> 2 actions</p><p>Click Burst-Fire to prepare it, then click this weapon's Strike at the desired MAP to fire. Click Burst-Fire again to cancel. Rate of Fire is 3 + (5 - MAP), to a minimum of 0 shots, and is capped by available ammunition. Each projectile uses the selected Strike's MAP, then increases MAP normally for later projectiles. Each projectile is a separate Strike and uses normal range-increment penalties. Subsequent Strikes and all damage resolve automatically after the first Strike.</p><p>The Recoil Area is a cone aimed at the target, with a distance equal to the weapon's maximum range. Its spread is 5 degrees plus 5 degrees per Recoil. Recoil is 10 minus the weapon's Bulk (minimum 0), halved and rounded down for a weapon listed as two-handed.</p><p>On a miss, the projectile diverts to the nearest other creature in the cone, including allies, and deals half damage. Each possible secondary target is selected once before the burst cycles back to previously selected targets. A critical miss deals no secondary damage.</p>",
+	Description: "<p><strong>Cost</strong> 2 actions</p><p>Click Burst-Fire to prepare it, then click this weapon's Strike at the desired MAP to fire. Click Burst-Fire again to cancel. Rate of Fire is 3 + (5 - MAP), to a minimum of 0 shots, and is capped by available ammunition. Each projectile uses the selected Strike's MAP, then increases MAP normally for later projectiles. Each projectile is a separate Strike and uses normal range-increment penalties. Subsequent Strikes resolve automatically after the first Strike; all damage is calculated first and requires the GM to click Apply All Damage.</p><p>The Recoil Area is a cone aimed at the target, with a distance equal to the weapon's maximum range. Its spread is 5 degrees plus 5 degrees per Recoil. Recoil is 10 minus the weapon's Bulk (minimum 0), halved and rounded down for a weapon listed as two-handed.</p><p>On a miss, the projectile diverts to the nearest other creature in the cone, including allies, and deals half damage. Each possible secondary target is selected once before the burst cycles back to previously selected targets. A critical miss deals no secondary damage.</p>",
 	VariantLabel: "Burst-Fire (RoF {shots})",
 	Warnings: {
 		SelectTarget: "Select a target to direct the Burst-Fire cone.",
@@ -41,7 +41,9 @@ const BURST_FIRE_TRANSLATIONS = {
 		AmmoChanged: "Burst-Fire ammunition changed before the projectile could be expended.",
 		ChatFailed: "Could not create the Burst-Fire chat card.",
 		DamageFailed: "Could not generate or apply Burst-Fire damage.",
-		RollFailed: "Burst-Fire stopped because one of its Strikes could not be completed."
+		RollFailed: "Burst-Fire stopped because one of its Strikes could not be completed.",
+		InvalidStat: "Rate of Fire and Recoil must be non-negative whole numbers.",
+		StatUpdateFailed: "Could not update Burst-Fire {stat}."
 	},
 	Notes: {
 		Shot: "Strike {number}: {outcome} — {target}",
@@ -64,6 +66,21 @@ function registerBurstFireLocalization() {
 		}
 	};
 	register(BURST_FIRE_TRANSLATIONS, "VURS.BurstFire");
+}
+
+async function mapConcurrent(values, concurrency, callback) {
+	const results = new Array(values.length);
+	let nextIndex = 0;
+	await Promise.all(Array.from(
+		{ length: Math.min(concurrency, values.length) },
+		async () => {
+			while (nextIndex < values.length) {
+				const index = nextIndex++;
+				results[index] = await callback(values[index], index);
+			}
+		}
+	));
+	return results;
 }
 
 function updatePreparedBurstFireButton(root, strikeElement, isPrepared, actor) {
@@ -247,7 +264,8 @@ function getRateOfFire(actor, strike) {
 		? getEffectiveStrikeMAP(strike, mapIndex, actor)
 		: null;
 	if (!Number.isFinite(effectiveMAP)) return null;
-	return Math.max(0, Math.floor(3 + (5 - effectiveMAP)));
+	const base = getBaseRateOfFire(strike?.item, effectiveMAP);
+	return Math.max(0, base + getBurstFireAdjustment(strike?.item, "rateOfFire"));
 }
 
 function getWeaponMaxRange(weapon) {
@@ -268,11 +286,10 @@ function getBurstFirePathSpeed(weapon) {
 }
 
 function getRecoil(weapon) {
-	const bulk = Number(weapon.system.bulk?.value);
-	const numericBulk = Number.isFinite(bulk) && bulk >= 1 ? Math.floor(bulk) : 0;
-	const recoil = Math.max(0, 10 - numericBulk);
-	const usage = weapon.usage?.value ?? weapon.system.usage?.value;
-	return usage === "held-in-two-hands" ? Math.floor(recoil / 2) : recoil;
+	return Math.max(
+		0,
+		getBaseRecoil(weapon) + getBurstFireAdjustment(weapon, "recoil")
+	);
 }
 
 function getTargetToken(target) {
@@ -495,165 +512,6 @@ async function applyStrikeDamage(
 	};
 }
 
-function getCurrentHealthPool(actor) {
-	const hp = actor?.attributes?.hp;
-	if (!hp) return null;
-	const staminaEnabled =
-		game[game.system.id]?.settings?.variants?.stamina ?? game.pf2e?.settings?.variants?.stamina;
-	return Number(hp.value ?? 0) + Number(hp.temp ?? 0) +
-		(staminaEnabled ? Number(hp.sp?.value ?? 0) : 0);
-}
-
-function combineBurstFireDamageRolls(applications) {
-	const DamageRoll = CONFIG.Dice?.rolls?.find(rollClass => rollClass.name === "DamageRoll");
-	if (!DamageRoll) return null;
-
-	const validTypes = new Set(Object.keys(
-		CONFIG[game.system.id.toUpperCase()]?.damageTypes ?? CONFIG.PF2E?.damageTypes ?? {}
-	));
-	const parts = [];
-	for (const application of applications) {
-		for (const instance of application.damageParams.damage?.instances ?? []) {
-			const amount = Number(instance.total);
-			if (!Number.isFinite(amount) || amount <= 0) continue;
-			if (instance.critRule != null) return null;
-			const type = validTypes.has(instance.type) ? instance.type : "untyped";
-			const qualifiers = [];
-			if (type !== "untyped") qualifiers.push(type);
-			if (instance.persistent) qualifiers.push("persistent");
-			for (const material of instance.materials ?? []) {
-				if (typeof material === "string" && /^[a-z0-9-]+$/i.test(material)) {
-					qualifiers.push(material);
-				}
-			}
-			parts.push(qualifiers.length
-				? `${amount}[${[...new Set(qualifiers)].join(",")}]`
-				: `${amount}`);
-		}
-	}
-	if (!parts.length) return null;
-	return new DamageRoll(`{${parts.join(", ")}}`).evaluateSync();
-}
-
-function getCombinedBurstFireDamageParams(applications) {
-	const [first] = applications;
-	const damage = combineBurstFireDamageRolls(applications);
-	if (!damage) return null;
-
-	const rollOptionSets = applications.map(({ damageParams }) =>
-		damageParams.rollOptions instanceof Set
-			? damageParams.rollOptions
-			: new Set(Array.isArray(damageParams.rollOptions) ? damageParams.rollOptions : [])
-	);
-	const rollOptions = new Set([...rollOptionSets[0]].filter(option =>
-		rollOptionSets.every(options => options.has(option))
-	));
-	const outcomes = new Set(applications.map(application => application.damageParams.outcome));
-	const effects = applications.map(application => application.effect);
-	const damageModifiers = [...new Set(applications.flatMap(({ damageParams }) =>
-		getDamageModifierBreakdown(
-			damageParams.damage,
-			damageParams.vursDamageModifiers
-		) ?? []
-	))];
-	return {
-		damageParams: {
-			...first.damageParams,
-			damage,
-			rollOptions,
-			outcome: outcomes.size === 1 ? first.damageParams.outcome : null,
-			vursDamageModifiers: damageModifiers.length
-				? damageModifiers
-				: first.damageParams.vursDamageModifiers,
-			vursBurstFireCollateralHandled: true
-		},
-		effect: {
-			type: "burst-fire",
-			label: first.effect.label,
-			amount: effects.reduce((total, effect) => total + effect.amount, 0),
-			sources: effects.map(effect => ({ label: effect.label, damage: effect.amount })),
-			targetName: first.effect.targetName,
-			hidden: effects.some(effect => effect.hidden)
-		}
-	};
-}
-
-async function applyBurstFireDamage(applications, primaryTarget) {
-	if (applications.length === 0) return;
-	const primaryTokenId = getTokenDocument(primaryTarget)?.id;
-	const primaryApplications = primaryTokenId
-		? applications.filter(application =>
-			getTokenDocument(application.damageParams.token)?.id === primaryTokenId
-		)
-		: [];
-	const otherApplications = primaryTokenId
-		? applications.filter(application =>
-			getTokenDocument(application.damageParams.token)?.id !== primaryTokenId
-		)
-		: applications.slice(1);
-	const combinedPrimary = primaryApplications.length > 1
-		? getCombinedBurstFireDamageParams(primaryApplications)
-		: null;
-	const root = combinedPrimary
-		? primaryApplications[0]
-		: applications[0];
-	await runDamageTransaction(root.actor, root.damageParams, async rootParams => {
-		const collateralApplications = [];
-		try {
-			if (combinedPrimary) {
-				const actor = primaryApplications[0].actor;
-				const healthBefore = getCurrentHealthPool(actor);
-				const { damageParams, effect } = combinedPrimary;
-				await applyDamageInTransaction(actor, damageParams, rootParams, effect);
-				const healthAfter = getCurrentHealthPool(actor);
-				if (healthBefore !== null && healthAfter !== null) {
-					effect.amount = Math.max(0, healthBefore - healthAfter);
-				}
-				await applyBurstFireCollateralDamage(
-					actor,
-					damageParams,
-					damageParams.damage.total,
-					effect.amount,
-					rootParams,
-					collateralApplications
-				);
-			}
-
-			const applicationsToApply = combinedPrimary
-				? otherApplications
-				: applications;
-			for (const application of applicationsToApply) {
-				const healthBefore = getCurrentHealthPool(application.actor);
-				application.damageParams.vursBurstFireCollateralHandled = true;
-				if (application === root) {
-					await application.actor.applyDamage(application.damageParams);
-				} else {
-					await applyDamageInTransaction(
-						application.actor,
-						application.damageParams,
-						rootParams,
-						application.effect
-					);
-				}
-				const healthAfter = getCurrentHealthPool(application.actor);
-				if (healthBefore !== null && healthAfter !== null) {
-					application.effect.amount = Math.max(0, healthBefore - healthAfter);
-				}
-				await applyBurstFireCollateralDamage(
-					application.actor,
-					application.damageParams,
-					healthBefore,
-					healthAfter,
-					rootParams,
-					collateralApplications
-				);
-			}
-		} finally {
-			await applyPreparedCollateralDamageBatch(collateralApplications, rootParams);
-		}
-	});
-}
-
 async function renderShotResult(index, attackRoll, outcome, target, damageRoll, note) {
 	const details = document.createElement("details");
 	details.className = "vurs-burst-fire-shot";
@@ -661,7 +519,9 @@ async function renderShotResult(index, attackRoll, outcome, target, damageRoll, 
 	summary.textContent = `${game.i18n.format("VURS.BurstFire.Notes.Shot", {
 		number: index + 1,
 		outcome: getOutcomeLabel(outcome),
-		target: target?.name ?? game.i18n.localize("VURS.BurstFire.Notes.NoDamageTarget")
+		target: target?.hidden || target?.object?.isVisible === false
+			? "Hidden creature"
+			: target?.name ?? game.i18n.localize("VURS.BurstFire.Notes.NoDamageTarget")
 	})}`;
 	details.append(summary);
 
@@ -674,6 +534,7 @@ async function renderShotResult(index, attackRoll, outcome, target, damageRoll, 
 		const damageContent = document.createElement("div");
 		damageContent.className = "vurs-burst-fire-damage";
 		damageContent.innerHTML = await damageRoll.render();
+		damageContent.querySelector(".damage-application")?.remove();
 		details.append(damageContent);
 	}
 	if (note) {
@@ -782,119 +643,170 @@ async function rollBurstFire(actor, strike, startingMAP, options = {}) {
 	const shotResults = [];
 	const damageApplications = [];
 	let roundsFired = 0;
-	try {
-		for (let shot = 0; shot < shotCount; shot++) {
-			if (roundsFired >= getAmmoCount(weapon)) {
-				ui.notifications.warn(game.i18n.localize("VURS.BurstFire.Warnings.NoShots"));
-				break;
-			}
+	let attackFailed = false;
+	const attacks = await mapConcurrent(
+		Array.from({ length: shotCount }, (_, shot) => shot),
+		BURST_FIRE_ROLL_CONCURRENCY,
+		async shot => {
+			if (roundsFired >= getAmmoCount(weapon)) return { shot, skipped: true };
 			const mapIndex = Math.min(startingMAP + shot, strike.variants.length - 1);
 			const variant = strike.variants[mapIndex];
 			if (!variant?.roll) {
-				console.error(`${MODULE_ID} | Could not roll Burst-Fire projectile: Strike MAP variant ${mapIndex} is unavailable`);
-				break;
+				return {
+					shot,
+					mapIndex,
+					error: new Error(`Strike MAP variant ${mapIndex} is unavailable`)
+				};
 			}
 
-			const rollEvent = shot === 0 ? options.event : getAutomaticRollEvent("check");
 			let checkContext = null;
-			const attackRoll = await variant.roll({
-				event: rollEvent,
-				target: primaryToken,
-				consumeAmmo: false,
-				createMessage: false,
-				callback: (_roll, _outcome, message) => {
-					checkContext = foundry.utils.getProperty(
-						message,
-						`flags.${game.system.id}.context`
-					) ?? null;
-				}
-			});
-			if (!attackRoll) break;
-			if (!checkContext) {
-				console.error(`${MODULE_ID} | Burst-Fire Strike did not provide its check context; on-hit damage effects may not resolve for ${weapon.name}`);
+			try {
+				const attackRoll = await variant.roll({
+					event: shot === 0 ? options.event : getAutomaticRollEvent("check"),
+					target: primaryToken,
+					consumeAmmo: false,
+					createMessage: false,
+					callback: (_roll, _outcome, message) => {
+						checkContext = foundry.utils.getProperty(
+							message,
+							`flags.${game.system.id}.context`
+						) ?? null;
+					}
+				});
+				if (attackRoll) roundsFired++;
+				return { shot, mapIndex, attackRoll, checkContext };
+			} catch (error) {
+				return { shot, mapIndex, error };
 			}
-			roundsFired++;
+		}
+	);
 
-			const degree = attackRoll.degreeOfSuccess ?? attackRoll.options?.degreeOfSuccess;
-			const outcome = Number.isInteger(degree) ? DEGREE_OF_SUCCESS[degree] : degree;
-			if (!["success", "criticalSuccess", "failure", "criticalFailure"].includes(outcome)) {
-				throw new Error(`Unexpected Strike outcome: ${String(outcome)}`);
+	const damagePlans = [];
+	for (const attack of attacks) {
+		if (attack.skipped) {
+			ui.notifications.warn(game.i18n.localize("VURS.BurstFire.Warnings.NoShots"));
+			continue;
+		}
+		if (attack.error || !attack.attackRoll) {
+			attackFailed = true;
+			console.error(
+				`${MODULE_ID} | Could not roll Burst-Fire projectile ${attack.shot + 1} for ${weapon.name}`,
+				attack.error ?? "The Strike roll returned no result"
+			);
+			continue;
+		}
+		if (!attack.checkContext) {
+			console.error(`${MODULE_ID} | Burst-Fire Strike did not provide its check context; on-hit damage effects may not resolve for ${weapon.name}`);
+		}
+		const degree = attack.attackRoll.degreeOfSuccess ??
+			attack.attackRoll.options?.degreeOfSuccess;
+		const outcome = Number.isInteger(degree) ? DEGREE_OF_SUCCESS[degree] : degree;
+		if (!["success", "criticalSuccess", "failure", "criticalFailure"].includes(outcome)) {
+			attackFailed = true;
+			console.error(`${MODULE_ID} | Unexpected Burst-Fire Strike outcome: ${String(outcome)}`);
+			continue;
+		}
+
+		let damageTarget = null;
+		let halfDamage = false;
+		let note = null;
+		if (outcome === "success" || outcome === "criticalSuccess") {
+			damageTarget = primaryToken;
+			const path = createPath(sourceToken, primaryToken, null, shapes);
+			if (path) paths.push(path);
+		} else {
+			secondaryTargets ??= getEligibleSecondaryTargets(shapes, sourceToken, primaryToken);
+			const secondary = getNextSecondaryTarget(secondaryTargets, visited);
+			const criticalMiss = outcome === "criticalFailure";
+			if (secondary) damageTarget = secondary.object ?? secondary;
+			const path = createPath(sourceToken, secondary ?? primaryToken, null, shapes, {
+				continueToEdge: criticalMiss || !secondary,
+				extendToEdge: criticalMiss || !secondary
+			});
+			if (path) paths.push(path);
+
+			if (!secondary) {
+				note = "VURS.BurstFire.Notes.NoSecondaryTarget";
+			} else if (criticalMiss) {
+				note = "VURS.BurstFire.Notes.CriticalMiss";
+			} else {
+				halfDamage = true;
+				note = "VURS.BurstFire.Notes.HalfDamage";
 			}
-			let damageTarget = null;
-			let damageRoll = null;
-			let damageApplication = null;
-			let note = null;
-			if (outcome === "success" || outcome === "criticalSuccess") {
-				damageTarget = primaryToken;
+		}
+		damagePlans.push({
+			shot: attack.shot,
+			attackRoll: attack.attackRoll,
+			mapIndex: attack.mapIndex,
+			checkContext: attack.checkContext,
+			outcome,
+			damageTarget,
+			halfDamage,
+			note
+		});
+	}
+
+	const damageResults = await mapConcurrent(
+		damagePlans,
+		BURST_FIRE_ROLL_CONCURRENCY,
+		async plan => {
+			if (!plan.damageTarget) return { plan, damageResult: null };
+			try {
 				const damageResult = await applyStrikeDamage(
 					actor,
 					strike,
-					damageTarget,
-					mapIndex,
-					outcome,
-					false,
+					plan.damageTarget,
+					plan.mapIndex,
+					plan.halfDamage ? "success" : plan.outcome,
+					plan.halfDamage,
 					getAutomaticRollEvent("damage"),
-					checkContext,
-					getBurstFireTraceDelay(sourceToken, damageTarget, pathSpeedPixelsPerSecond),
+					plan.checkContext,
+					getBurstFireTraceDelay(sourceToken, plan.damageTarget, pathSpeedPixelsPerSecond),
 					pathSpeedPixelsPerSecond
 				);
-				damageRoll = damageResult?.damageRoll ?? null;
-				damageApplication = damageResult?.application ?? null;
-				const path = createPath(sourceToken, primaryToken, null, shapes);
-				if (path) paths.push(path);
-			} else if (outcome === "failure" || outcome === "criticalFailure") {
-				secondaryTargets ??= getEligibleSecondaryTargets(shapes, sourceToken, primaryToken);
-				const secondary = getNextSecondaryTarget(secondaryTargets, visited);
-				const criticalMiss = outcome === "criticalFailure";
-				if (secondary) damageTarget = secondary.object ?? secondary;
-				const path = createPath(sourceToken, secondary ?? primaryToken, null, shapes, {
-					continueToEdge: criticalMiss || !secondary,
-					extendToEdge: criticalMiss || !secondary
-				});
-				if (path) paths.push(path);
-
-				if (!secondary) {
-					note = "VURS.BurstFire.Notes.NoSecondaryTarget";
-				} else if (criticalMiss) {
-					note = "VURS.BurstFire.Notes.CriticalMiss";
-				} else {
-					const damageResult = await applyStrikeDamage(
-						actor,
-						strike,
-						damageTarget,
-						mapIndex,
-						"success",
-						true,
-						getAutomaticRollEvent("damage"),
-						checkContext,
-						getBurstFireTraceDelay(sourceToken, damageTarget, pathSpeedPixelsPerSecond),
-						pathSpeedPixelsPerSecond
-					);
-					damageRoll = damageResult?.damageRoll ?? null;
-					damageApplication = damageResult?.application ?? null;
-					note = "VURS.BurstFire.Notes.HalfDamage";
-				}
+				return { plan, damageResult };
+			} catch (error) {
+				return { plan, error };
 			}
-			if (damageApplication) damageApplications.push(damageApplication);
-
-			shotResults.push({
-				attackRoll,
-				outcome,
-				damageRoll,
-				target: getTokenDocument(damageTarget),
-				note
-			});
 		}
-	} catch (error) {
-		console.error(`${MODULE_ID} | Burst-Fire stopped after an error for ${weapon.name}`, error);
+	);
+	for (const { plan, damageResult, error } of damageResults) {
+		if (error) {
+			attackFailed = true;
+			console.error(`${MODULE_ID} | Could not roll Burst-Fire damage for Strike ${plan.shot + 1} with ${weapon.name}`, error);
+			shotResults.push({
+				shot: plan.shot,
+				attackRoll: plan.attackRoll,
+				outcome: plan.outcome,
+				target: getTokenDocument(plan.damageTarget),
+				note: "VURS.BurstFire.Warnings.DamageFailed"
+			});
+			continue;
+		}
+		if (plan.damageTarget && !damageResult) attackFailed = true;
+		const damageRoll = damageResult?.damageRoll ?? null;
+		const damageApplication = damageResult?.application ?? null;
+		if (damageApplication) damageApplications.push(damageApplication);
+		shotResults.push({
+			shot: plan.shot,
+			attackRoll: plan.attackRoll,
+			outcome: plan.outcome,
+			damageRoll,
+			target: getTokenDocument(plan.damageTarget),
+			note: plan.damageTarget && !damageRoll
+				? "VURS.BurstFire.Warnings.DamageFailed"
+				: plan.note
+		});
+	}
+
+	if (attackFailed) {
 		ui.notifications.error(game.i18n.localize("VURS.BurstFire.Warnings.RollFailed"));
-	} finally {
-		if (paths.length > 0 || shapes.length > 0) {
-			const traceStartedAt = performance.now();
-			displayCollateralArea(shapes, paths, 4000, 0, pathSpeedPixelsPerSecond);
-			for (const application of damageApplications) {
-				application.damageParams.vursBurstFireTraceStartedAt = traceStartedAt;
-			}
+	}
+	if (paths.length > 0 || shapes.length > 0) {
+		const traceStartedAt = performance.now();
+		displayCollateralArea(shapes, paths, 4000, 0, pathSpeedPixelsPerSecond);
+		for (const application of damageApplications) {
+			application.damageParams.vursBurstFireTraceStartedAt = traceStartedAt;
 		}
 	}
 	try {
@@ -909,7 +821,7 @@ async function rollBurstFire(actor, strike, startingMAP, options = {}) {
 	try {
 		const shotHtml = await Promise.all(shotResults.map((result, index) =>
 			renderShotResult(
-				index,
+				result.shot ?? index,
 				result.attackRoll,
 				result.outcome,
 				result.target,
@@ -925,21 +837,16 @@ async function rollBurstFire(actor, strike, startingMAP, options = {}) {
 		ui.notifications.error(game.i18n.localize("VURS.BurstFire.Warnings.ChatFailed"));
 	}
 	try {
-		await createBurstFireChatMessage(
+		const message = await createBurstFireChatMessage(
 			actor,
 			sourceToken,
 			weapon,
 			shotResults
 		);
+		await prepareBurstFireDamage(message, damageApplications);
 	} catch (error) {
 		console.error(`${MODULE_ID} | Could not create the Burst-Fire chat card for ${weapon.name}`, error);
 		ui.notifications.error(game.i18n.localize("VURS.BurstFire.Warnings.ChatFailed"));
-	}
-	try {
-		await applyBurstFireDamage(damageApplications, primaryToken);
-	} catch (error) {
-		console.error(`${MODULE_ID} | Could not apply Burst-Fire damage for ${weapon.name}`, error);
-		ui.notifications.error(game.i18n.localize("VURS.BurstFire.Warnings.DamageFailed"));
 	}
 	return null;
 }
@@ -954,6 +861,48 @@ function isAutomaticStrike(strike) {
 	return strike?.type === "strike" && traits.includes(AUTOMATIC_TRAIT);
 }
 
+function getBurstFireBaseOverride(item, stat) {
+	const burstFire = foundry.utils.getProperty(item, `flags.${MODULE_ID}.burstFire`) ?? {};
+	const baseKey = `base${stat[0].toUpperCase()}${stat.slice(1)}`;
+	const legacyKey = stat;
+	const value = Object.hasOwn(burstFire, baseKey)
+		? burstFire[baseKey]
+		: burstFire[legacyKey];
+	return Number.isInteger(value) && value >= 0 ? value : null;
+}
+
+function getBurstFireAdjustment(item, stat) {
+	const value = foundry.utils.getProperty(
+		item,
+		`flags.${MODULE_ID}.burstFire.${stat}Adjustment`
+	);
+	return Number.isInteger(value) ? value : 0;
+}
+
+function getBaseRateOfFire(item, effectiveMAP = null) {
+	const actor = item.actor ?? item.parent?.actor;
+	const strike = Array.isArray(actor?.system?.actions)
+		? actor.system.actions.find(action => action.type === "strike" && action.item?.id === item.id)
+		: null;
+	const map = Number.isFinite(effectiveMAP)
+		? effectiveMAP
+		: strike
+			? getEffectiveStrikeMAP(strike, 1, actor)
+			: 5;
+	return getBurstFireBaseOverride(item, "rateOfFire") ??
+		Math.max(0, Math.floor(3 + (5 - (Number.isFinite(map) ? map : 5))));
+}
+
+function getBaseRecoil(weapon) {
+	const override = getBurstFireBaseOverride(weapon, "recoil");
+	if (override !== null) return override;
+	const bulk = Number(weapon.system.bulk?.value);
+	const numericBulk = Number.isFinite(bulk) && bulk >= 1 ? Math.floor(bulk) : 0;
+	const recoil = Math.max(0, 10 - numericBulk);
+	const usage = weapon.usage?.value ?? weapon.system.usage?.value;
+	return usage === "held-in-two-hands" ? Math.floor(recoil / 2) : recoil;
+}
+
 function getWeaponRateOfFire(item) {
 	const actor = item.actor ?? item.parent?.actor;
 	const strike = Array.isArray(actor?.system?.actions)
@@ -961,45 +910,177 @@ function getWeaponRateOfFire(item) {
 		: null;
 	const effectiveMAP = strike ? getEffectiveStrikeMAP(strike, 1, actor) : 5;
 	const map = Number.isFinite(effectiveMAP) ? effectiveMAP : 5;
+	const baseRateOfFire = getBaseRateOfFire(item, map);
+	const rateOfFireAdjustment = getBurstFireAdjustment(item, "rateOfFire");
 	return {
-		rateOfFire: Math.max(0, Math.floor(3 + (5 - map))),
+		rateOfFire: Math.max(0, baseRateOfFire + rateOfFireAdjustment),
+		baseRateOfFire,
+		rateOfFireAdjustment,
+		baseRecoil: getBaseRecoil(item),
+		recoilAdjustment: getBurstFireAdjustment(item, "recoil"),
+		recoil: getRecoil(item),
 		effectiveMAP: map
 	};
 }
 
-function addBurstFireItemStats(app, element) {
+function addBurstFireWeaponSection(app, element) {
 	const item = app?.item ?? app?.object;
 	const root = element instanceof HTMLElement ? element : element?.[0];
-	if (!item) return;
+	if (!item || !root) return;
+	if (!weaponSheetRoots.has(root)) {
+		root.addEventListener("change", async event => {
+			const input = event.target?.closest?.(
+				"input[data-vurs-burst-fire-stat]"
+			);
+			if (!input || !root.contains(input)) return;
+			const field = input.dataset.vursBurstFireStat;
+			const rawValue = input.value.trim();
+			const value = rawValue === "" ? null : Number(rawValue);
+			const allowsNegative = field.endsWith("Adjustment");
+			if (value !== null &&
+				(!Number.isInteger(value) || (!allowsNegative && value < 0))) {
+				ui.notifications.warn(game.i18n.localize("VURS.BurstFire.Warnings.InvalidStat"));
+				addBurstFireWeaponSection(app, root);
+				return;
+			}
+
+			input.disabled = true;
+			try {
+				await item.update({
+					[`flags.${MODULE_ID}.burstFire.${field}`]: value === null
+						? new foundry.data.operators.ForcedDeletion()
+						: value
+				});
+				addBurstFireWeaponSection(app, root);
+			} catch (error) {
+				console.error(
+					`${MODULE_ID} | Could not update Burst-Fire ${field} for ${item.name}`,
+					error
+				);
+				ui.notifications.error(game.i18n.format(
+					"VURS.BurstFire.Warnings.StatUpdateFailed",
+					{
+						stat: game.i18n.localize(
+							`VURS.BurstFire.${field.toLowerCase().includes("rateoffire") ? "RateOfFire" : "Recoil"}`
+						)
+					}
+				));
+				addBurstFireWeaponSection(app, root);
+			} finally {
+				if (input.isConnected) input.disabled = false;
+			}
+		});
+		weaponSheetRoots.add(root);
+	}
+
 	if (!isAutomaticWeapon(item)) {
-		root?.querySelectorAll("[data-vurs-burst-fire-item-stat]").forEach(group => group.remove());
+		root.querySelector("[data-vurs-burst-fire-section]")?.remove();
 		return;
 	}
-	const basics = root?.querySelector(".tab.details fieldset.basics, .tab.details, .tab[data-tab='details']");
-	if (!basics) return;
+	const details = root?.querySelector(".tab.details, .tab[data-tab='details']");
+	if (!details) return;
 
-	const { rateOfFire, effectiveMAP } = getWeaponRateOfFire(item);
-	const stats = [
-		["rateOfFire", game.i18n.localize("VURS.BurstFire.RateOfFire"), `${rateOfFire} (${game.i18n.format("VURS.BurstFire.AtMAP", { map: effectiveMAP })})`],
-		["recoil", game.i18n.localize("VURS.BurstFire.Recoil"), String(getRecoil(item))]
+	const stats = getWeaponRateOfFire(item);
+	let section = details.querySelector("[data-vurs-burst-fire-section]");
+	if (!section) {
+		section = document.createElement("fieldset");
+		section.className = "vurs-burst-fire-item-settings";
+		section.dataset.vursBurstFireSection = "true";
+		const legend = document.createElement("legend");
+		legend.textContent = game.i18n.localize("VURS.BurstFire.Title");
+		section.append(legend);
+		details.append(section);
+	}
+
+	const rows = [
+		{
+			key: "rateOfFire",
+			label: game.i18n.localize("VURS.BurstFire.RateOfFire"),
+			calculated: stats.rateOfFire,
+			base: stats.baseRateOfFire,
+			adjustment: stats.rateOfFireAdjustment,
+			derivedBase: getBurstFireBaseOverride(item, "rateOfFire") === null
+				? stats.baseRateOfFire
+				: null
+		},
+		{
+			key: "recoil",
+			label: game.i18n.localize("VURS.BurstFire.Recoil"),
+			calculated: stats.recoil,
+			base: stats.baseRecoil,
+			adjustment: stats.recoilAdjustment,
+			derivedBase: getBurstFireBaseOverride(item, "recoil") === null
+				? stats.baseRecoil
+				: null
+		}
 	];
-	for (const [key, labelText, valueText] of stats) {
-		let group = basics.querySelector(`[data-vurs-burst-fire-item-stat="${key}"]`);
+	for (const row of rows) {
+		let group = section.querySelector(`[data-vurs-burst-fire-item-stat="${row.key}"]`);
 		if (!group) {
 			group = document.createElement("div");
 			group.className = "form-group";
-			group.dataset.vursBurstFireItemStat = key;
+			group.dataset.vursBurstFireItemStat = row.key;
 			const label = document.createElement("label");
-			label.textContent = labelText;
+			label.textContent = row.label;
 			const fields = document.createElement("div");
-			fields.className = "form-fields";
-			const value = document.createElement("span");
-			value.className = "vurs-burst-fire-item-stat";
-			fields.append(value);
+			fields.className = "form-fields vurs-burst-fire-stat-fields";
+			const calculated = document.createElement("output");
+			calculated.className = "vurs-burst-fire-calculated";
+			calculated.dataset.vursBurstFireCalculated = row.key;
+			label.append(document.createTextNode(" "), calculated);
+			const makeInput = (field, labelKey, min) => {
+				const wrapper = document.createElement("label");
+				wrapper.className = "vurs-burst-fire-stat-input";
+				const caption = document.createElement("span");
+				caption.textContent = game.i18n.localize(`VURS.BurstFire.${labelKey}`);
+				const input = document.createElement("input");
+				input.type = "number";
+				if (min !== null) input.min = String(min);
+				input.step = "1";
+				input.dataset.vursBurstFireStat = field;
+				if (labelKey === "Base") input.placeholder = String(row.base);
+				input.setAttribute(
+					"aria-label",
+					`${row.label} ${game.i18n.localize(`VURS.BurstFire.${labelKey}`)}`
+				);
+				wrapper.append(caption, input);
+				return wrapper;
+			};
+			fields.append(
+				makeInput(`base${row.key[0].toUpperCase()}${row.key.slice(1)}`, "Base", 0),
+				makeInput(`${row.key}Adjustment`, "Adjustment", null)
+			);
 			group.append(label, fields);
-			basics.append(group);
+			section.append(group);
 		}
-		group.querySelector(".vurs-burst-fire-item-stat").textContent = valueText;
+		const calculated = group.querySelector(
+			`[data-vurs-burst-fire-calculated="${row.key}"]`
+		);
+		const statLabel = group.querySelector(":scope > label");
+		if (calculated.parentElement !== statLabel) {
+			statLabel.append(document.createTextNode(" "), calculated);
+		}
+		calculated.textContent = String(row.calculated);
+		group.querySelector(
+			`input[data-vurs-burst-fire-stat="base${row.key[0].toUpperCase()}${row.key.slice(1)}"]`
+		).value = row.derivedBase === null ? String(row.base) : "";
+		group.querySelector(
+			`input[data-vurs-burst-fire-stat="base${row.key[0].toUpperCase()}${row.key.slice(1)}"]`
+		).placeholder = String(row.base);
+		group.querySelector(
+			`input[data-vurs-burst-fire-stat="${row.key}Adjustment"]`
+		).value = String(row.adjustment);
+		group.title = row.key === "rateOfFire"
+			? game.i18n.format("VURS.BurstFire.AtMAP", { map: stats.effectiveMAP })
+			: "";
+	}
+
+	const damageSection = [...details.querySelectorAll(":scope > fieldset")].find(fieldset =>
+		fieldset.querySelector(":scope > legend")?.textContent.trim() ===
+			game.i18n.localize("PF2E.DamageLabel")
+	);
+	if (damageSection && section.nextElementSibling !== damageSection) {
+		details.insertBefore(section, damageSection);
 	}
 }
 
@@ -1219,7 +1300,7 @@ Hooks.once("pf2e.systemReady", () => installBurstFirePrepareAttacks());
 Hooks.once("ready", () => {
 	registerBurstFireLocalization();
 	installBurstFirePrepareAttacks();
-	Hooks.on("renderItemSheet", (app, html) => addBurstFireItemStats(app, html));
+	Hooks.on("renderItemSheet", (app, html) => addBurstFireWeaponSection(app, html));
 	Hooks.on("updateItem", clearPreparedBurstFireForItem);
 	Hooks.on("deleteItem", clearPreparedBurstFireForItem);
 });

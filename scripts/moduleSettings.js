@@ -13,7 +13,11 @@ const SETTING_KEYS = Object.freeze({
   includeVursSkillsInDefault: "includeVursSkillsInDefault",
   addSaveSkillsInDefault: "addSaveSkillsInDefault",
   addActionPointsInDefault: "addActionPointsInDefault",
-  vursCriticalDamageInDefault: "vursCriticalDamageInDefault"
+  vursCriticalDamageInDefault: "vursCriticalDamageInDefault",
+  manualDamageApplication: "manualDamageApplication",
+  automaticDamageRolls: "automaticDamageRolls",
+  automaticTemplatePlacement: "automaticTemplatePlacement",
+  automaticNpcSavingThrows: "automaticNpcSavingThrows"
 });
 
 function requestSettingsRefresh(settingName) {
@@ -189,6 +193,67 @@ class VursFeatureSettings extends foundry.applications.api.HandlebarsApplication
   }
 }
 
+const AUTO_CLICKER_SETTINGS = Object.freeze([
+  {
+    key: SETTING_KEYS.automaticDamageRolls,
+    name: "Automatically Roll Eligible Damage",
+    hint: "Automatically roll damage for normal Strikes only when the attack succeeds or critically succeeds, plus accepted Auto-Fire/Area-Fire targets and accepted basic-save spells. Area damage waits for the template to be placed and targets accepted; basic-save workflows also wait for every targeted save. Other damage and healing are not automated."
+  },
+  {
+    key: SETTING_KEYS.automaticTemplatePlacement,
+    name: "Automatically Place Area Templates",
+    hint: "Automatically start PF2e's native template placement for eligible basic-save spells and Auto-Fire/Area-Fire. You still choose the area position and direction for Toolbelt targeting. When disabled, click the template button manually."
+  },
+  {
+    key: SETTING_KEYS.automaticNpcSavingThrows,
+    name: "Automatically Roll Eligible Toolbelt Saves",
+    hint: "Requires PF2E Toolbelt Target Helper. After area templates are placed and targets accepted, the GM rolls basic saves for eligible saving-throw spells and Auto-Fire/Area-Fire, including saves for player-owned actors. Damage waits until every targeted save resolves."
+  },
+  {
+    key: SETTING_KEYS.manualDamageApplication,
+    name: "Manual Damage Application",
+    hint: "When enabled, Auto-Clicker leaves damage application manual. When disabled, it applies damage only after an eligible workflow has succeeded and its required saves are resolved."
+  }
+]);
+
+class AutoClickerSettings extends foundry.applications.api.HandlebarsApplicationMixin(
+  foundry.applications.api.ApplicationV2
+) {
+  static DEFAULT_OPTIONS = {
+    id: `${MODULE_ID}-auto-clicker-settings`,
+    classes: [MODULE_ID, "vurs-auto-clicker-settings"],
+    tag: "form",
+    position: { width: 560 },
+    window: { title: "Auto-Clicker", resizable: true },
+    form: {
+      handler: AutoClickerSettings.#onSubmit,
+      submitOnChange: false,
+      closeOnSubmit: true
+    }
+  };
+
+  static PARTS = {
+    form: { template: `modules/${MODULE_ID}/templates/autoClickerSettings.hbs` }
+  };
+
+  async _prepareContext() {
+    return {
+      settings: AUTO_CLICKER_SETTINGS.map(setting => ({
+        ...setting,
+        checked: settingValue(game.settings, setting.key)
+      }))
+    };
+  }
+
+  static async #onSubmit(event, form, formData) {
+    event.preventDefault();
+    const values = formData.object;
+    await Promise.all(AUTO_CLICKER_SETTINGS.map(setting =>
+      game.settings.set(MODULE_ID, setting.key, values[setting.key] === true)
+    ));
+  }
+}
+
 function registerModuleSettings() {
   const settings = globalThis.game?.settings;
   if (!settings?.register) return;
@@ -210,6 +275,53 @@ function registerModuleSettings() {
       "vurs-agnostic": "VURS (Agnostic)"
     }
   });
+
+  registerSetting(settings, SETTING_KEYS.manualDamageApplication, {
+    name: "Manual Damage Application",
+    hint: "When enabled, Auto-Clicker leaves damage application manual. When disabled, it applies damage only after an eligible workflow has succeeded and its required saves are resolved.",
+    scope: "world",
+    config: false,
+    type: Boolean,
+    default: false
+  });
+
+  registerSetting(settings, SETTING_KEYS.automaticDamageRolls, {
+    name: "Automatically Roll Eligible Damage",
+    hint: "Automatically roll damage for normal Strikes only when the attack succeeds or critically succeeds, plus accepted Auto-Fire/Area-Fire targets and accepted basic-save spells. Area damage waits for the template to be placed and targets accepted; basic-save workflows also wait for every targeted save. Other damage and healing are not automated.",
+    scope: "world",
+    config: false,
+    type: Boolean,
+    default: true
+  });
+
+  registerSetting(settings, SETTING_KEYS.automaticTemplatePlacement, {
+    name: "Automatically Place Area Templates",
+    hint: "Automatically start PF2E's native template placement for eligible basic-save spells and Auto-Fire/Area-Fire. You still choose the area position and direction for Toolbelt targeting. When disabled, click the template button manually.",
+    scope: "world",
+    config: false,
+    type: Boolean,
+    default: true
+  });
+
+  registerSetting(settings, SETTING_KEYS.automaticNpcSavingThrows, {
+    name: "Automatically Roll Eligible Toolbelt Saves",
+    hint: "Requires PF2E Toolbelt Target Helper. After area templates are placed and targets accepted, the GM rolls basic saves for eligible saving-throw spells and Auto-Fire/Area-Fire, including saves for player-owned actors. Damage waits until every targeted save resolves.",
+    scope: "world",
+    config: false,
+    type: Boolean,
+    default: true
+  });
+
+  if (!settings.menus?.has?.(`${MODULE_ID}.autoClicker`)) {
+    settings.registerMenu(MODULE_ID, "autoClicker", {
+      name: "Auto-Clicker",
+      label: "Configure",
+      hint: "Configure automatic damage and healing rolls, saving throws, and damage application.",
+      icon: "fas fa-computer-mouse",
+      restricted: true,
+      type: AutoClickerSettings
+    });
+  }
 
   if (!settings.menus?.has?.(`${MODULE_ID}.featureSettings`)) {
     settings.registerMenu(MODULE_ID, "featureSettings", {

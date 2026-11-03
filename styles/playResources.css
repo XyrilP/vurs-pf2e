@@ -1,22 +1,22 @@
-.actor.sheet.character .sidebar>.vurs-play-resources {
+:is(.actor.sheet.character .sidebar > .vurs-play-resources, .vurs-play-resources-drawer .vurs-play-resources) {
   margin-block: var(--space-8);
 }
 
-.actor.sheet.character .sidebar>.vurs-play-resources>header {
+:is(.actor.sheet.character .sidebar > .vurs-play-resources, .vurs-play-resources-drawer .vurs-play-resources)>header {
   align-items: center;
   display: flex;
   justify-content: space-between;
   margin-bottom: var(--space-4);
 }
 
-.actor.sheet.character .sidebar>.vurs-play-resources>header .vurs-play-header-controls {
+:is(.actor.sheet.character .sidebar > .vurs-play-resources, .vurs-play-resources-drawer .vurs-play-resources)>header .vurs-play-header-controls {
   align-items: center;
   display: flex;
   gap: 2px;
 }
 
-.actor.sheet.character .sidebar>.vurs-play-resources>header .vurs-play-modifiers,
-.actor.sheet.character .sidebar>.vurs-play-resources>header .vurs-play-reset {
+:is(.actor.sheet.character .sidebar > .vurs-play-resources, .vurs-play-resources-drawer .vurs-play-resources)>header .vurs-play-modifiers,
+:is(.actor.sheet.character .sidebar > .vurs-play-resources, .vurs-play-resources-drawer .vurs-play-resources)>header .vurs-play-reset {
   background: rgba(255, 255, 255, 0.75);
   border-radius: 2px 2px 0 0;
   border: none;
@@ -32,21 +32,21 @@
   white-space: nowrap;
 }
 
-.actor.sheet.character .sidebar>.vurs-play-resources>header h2 {
+:is(.actor.sheet.character .sidebar > .vurs-play-resources, .vurs-play-resources-drawer .vurs-play-resources)>header h2 {
   margin: 0;
 }
 
-.actor.sheet.character .sidebar>.vurs-play-resources>header .vurs-play-modifiers,
-.actor.sheet.character .sidebar>.vurs-play-resources>header .vurs-play-reset {
+:is(.actor.sheet.character .sidebar > .vurs-play-resources, .vurs-play-resources-drawer .vurs-play-resources)>header .vurs-play-modifiers,
+:is(.actor.sheet.character .sidebar > .vurs-play-resources, .vurs-play-resources-drawer .vurs-play-resources)>header .vurs-play-reset {
   cursor: pointer;
 }
 
-.actor.sheet.character .sidebar>.vurs-play-resources>header .vurs-play-modifiers:hover,
-.actor.sheet.character .sidebar>.vurs-play-resources>header .vurs-play-reset:hover {
+:is(.actor.sheet.character .sidebar > .vurs-play-resources, .vurs-play-resources-drawer .vurs-play-resources)>header .vurs-play-modifiers:hover,
+:is(.actor.sheet.character .sidebar > .vurs-play-resources, .vurs-play-resources-drawer .vurs-play-resources)>header .vurs-play-reset:hover {
   filter: brightness(1.15);
 }
 
-.actor.sheet.character .sidebar>.vurs-play-resources>ol {
+:is(.actor.sheet.character .sidebar > .vurs-play-resources, .vurs-play-resources-drawer .vurs-play-resources)>ol {
   display: grid;
   gap: var(--space-2) var(--space-4);
   grid-template-columns: repeat(10, minmax(0, 1fr));
@@ -55,7 +55,7 @@
   padding: 0;
 }
 
-.actor.sheet.character .sidebar>.vurs-play-resources .vurs-play-resource {
+:is(.actor.sheet.character .sidebar > .vurs-play-resources, .vurs-play-resources-drawer .vurs-play-resources) .vurs-play-resource {
   align-items: center;
   display: flex;
   flex-wrap: wrap;
@@ -65,30 +65,31 @@
   min-width: 0;
 }
 
-.actor.sheet.character .sidebar>.vurs-play-resources .vurs-play-resource .label {
+:is(.actor.sheet.character .sidebar > .vurs-play-resources, .vurs-play-resources-drawer .vurs-play-resources) .vurs-play-resource .label {
   flex: 1 1 auto;
   font-size: inherit;
   min-width: 0;
 }
 
-.actor.sheet.character .sidebar>.vurs-play-resources .vurs-play-resource .value {
+:is(.actor.sheet.character .sidebar > .vurs-play-resources, .vurs-play-resources-drawer .vurs-play-resources) .vurs-play-resource .value {
   flex: 0 0 auto;
   font-size: inherit;
   font-variant-numeric: tabular-nums;
   white-space: nowrap;
 }
 
-.actor.sheet.character .sidebar>.vurs-play-resources .vurs-play-resource:has(.vurs-play-resource-control) {
+:is(.actor.sheet.character .sidebar > .vurs-play-resources, .vurs-play-resources-drawer .vurs-play-resources) .vurs-play-resource:has(.vurs-play-resource-control) {
   grid-column: span 2;
   justify-content: center;
 }
 
-.actor.sheet.character .sidebar>.vurs-play-resources .vurs-play-resource-control {
+:is(.actor.sheet.character .sidebar > .vurs-play-resources, .vurs-play-resources-drawer .vurs-play-resources) .vurs-play-resource-control {
   align-items: center;
   appearance: none;
   aspect-ratio: 1;
-  background: none;
+  background: rgba(255, 255, 255, 0.35);
   border: 0 !important;
+  border-radius: 50%;
   box-shadow: none !important;
   color: inherit;
   cursor: pointer;
@@ -103,21 +104,21 @@
   width: 100%;
 }
 
-.actor.sheet.character .sidebar>.vurs-play-resources .vurs-play-resource-control:focus,
-.actor.sheet.character .sidebar>.vurs-play-resources .vurs-play-resource-control:focus-visible,
-.actor.sheet.character .sidebar>.vurs-play-resources .vurs-play-resource-control:active {
+:is(.actor.sheet.character .sidebar > .vurs-play-resources, .vurs-play-resources-drawer .vurs-play-resources) .vurs-play-resource-control:focus,
+:is(.actor.sheet.character .sidebar > .vurs-play-resources, .vurs-play-resources-drawer .vurs-play-resources) .vurs-play-resource-control:focus-visible,
+:is(.actor.sheet.character .sidebar > .vurs-play-resources, .vurs-play-resources-drawer .vurs-play-resources) .vurs-play-resource-control:active {
   border: 0 !important;
   box-shadow: none !important;
   outline: none !important;
 }
 
-.actor.sheet.character .sidebar>.vurs-play-resources .vurs-play-resource-control::before,
-.actor.sheet.character .sidebar>.vurs-play-resources .vurs-play-resource-control::after {
+:is(.actor.sheet.character .sidebar > .vurs-play-resources, .vurs-play-resources-drawer .vurs-play-resources) .vurs-play-resource-control::before,
+:is(.actor.sheet.character .sidebar > .vurs-play-resources, .vurs-play-resources-drawer .vurs-play-resources) .vurs-play-resource-control::after {
   content: none;
   display: none;
 }
 
-.actor.sheet.character .sidebar>.vurs-play-resources .vurs-play-resource-edit {
+:is(.actor.sheet.character .sidebar > .vurs-play-resources, .vurs-play-resources-drawer .vurs-play-resources) .vurs-play-resource-edit {
   appearance: textfield;
   background: transparent;
   border: 0;
@@ -131,7 +132,7 @@
   width: auto;
 }
 
-.actor.sheet.character .sidebar>.vurs-play-resources .vurs-play-resource-control:hover {
+:is(.actor.sheet.character .sidebar > .vurs-play-resources, .vurs-play-resources-drawer .vurs-play-resources) .vurs-play-resource-control:hover {
   filter: brightness(1.2);
 }
 
@@ -181,7 +182,7 @@
   paint-order: stroke fill;
 }
 
-.actor.sheet.character .sidebar>.vurs-play-resources .vurs-play-resource-control img {
+:is(.actor.sheet.character .sidebar > .vurs-play-resources, .vurs-play-resources-drawer .vurs-play-resources) .vurs-play-resource-control img {
   background: transparent;
   border: 0 !important;
   box-shadow: none !important;
@@ -193,7 +194,7 @@
   width: 100%;
 }
 
-.actor.sheet.character .sidebar>.vurs-play-resources .vurs-play-resource-control .value {
+:is(.actor.sheet.character .sidebar > .vurs-play-resources, .vurs-play-resources-drawer .vurs-play-resources) .vurs-play-resource-control .value {
   background: transparent;
   border-radius: 0;
   font-size: inherit;
@@ -204,16 +205,16 @@
   z-index: 1;
 }
 
-.actor.sheet.character .sidebar>.vurs-play-resources [data-resource="budgetPoints"],
-.actor.sheet.character .sidebar>.vurs-play-resources [data-resource="magicPoints"] {
+:is(.actor.sheet.character .sidebar > .vurs-play-resources, .vurs-play-resources-drawer .vurs-play-resources) [data-resource="budgetPoints"],
+:is(.actor.sheet.character .sidebar > .vurs-play-resources, .vurs-play-resources-drawer .vurs-play-resources) [data-resource="magicPoints"] {
   grid-column: span 5;
 }
 
-.actor.sheet.character .sidebar>.vurs-play-resources [data-resource="budgetPoints"] {
+:is(.actor.sheet.character .sidebar > .vurs-play-resources, .vurs-play-resources-drawer .vurs-play-resources) [data-resource="budgetPoints"] {
   display: block;
 }
 
-.actor.sheet.character .sidebar>.vurs-play-resources .vurs-play-resource-frame {
+:is(.actor.sheet.character .sidebar > .vurs-play-resources, .vurs-play-resources-drawer .vurs-play-resources) .vurs-play-resource-frame {
   align-items: center;
   border: 14px double transparent;
   border-image: var(--vurs-resource-frame) 11 / 14px repeat;
@@ -229,14 +230,15 @@
   width: 100%;
 }
 
-.actor.sheet.character .sidebar>.vurs-play-resources .vurs-play-resource-frame>.label {
+:is(.actor.sheet.character .sidebar > .vurs-play-resources, .vurs-play-resources-drawer .vurs-play-resources) .vurs-play-resource-frame>.label {
   font-size: inherit;
   line-height: 1;
   margin: 0;
   text-align: center;
 }
 
-.actor.sheet.character .sidebar>.vurs-play-resources .vurs-budget-points-bar {
+:is(.actor.sheet.character .sidebar > .vurs-play-resources, .vurs-play-resources-drawer .vurs-play-resources) .vurs-budget-points-bar {
+  background-color: rgba(255, 255, 255, 0.35);
   border: 0;
   height: 0.72rem;
   margin: 0;
@@ -245,7 +247,11 @@
   width: 100%;
 }
 
-.actor.sheet.character .sidebar>.vurs-play-resources .vurs-budget-coin-stacks {
+:is(.actor.sheet.character .sidebar > .vurs-play-resources, .vurs-play-resources-drawer .vurs-play-resources) [data-resource="magicPoints"] .vurs-play-resource-segments {
+  background-color: rgba(255, 255, 255, 0.35);
+}
+
+:is(.actor.sheet.character .sidebar > .vurs-play-resources, .vurs-play-resources-drawer .vurs-play-resources) .vurs-budget-coin-stacks {
   align-items: center;
   display: flex;
   gap: 0;
@@ -255,13 +261,13 @@
   position: absolute;
 }
 
-.actor.sheet.character .sidebar>.vurs-play-resources .vurs-budget-coin-stack {
+:is(.actor.sheet.character .sidebar > .vurs-play-resources, .vurs-play-resources-drawer .vurs-play-resources) .vurs-budget-coin-stack {
   height: 1.05rem;
   position: relative;
   width: 0.55rem;
 }
 
-.actor.sheet.character .sidebar>.vurs-play-resources .vurs-budget-coin-stack .coin {
+:is(.actor.sheet.character .sidebar > .vurs-play-resources, .vurs-play-resources-drawer .vurs-play-resources) .vurs-budget-coin-stack .coin {
   bottom: calc(var(--coin-index, 0) * 0.16rem);
   color: #80651d;
   font-size: 0.55rem;
@@ -272,16 +278,16 @@
   width: 0.55rem;
 }
 
-.actor.sheet.character .sidebar>.vurs-play-resources .vurs-budget-coin-stack .coin.is-filled {
+:is(.actor.sheet.character .sidebar > .vurs-play-resources, .vurs-play-resources-drawer .vurs-play-resources) .vurs-budget-coin-stack .coin.is-filled {
   color: #f1c40f;
 }
 
-.actor.sheet.character .sidebar>.vurs-play-resources .vurs-play-resource-maximum {
+:is(.actor.sheet.character .sidebar > .vurs-play-resources, .vurs-play-resources-drawer .vurs-play-resources) .vurs-play-resource-maximum {
   display: inline-flex;
   position: relative;
 }
 
-.actor.sheet.character .sidebar>.vurs-play-resources .vurs-play-resource-max-reduction-delta {
+:is(.actor.sheet.character .sidebar > .vurs-play-resources, .vurs-play-resources-drawer .vurs-play-resources) .vurs-play-resource-max-reduction-delta {
   bottom: -0.55em;
   color: #ff3b3b;
   font-size: 0.55em;
@@ -296,34 +302,34 @@
   z-index: 1;
 }
 
-.actor.sheet.character .sidebar>.vurs-play-resources .vurs-play-resource-max-reduction-delta.is-increase {
+:is(.actor.sheet.character .sidebar > .vurs-play-resources, .vurs-play-resources-drawer .vurs-play-resources) .vurs-play-resource-max-reduction-delta.is-increase {
   color: inherit;
 }
 
-.actor.sheet.character .sidebar>.vurs-play-resources .vurs-play-resource-max-reduction {
+:is(.actor.sheet.character .sidebar > .vurs-play-resources, .vurs-play-resources-drawer .vurs-play-resources) .vurs-play-resource-max-reduction {
   color: #ff3b3b;
   font-size: 0.75em;
   font-weight: 700;
   text-shadow: -1px -1px 0 #1a0d0d, 1px -1px 0 #1a0d0d, -1px 1px 0 #1a0d0d, 1px 1px 0 #1a0d0d;
 }
 
-.actor.sheet.character .sidebar>.vurs-play-resources .vurs-play-resource-max-reduction.is-increase {
+:is(.actor.sheet.character .sidebar > .vurs-play-resources, .vurs-play-resources-drawer .vurs-play-resources) .vurs-play-resource-max-reduction.is-increase {
   color: #ff3b3b;
 }
 
-.actor.sheet.character .sidebar>.vurs-play-resources [data-resource="magicPoints"] {
+:is(.actor.sheet.character .sidebar > .vurs-play-resources, .vurs-play-resources-drawer .vurs-play-resources) [data-resource="magicPoints"] {
   display: block;
 }
 
-.actor.sheet.character .sidebar>.vurs-play-resources [data-resource="budgetPoints"] .vurs-play-resource-frame,
-.actor.sheet.character .sidebar>.vurs-play-resources [data-resource="magicPoints"] .vurs-play-resource-frame {
+:is(.actor.sheet.character .sidebar > .vurs-play-resources, .vurs-play-resources-drawer .vurs-play-resources) [data-resource="budgetPoints"] .vurs-play-resource-frame,
+:is(.actor.sheet.character .sidebar > .vurs-play-resources, .vurs-play-resources-drawer .vurs-play-resources) [data-resource="magicPoints"] .vurs-play-resource-frame {
   border: 0;
   border-image: none;
   gap: 0;
   padding: 0;
 }
 
-.actor.sheet.character .sidebar>.vurs-play-resources [data-resource="magicPoints"] .vurs-play-resource-segments {
+:is(.actor.sheet.character .sidebar > .vurs-play-resources, .vurs-play-resources-drawer .vurs-play-resources) [data-resource="magicPoints"] .vurs-play-resource-segments {
   align-content: start;
   align-items: center;
   display: grid;
@@ -340,7 +346,7 @@
   width: 100%;
 }
 
-.actor.sheet.character .sidebar>.vurs-play-resources .vurs-play-resource-segments {
+:is(.actor.sheet.character .sidebar > .vurs-play-resources, .vurs-play-resources-drawer .vurs-play-resources) .vurs-play-resource-segments {
   display: flex;
   cursor: pointer;
   gap: 2px;
@@ -351,7 +357,7 @@
   width: 100%;
 }
 
-.actor.sheet.character .sidebar>.vurs-play-resources .vurs-play-resource-segment-values {
+:is(.actor.sheet.character .sidebar > .vurs-play-resources, .vurs-play-resources-drawer .vurs-play-resources) .vurs-play-resource-segment-values {
   align-items: center;
   display: flex;
   font-size: inherit;
@@ -360,22 +366,30 @@
   inset: 0;
   justify-content: center;
   position: absolute;
-  text-shadow: 0 1px 2px #000;
+  color: inherit;
+  text-shadow: none;
   z-index: 1;
 }
 
-.actor.sheet.character .sidebar>.vurs-play-resources .vurs-play-resource-edit-values {
+:is(.actor.sheet.character .sidebar > .vurs-play-resources, .vurs-play-resources-drawer .vurs-play-resources) .vurs-play-resource-edit-values {
   inset: auto;
+  color: inherit !important;
   min-height: 0.85rem;
   position: static;
   width: 100%;
 }
 
-.actor.sheet.character .sidebar>.vurs-play-resources .vurs-play-resource-segment-values input {
+:is(.actor.sheet.character .sidebar > .vurs-play-resources, .vurs-play-resources-drawer .vurs-play-resources) .vurs-play-resource-segment-values input {
+  color: inherit !important;
   cursor: text;
 }
 
-.actor.sheet.character .sidebar>.vurs-play-resources .vurs-play-resource-segments .segment {
+:is(.actor.sheet.character .sidebar > .vurs-play-resources, .vurs-play-resources-drawer .vurs-play-resources) .vurs-play-resource-maximum,
+:is(.actor.sheet.character .sidebar > .vurs-play-resources, .vurs-play-resources-drawer .vurs-play-resources) .vurs-play-resource-max-value {
+  color: inherit !important;
+}
+
+:is(.actor.sheet.character .sidebar > .vurs-play-resources, .vurs-play-resources-drawer .vurs-play-resources) .vurs-play-resource-segments .segment {
   background: linear-gradient(to right, var(--segment-color, #3498db) var(--segment-fill, 0%), transparent var(--segment-fill, 0%));
   border: 1px solid var(--segment-color, #3498db);
   border-radius: 1px;
@@ -383,11 +397,11 @@
   min-width: 1px;
 }
 
-.actor.sheet.character .sidebar>.vurs-play-resources {
+:is(.actor.sheet.character .sidebar > .vurs-play-resources, .vurs-play-resources-drawer .vurs-play-resources) {
   position: relative;
 }
 
-.actor.sheet.character .sidebar>.vurs-play-resources>.vurs-play-modifiers-tooltip {
+:is(.actor.sheet.character .sidebar > .vurs-play-resources, .vurs-play-resources-drawer .vurs-play-resources)>.vurs-play-modifiers-tooltip {
   background: rgba(12, 9, 5, 0.96);
   border: 14px double transparent;
   border-image: var(--vurs-resource-frame) 11 / 14px repeat;
@@ -668,7 +682,7 @@
   vertical-align: middle;
 }
 
-.actor.sheet.character .sidebar>.vurs-play-resources .vurs-mp-star {
+:is(.actor.sheet.character .sidebar > .vurs-play-resources, .vurs-play-resources-drawer .vurs-play-resources) .vurs-mp-star {
   color: var(--segment-color, #5ab8ff);
   font-size: 0.56rem;
   height: 0.5rem;
@@ -678,7 +692,7 @@
   width: 0.68rem;
 }
 
-.actor.sheet.character .sidebar>.vurs-play-resources .vurs-mp-star-stack,
+:is(.actor.sheet.character .sidebar > .vurs-play-resources, .vurs-play-resources-drawer .vurs-play-resources) .vurs-mp-star-stack,
 .item.sheet .vurs-play-cost-mp-star-stack {
   align-items: center;
   display: inline-flex;
@@ -690,7 +704,7 @@
   vertical-align: middle;
 }
 
-.actor.sheet.character .sidebar>.vurs-play-resources .vurs-mp-star-stack .vurs-mp-star,
+:is(.actor.sheet.character .sidebar > .vurs-play-resources, .vurs-play-resources-drawer .vurs-play-resources) .vurs-mp-star-stack .vurs-mp-star,
 .item.sheet .vurs-play-cost-mp-star-stack .vurs-play-cost-mp-star {
   margin-bottom: -0.18rem;
 }
@@ -802,4 +816,157 @@
 
 .item.sheet .vurs-play-resource-token .vurs-play-cost-resource-stack i {
   font-size: 0.8rem;
+}
+
+.vurs-play-resources-drawer {
+  position: fixed;
+  width: 2rem;
+  pointer-events: none;
+}
+
+@keyframes vurs-play-pending-glow {
+  0%, 100% { opacity: 0.35; }
+  50% { opacity: 1; }
+}
+
+.vurs-play-apply.has-pending-changes {
+  isolation: isolate;
+  position: relative;
+}
+
+.vurs-play-apply.has-pending-changes::after {
+  animation: vurs-play-pending-glow 1.5s ease-in-out infinite;
+  border-radius: inherit;
+  box-shadow: 0 0 9px 2px rgba(255, 190, 70, 0.8);
+  content: "";
+  inset: -2px;
+  opacity: 0.35;
+  pointer-events: none;
+  position: absolute;
+  z-index: -1;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .vurs-play-apply.has-pending-changes::after {
+    animation: none;
+    opacity: 0.75;
+  }
+}
+
+.vurs-play-resources-drawer-panel {
+  position: absolute;
+  left: auto;
+  right: 2rem;
+  z-index: 2;
+  box-sizing: border-box;
+  width: min(16rem, calc(100vw - 3rem));
+  max-height: calc(100vh - 1rem);
+  overflow: auto;
+  padding: 0.65rem;
+  border: 1px solid var(--color-pf-alternate, var(--color-border-light-primary));
+  border-radius: 0.2rem 0 0 0.2rem;
+  box-shadow: 0 0.25rem 0.8rem #0008;
+  color: var(--text-dark, var(--color-text-dark-primary, #333));
+  font-family: var(--font-primary, var(--sans-serif));
+  font-size: var(--font-size-12);
+  opacity: 0;
+  visibility: hidden;
+  transform: translateX(100%);
+  transition: transform 160ms ease, opacity 160ms ease, visibility 160ms;
+  pointer-events: auto;
+}
+
+.vurs-play-resources-drawer.expanded .vurs-play-resources-drawer-panel {
+  opacity: 1;
+  visibility: visible;
+  transform: translateX(0);
+}
+
+.vurs-play-resources-drawer-toggle {
+  position: absolute;
+  top: 0;
+  left: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 0.35rem;
+  width: 2rem;
+  min-height: 7rem;
+  padding: 0.4rem 0.2rem;
+  border: 1px solid var(--color-pf-alternate, var(--color-border-light-primary));
+  border-radius: 0.2rem 0 0 0.2rem;
+  color: var(--color-pf-tertiary, var(--color-light-1));
+  background-color: var(--color-pf-primary, var(--color-cool-5));
+  writing-mode: vertical-rl;
+  pointer-events: auto;
+  z-index: 1;
+}
+
+.vurs-play-resources-drawer.side-right .vurs-play-resources-drawer-panel {
+  border-radius: 0 0.2rem 0.2rem 0;
+  left: 2rem;
+  right: auto;
+  transform: translateX(-100%);
+}
+
+.vurs-play-resources-drawer.side-right.expanded .vurs-play-resources-drawer-panel {
+  transform: translateX(0);
+}
+
+.vurs-play-resources-drawer.side-right .vurs-play-resources-drawer-toggle {
+  border-radius: 0 0.2rem 0.2rem 0;
+  left: auto;
+  right: 0;
+}
+
+.vurs-play-resources-drawer-toggle span {
+  padding-left: 0.25rem;
+  white-space: nowrap;
+}
+
+.vurs-play-resources-drawer .vurs-play-resources {
+  margin: 0;
+}
+
+.vurs-play-resources-drawer .vurs-play-resources > header {
+  align-items: end;
+  border-bottom: 1px solid var(--color-border-divider, var(--faded-border-color));
+  display: flex;
+  flex-wrap: nowrap;
+  justify-content: space-between;
+  margin: 0.8em 0 0.5em;
+}
+
+.vurs-play-resources-drawer .vurs-play-resources > header h2 {
+  color: var(--sidebar-title, var(--color-pf-primary));
+  flex: 1;
+  font-family: var(--sans-serif);
+  font-size: var(--font-size-13);
+  font-variant: small-caps;
+  letter-spacing: 0.05em;
+  line-height: 1;
+  margin: 0;
+}
+
+.vurs-play-resources-drawer .vurs-play-resources > header .vurs-play-header-controls {
+  align-items: center;
+  display: flex;
+  flex: 0;
+  gap: 2px;
+}
+
+.vurs-play-resources-drawer .vurs-play-resources > header .vurs-play-header-controls button {
+  height: auto;
+  min-height: 0;
+  padding: 2px 3px;
+  font-size: var(--font-size-9);
+  line-height: 1;
+  width: auto;
+}
+
+@media (max-width: 600px) {
+  .vurs-play-resources-drawer-panel {
+    width: min(16rem, calc(100vw - 3rem));
+  }
 }

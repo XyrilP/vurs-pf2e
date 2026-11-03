@@ -1,0 +1,302 @@
+.vurs-npc-configuration .window-content {
+  padding: 0;
+}
+
+.actor.npc.sheet form .sidebar .subsection.health header > a.vurs-npc-rest-button {
+  flex: 0 0 auto;
+  margin-left: var(--space-3);
+  padding: 0;
+}
+
+.tags.paizo-style select.tag.vurs-npc-configuration-launch {
+  background-color: var(--color-bg-trait);
+  flex: 0 1 auto;
+  margin: 0;
+  max-width: 10rem;
+  min-width: 0;
+}
+
+.vurs-npc-relationship-drawer {
+  position: fixed;
+  z-index: 1;
+  width: 2rem;
+  pointer-events: none;
+}
+
+.vurs-npc-relationship-statistics {
+  position: absolute;
+  left: auto;
+  right: 2rem;
+  z-index: 2;
+  width: min(16rem, calc(100vw - 3rem));
+  max-height: calc(100vh - 1rem);
+  overflow: auto;
+  padding: 0.65rem;
+  border: 1px solid var(--color-pf-alternate, var(--color-border-light-primary));
+  border-radius: 0.2rem 0 0 0.2rem;
+  box-shadow: 0 0.25rem 0.8rem #0008;
+  color: var(--text-dark, var(--color-text-dark-primary, #333));
+  opacity: 0;
+  visibility: hidden;
+  transform: translateX(100%);
+  transition: transform 160ms ease, opacity 160ms ease, visibility 160ms;
+  pointer-events: auto;
+}
+
+.vurs-npc-relationship-drawer.expanded .vurs-npc-relationship-statistics {
+  opacity: 1;
+  visibility: visible;
+  transform: translateX(0);
+}
+
+.vurs-npc-relationship-statistics h2 {
+  border-bottom: 1px solid var(--color-border-divider, var(--faded-border-color));
+  color: var(--sidebar-title, var(--color-pf-primary));
+  font-family: var(--sans-serif);
+  font-size: var(--font-size-13);
+  font-variant: small-caps;
+  letter-spacing: 0.05em;
+  line-height: 1;
+  margin: 0.8em 0 0.5em;
+}
+
+.vurs-npc-relationship-toggle {
+  position: absolute;
+  top: 0;
+  left: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 0.35rem;
+  width: 2rem;
+  min-height: 7rem;
+  padding: 0.4rem 0.2rem;
+  border: 1px solid var(--color-pf-alternate, var(--color-border-light-primary));
+  border-radius: 0.2rem 0 0 0.2rem;
+  color: var(--color-pf-tertiary, var(--color-light-1));
+  background-color: var(--color-pf-primary, var(--color-cool-5));
+  writing-mode: vertical-rl;
+  pointer-events: auto;
+  z-index: 1;
+}
+
+.vurs-npc-relationship-drawer.side-right .vurs-npc-relationship-statistics {
+  border-radius: 0 0.2rem 0.2rem 0;
+  left: 2rem;
+  right: auto;
+  transform: translateX(-100%);
+}
+
+.vurs-npc-relationship-drawer.side-right.expanded .vurs-npc-relationship-statistics {
+  transform: translateX(0);
+}
+
+.vurs-npc-relationship-drawer.side-right .vurs-npc-relationship-toggle {
+  border-radius: 0 0.2rem 0.2rem 0;
+  left: auto;
+  right: 0;
+}
+
+.vurs-npc-relationship-toggle span {
+  padding-left: 0.25rem;
+  white-space: nowrap;
+}
+
+.vurs-npc-relationship-content > ul {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.2rem 0.35rem;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.vurs-npc-relationship-stat {
+  display: flex;
+  justify-content: space-between;
+  gap: 0.25rem;
+  min-width: 0;
+  font-size: 0.75rem;
+}
+
+.vurs-npc-relationship-stat-label {
+  display: flex;
+  align-items: center;
+  gap: 0.2rem;
+  min-width: 0;
+  color: var(--npc-config-attribute-color);
+}
+
+.vurs-npc-relationship-stat-label i {
+  width: 0.9rem;
+  text-align: center;
+}
+
+.vurs-npc-relationship-stat-value {
+  font-variant-numeric: tabular-nums;
+}
+
+.vurs-npc-relationship-rank {
+  margin: 0.35rem 0 0;
+  padding-top: 0.25rem;
+  border-top: 1px solid var(--color-border-divider, var(--faded-border-color));
+  font-size: 0.72rem;
+  text-align: center;
+}
+
+.vurs-npc-configuration-content {
+  padding: 1rem;
+  overflow: auto;
+}
+
+.vurs-npc-configuration-content .tabs {
+  display: flex;
+  gap: 0.35rem;
+  border-bottom: 1px solid var(--color-border-light-primary);
+}
+
+.vurs-npc-configuration-content .tabs button {
+  border: 0;
+  border-bottom: 2px solid transparent;
+  border-radius: 0;
+}
+
+.vurs-npc-configuration-content .tabs button.active {
+  border-bottom-color: var(--color-border-highlight);
+}
+
+.vurs-npc-configuration-content .npc-config-panel {
+  padding-top: 0.75rem;
+}
+
+.vurs-npc-configuration-content .npc-config-panel[hidden] {
+  display: none;
+}
+
+.vurs-npc-configuration-content .npc-config-level-inputs {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 0.75rem;
+}
+
+.vurs-npc-configuration-content .npc-config-level-inputs .form-group {
+  grid-template-columns: minmax(0, 1fr) 5rem;
+  align-items: center;
+}
+
+.vurs-npc-configuration-content .npc-config-relationship-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  column-gap: 0.75rem;
+}
+
+.vurs-npc-configuration-content .npc-config-relationship-grid .form-group {
+  grid-template-columns: minmax(0, 1fr) 5rem;
+  align-items: center;
+}
+
+.vurs-npc-configuration-content .npc-config-relationship-label {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  color: var(--npc-config-attribute-color);
+}
+
+.vurs-npc-configuration-content .npc-config-relationship-label i {
+  width: 1rem;
+  text-align: center;
+}
+
+.vurs-npc-configuration-content .npc-config-relationship-rank {
+  font-weight: 600;
+}
+
+.vurs-npc-configuration-content .form-group {
+  display: grid;
+  gap: 0.35rem;
+  margin-block: 0.75rem;
+}
+
+.vurs-npc-configuration-content .npc-config-formula {
+  grid-template-columns: minmax(9rem, 0.7fr) minmax(12rem, 1.3fr);
+  align-items: center;
+}
+
+.vurs-npc-configuration-content .npc-config-formula input::placeholder {
+  color: var(--color-text-secondary, var(--color-text-light-6));
+  opacity: 0.65;
+}
+
+.vurs-npc-configuration-content .npc-config-panel > .hint {
+  margin-bottom: 0.75rem;
+}
+
+.vurs-npc-configuration-content .npc-config-scaling {
+  display: block;
+  margin: 0;
+  padding: 0.75rem;
+  border: 1px solid var(--color-border-light-primary);
+}
+
+.vurs-npc-configuration-content .npc-config-scaling > summary {
+  cursor: pointer;
+  font-weight: 600;
+}
+
+.vurs-npc-configuration-content .npc-config-scaling > fieldset {
+  margin: 0.65rem 0 0;
+  padding: 0;
+  border: 0;
+}
+
+.vurs-npc-configuration-content .npc-config-scaling-group {
+  margin: 0.5rem 0 0;
+  padding: 0.5rem;
+  border: 1px solid var(--color-border-light-primary);
+}
+
+.vurs-npc-configuration-content .npc-config-scaling-group legend {
+  padding-inline: 0.25rem;
+}
+
+.vurs-npc-configuration-content .npc-config-scaling-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 0.25rem 0.75rem;
+}
+
+.vurs-npc-configuration-content .npc-config-scaling-field {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) 4rem;
+  align-items: center;
+  gap: 0.4rem;
+  min-width: 0;
+  margin: 0;
+}
+
+.vurs-npc-configuration-content .npc-config-scaling-field > input[type="checkbox"] {
+  margin: 0;
+}
+
+.vurs-npc-configuration-content .npc-config-scaling-field > span {
+  min-width: 0;
+}
+
+.vurs-npc-configuration-content .npc-config-scaling-toggle {
+  grid-template-columns: auto minmax(0, 1fr);
+}
+
+.vurs-npc-configuration-content .form-footer {
+  margin-top: 1rem;
+}
+
+@media (max-width: 520px) {
+  .vurs-npc-configuration-content .npc-config-scaling-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .vurs-npc-configuration-content .npc-config-relationship-grid {
+    grid-template-columns: 1fr;
+  }
+}

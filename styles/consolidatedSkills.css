@@ -1,3 +1,40 @@
+.actor.npc.sheet .subsection.saves > ul.vurs-extended-saves {
+  display: grid !important;
+  flex: 0 0 auto;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 0.2rem;
+  min-width: 0;
+  width: 100%;
+}
+
+.actor.npc.sheet .subsection.saves > ul.vurs-extended-saves > li[data-vurs-extended-save] {
+  align-items: stretch;
+  display: flex;
+  flex: none;
+  flex-direction: column;
+  gap: 0.1rem;
+  justify-content: flex-start;
+  min-width: 0;
+  padding: 0.1rem;
+  width: auto;
+}
+
+.actor.npc.sheet .subsection.saves > ul.vurs-extended-saves > li[data-vurs-extended-save] > a.roll {
+  font-size: inherit;
+  line-height: 1.1;
+  min-width: 0;
+  overflow-wrap: anywhere;
+  text-align: center;
+  white-space: normal;
+}
+
+.actor.npc.sheet .subsection.saves > ul.vurs-extended-saves > li[data-vurs-extended-save] > input.modifier {
+  box-sizing: border-box;
+  max-width: 100%;
+  min-width: 0;
+  width: 100%;
+}
+
 .actor.sheet.character .tab.proficiencies ul.proficiencies-list > li.vurs-consolidated-parent {
   align-items: stretch !important;
   display: flex !important;

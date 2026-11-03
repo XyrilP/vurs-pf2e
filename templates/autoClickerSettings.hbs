@@ -1,0 +1,15 @@
+<section class="standard-form vurs-auto-clicker-settings-content">
+  <p class="hint">Configure automatic damage and healing rolls, area-template placement, saving throws, and damage application.</p>
+  {{#each settings}}
+  <div class="form-group">
+    <label for="{{key}}">{{name}}</label>
+    <div class="form-fields">
+      <input id="{{key}}" type="checkbox" name="{{key}}" {{#if checked}}checked{{/if}}>
+    </div>
+    <p class="hint">{{hint}}</p>
+  </div>
+  {{/each}}
+  <footer class="form-footer">
+    <button type="submit"><i class="fas fa-save"></i> Save Changes</button>
+  </footer>
+</section>

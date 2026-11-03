@@ -3,12 +3,13 @@
 	"title": "Vionheart Universe Roleplaying System for Pf2E/Sf2E",
 	"manifest": "https://raw.githubusercontent.com/XyrilP/vurs-pf2e/refs/heads/main/module.json",
 	"download": "https://github.com/XyrilP/vurs-pf2e/archive/refs/heads/main.zip",
-	"version": "13.8.8",
+	"version": "13.9",
 	"compatibility": {
 		"minimum": "14",
 		"verified": "14",
 		"maximum": "14"
 	},
+	"socket": true,
 	"authors": [
 		{
 			"name": "Xyril P.",
@@ -470,12 +471,26 @@
 		}
 	],
 	"relationships": {
+		"recommends": [
+			{
+				"id": "pf2e-toolbelt",
+				"type": "module",
+				"manifest": "https://raw.githubusercontent.com/reonZ/pf2e-toolbelt/master/module.json"
+			}
+		],
 		"requires": [
 			{
 				"id": "lib-wrapper",
 				"type": "module",
 				"compatibility": {
 					"minimum": "1.12.0.0"
+				}
+			},
+			{
+				"id": "socketlib",
+				"type": "module",
+				"compatibility": {
+					"minimum": "1.1.3"
 				}
 			}
 		],
@@ -497,6 +512,7 @@
 		"styles/consolidatedSkills.css",
 		"styles/attackSpeedTooltips.css",
 		"styles/playResources.css",
+		"styles/npcConfiguration.css",
 		"styles/burstFire.css",
 		"styles/collateralDamage.css",
 		"styles/conditions.css",
@@ -506,6 +522,7 @@
 		"scripts/cooldown.js",
 		"scripts/moduleSettings.js",
 		"scripts/features/vursFlagScope.js",
+		"scripts/features/npcConfiguration.js",
 		"scripts/features/playResources.js",
 		"scripts/features/modes/fullVurs.js",
 		"scripts/features/modes/agnosticVurs.js",
@@ -519,6 +536,7 @@
 		"scripts/features/lifesteal.js",
 		"scripts/features/healingEffectiveness.js",
 		"scripts/features/damageReturn.js",
+		"scripts/features/npcSheetActions.js",
 		"scripts/features/collateralDamage.js",
 		"scripts/features/burstFire.js",
 		"scripts/generalChanges.js"

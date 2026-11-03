@@ -117,6 +117,19 @@ const DEFAULT_SKILL_ATTRIBUTE_ICONS = Object.freeze({
   wis: { icon: "eye" },
   cha: { icon: "lips" }
 });
+
+export function getAttributePresentation(attribute, actor) {
+  const isDefault = getActorSystemMode(actor) === "default";
+  const groups = isDefault ? DEFAULT_SKILL_ATTRIBUTE_GROUPS : SKILL_ATTRIBUTE_GROUPS;
+  const icons = isDefault ? DEFAULT_SKILL_ATTRIBUTE_ICONS : SKILL_ATTRIBUTE_FALLBACK_ICONS;
+  const group = groups.find(candidate => candidate.attribute === attribute);
+  if (!group) return null;
+  return {
+    color: group.color,
+    icon: icons[attribute]?.icon ?? null
+  };
+}
+
 const PF2E_ELEGANT_SKILL_FRAME = `<svg xmlns="http://www.w3.org/2000/svg" width="33" height="33" overflow="scroll"><style>.st1{stroke:#231f20;stroke-miterlimit:10}.st1,.st2{fill:none}</style><g opacity=".25"><path class="st1" d="M.5 20v-7"/><path class="st2" d="M13 20v-7"/><path class="st1" d="M13 .5h7"/><path class="st2" d="M13 13h7"/><path class="st1" d="M32.5 13v7"/><path class="st2" d="M20 13v7"/><path class="st1" d="M20 32.5h-7"/><path class="st2" d="M20 20h-7"/><g><path class="st1" d="M.5.5h3.1v3.1H.5zM3.6 3.6h3.1v3.1H3.6zM6.8 3.6h3.1v3.1H6.8zM3.6 6.8h3.1v3.1H3.6zM3.6 6.8H.5V13M13 .5H6.8v3.1"/></g><g><path class="st1" d="M29.4.5h3.1v3.1h-3.1zM26.3 3.6h3.1v3.1h-3.1zM26.3 6.8h3.1v3.1h-3.1zM23.1 3.6h3.1v3.1h-3.1zM26.3 3.6V.5H20"/><path class="st1" d="M32.5 13V6.8h-3.1"/></g><g><path class="st1" d="M29.4 29.4h3.1v3.1h-3.1z"/><path class="st1" d="M26.3 26.3h3.1v3.1h-3.1zM23.1 26.3h3.1v3.1h-3.1zM26.3 23.1h3.1v3.1h-3.1zM29.4 26.3h3.1V20M20 32.5h6.3v-3.1"/></g><g><path class="st1" d="M.5 29.4h3.1v3.1H.5zM3.6 26.3h3.1v3.1H3.6zM3.6 23.1h3.1v3.1H3.6zM6.8 26.3h3.1v3.1H6.8z"/><path class="st1" d="M6.8 29.4v3.1H13M.5 20v6.3h3.1"/></g></g></svg>`;
 
 function skillFrameDataUrl(color) {
@@ -194,7 +207,12 @@ function shouldMirrorSaveSkills(actor) {
 }
 
 export function addVursExtendedSaveRows(root, actor) {
-  if (!(root instanceof HTMLElement) || !actor?.isOfType?.("character") || !actorUsesVursSystem(actor)) return;
+  if (!(root instanceof HTMLElement) || !actor || !actorUsesVursSystem(actor)) return;
+  if (actor.isOfType?.("npc")) {
+    addNpcVursExtendedSaveRows(root, actor);
+    return;
+  }
+  if (!actor.isOfType?.("character")) return;
 
   const list = root.querySelector("ul.saves");
   const template = list?.querySelector(":scope > li.roll-data[data-save]");
@@ -369,6 +387,51 @@ export function addVursExtendedSaveRows(root, actor) {
     row.style.minWidth = "0";
     if (index % 3 === 0) row.style.borderLeft = "none";
   });
+}
+
+function addNpcVursExtendedSaveRows(root, actor) {
+  const list = root.querySelector(".subsection.saves > ul");
+  const template = list?.querySelector(":scope > li");
+  if (!list || !template) return;
+  list.classList.add("vurs-extended-saves");
+
+  const rows = [
+    { slug: "perception", statistic: actor.perception },
+    { slug: "acquisition", statistic: actor.skills?.acquisition },
+    { slug: "soul", statistic: actor.skills?.soul }
+  ];
+  for (const { slug, statistic } of rows) {
+    if (!statistic) continue;
+    let row = list.querySelector(`:scope > li[data-vurs-extended-save="${slug}"]`);
+    if (!row) {
+      row = template.cloneNode(true);
+      row.dataset.vursExtendedSave = slug;
+      list.append(row);
+    }
+
+    const label = statistic.label ?? slug;
+    const displayLabel = { acquisition: "Acq", perception: "Perc", soul: "Soul" }[slug] ?? label;
+    const value = Number(statistic.totalModifier ?? statistic.mod ?? statistic.check?.mod ?? 0);
+    const formattedValue = `${value >= 0 ? "+" : ""}${Math.trunc(value)}`;
+    const roll = row.querySelector('[data-action="roll-check"]');
+    roll.dataset.statistic = slug;
+    roll.removeAttribute("data-save");
+    roll.textContent = displayLabel;
+    roll.dataset.tooltip = statistic.breakdown ?? `Modifier ${formattedValue}`;
+
+    const modifier = row.querySelector("input.modifier");
+    modifier.value = formattedValue;
+    modifier.readOnly = true;
+    modifier.classList.remove("adjustable");
+    modifier.setAttribute("aria-label", label);
+    modifier.removeAttribute("data-property");
+    modifier.removeAttribute("data-dtype");
+  }
+
+  for (const slug of ["fortitude", "reflex", "acquisition", "will", "perception", "soul"]) {
+    const row = list.querySelector(`:scope > li[data-statistic="${slug}"], :scope > li > [data-statistic="${slug}"]`)?.closest("li");
+    if (row?.parentElement === list) list.append(row);
+  }
 }
 
 export function hideVursPerceptionSidebarSection(root, actor) {
