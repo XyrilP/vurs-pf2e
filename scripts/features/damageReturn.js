@@ -73,13 +73,15 @@ function registerDamageReturnRuleElement({ quiet = false } = {}) {
 					required: false,
 					nullable: true,
 					initial: null,
-					label: localizeRuleElementFormText("DamageReturn.Threshold", "Damage Return Threshold")
+					label: localizeRuleElementFormText("DamageReturn.Threshold", "Damage Return Threshold"),
+					placeholder: "20"
 				}),
 				mode: new fields.StringField({
 					required: false,
 					nullable: true,
 					initial: null,
 					label: localizeRuleElementFormText("Common.Mode", "Mode"),
+					placeholder: localizeRuleElementFormText("Common.Modes.Threshold", "Threshold"),
 					choices: {
 						threshold: localizeRuleElementFormText("Common.Modes.Threshold", "Threshold"),
 						flat: localizeRuleElementFormText("Common.Modes.Flat", "Flat"),
@@ -90,13 +92,15 @@ function registerDamageReturnRuleElement({ quiet = false } = {}) {
 					required: false,
 					nullable: true,
 					initial: null,
-					label: localizeRuleElementFormText("Common.BeforeReduction", "Calculate Before Reduction")
+					label: localizeRuleElementFormText("Common.BeforeReduction", "Calculate Before Reduction"),
+					placeholder: "true"
 				}),
 				reflectDamage: new fields.BooleanField({
 					required: false,
 					nullable: true,
 					initial: null,
-					label: localizeRuleElementFormText("DamageReturn.ReflectDamage", "Reflect Damage")
+					label: localizeRuleElementFormText("DamageReturn.ReflectDamage", "Reflect Damage"),
+					placeholder: "false"
 				}),
 				selector: new fields.StringField({
 					required: true,

@@ -74,6 +74,7 @@ function registerAttackSpeedRuleElement({ quiet = false } = {}) {
 					nullable: true,
 					label: localizeRuleElementFormText("Common.ModifierType", "Modifier Type"),
 					choices: localizeRuleElementModifierTypes(MODIFIER_TYPES),
+					placeholder: localizeRuleElementModifierTypes(["untyped"]).untyped,
 					initial: null
 				})
 			};

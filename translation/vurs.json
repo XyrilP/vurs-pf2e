@@ -68,6 +68,7 @@
                 "Mode": "Mode",
                 "ModifierType": "Modifier Type",
                 "BeforeReduction": "Calculate Before Reduction",
+                "DefaultWhenOmitted": "When omitted: {value}",
                 "Modes": {
                     "Threshold": "Threshold",
                     "Flat": "Flat",
@@ -75,7 +76,8 @@
                 }
             },
             "CriticalProtection": {
-                "Definition": "Definition"
+                "Definition": "Definition",
+                "DefinitionPlaceholder": "No condition (always applies)"
             },
             "HealingEffectiveness": {
                 "Threshold": "Healing Effectiveness Threshold"
@@ -102,6 +104,7 @@
                 },
                 "Distance": "Distance",
                 "Within": "Within",
+                "NoLimit": "No limit",
                 "Width": "Width",
                 "Threshold": "Collateral Damage Threshold",
                 "BounceShots": "Bounce Shots",
@@ -119,6 +122,7 @@
                 "Divided": "Divide Damage",
                 "AreaDamage": "Area Damage",
                 "DamageType": "Damage Type",
+                "SourceDamageType": "Use source damage type",
                 "Placement": "Placement",
                 "Placements": {
                     "Target": "Target",

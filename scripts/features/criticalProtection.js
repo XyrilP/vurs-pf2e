@@ -65,13 +65,15 @@ function registerCriticalProtectionRuleElement({ quiet = false } = {}) {
 					nullable: true,
 					label: localizeRuleElementFormText("Common.ModifierType", "Modifier Type"),
 					choices: localizeRuleElementModifierTypes(MODIFIER_TYPES),
+					placeholder: localizeRuleElementModifierTypes(["untyped"]).untyped,
 					initial: null
 				}),
 				definition: new PredicateField({
 					required: false,
 					nullable: true,
 					initial: null,
-					label: localizeRuleElementFormText("CriticalProtection.Definition", "Definition")
+					label: localizeRuleElementFormText("CriticalProtection.Definition", "Definition"),
+					placeholder: localizeRuleElementFormText("CriticalProtection.DefinitionPlaceholder", "No condition (always applies)")
 				})
 			};
 		}

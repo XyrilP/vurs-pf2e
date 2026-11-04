@@ -160,6 +160,18 @@ function clearPreparedBurstFire(key) {
 	return true;
 }
 
+function displayBurstFireRecoilArea(actor, strike) {
+	const targetToken = getTargetToken(game.user.targets.first());
+	const scene = canvas.scene;
+	if (!targetToken || getTokenDocument(targetToken).parent !== scene) return;
+
+	const sourceToken = getSceneTokenForActor(actor, scene, targetToken);
+	if (!sourceToken) return;
+
+	const shapes = getBurstFireShapes(sourceToken, targetToken, strike.item);
+	if (shapes) displayCollateralArea(shapes, [], 4000);
+}
+
 function prepareBurstFire(actor, strike, root, strikeElement) {
 	const key = actor.uuid ?? actor.id;
 	const current = preparedBurstFires.get(key);
@@ -171,6 +183,7 @@ function prepareBurstFire(actor, strike, root, strikeElement) {
 	if (current) clearPreparedBurstFire(key);
 	preparedBurstFires.set(key, { itemId: strike.item.id, actor, root, strikeElement });
 	updatePreparedBurstFireButton(root, strikeElement, true, actor);
+	displayBurstFireRecoilArea(actor, strike);
 }
 
 function clearPreparedBurstFireForItem(item) {
@@ -317,7 +330,17 @@ function getBurstFireShapes(sourceToken, targetToken, weapon) {
 	const recoil = getRecoil(weapon);
 	const geometries = getPlacementGeometries("self", sourceToken, targetToken);
 	if (!geometries?.length) return null;
-	return geometries.map(geometry => ({
+	const areaGeometries = geometries.length === 2
+		? [
+			...geometries,
+			{
+				x: (geometries[0].x + geometries[1].x) / 2,
+				y: (geometries[0].y + geometries[1].y) / 2,
+				rotation: geometries[0].rotation
+			}
+		]
+		: geometries;
+	return areaGeometries.map(geometry => ({
 		type: "cone",
 		x: geometry.x,
 		y: geometry.y,

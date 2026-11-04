@@ -634,13 +634,15 @@ function registerLifestealRuleElement({ quiet = false } = {}) {
 					required: false,
 					nullable: true,
 					initial: null,
-					label: localizeRuleElementFormText("Lifesteal.Threshold", "Lifesteal Threshold")
+					label: localizeRuleElementFormText("Lifesteal.Threshold", "Lifesteal Threshold"),
+					placeholder: "20"
 				}),
 				mode: new fields.StringField({
 					required: false,
 					nullable: true,
 					initial: null,
 					label: localizeRuleElementFormText("Common.Mode", "Mode"),
+					placeholder: localizeRuleElementFormText("Common.Modes.Threshold", "Threshold"),
 					choices: {
 						threshold: localizeRuleElementFormText("Common.Modes.Threshold", "Threshold"),
 						flat: localizeRuleElementFormText("Common.Modes.Flat", "Flat"),
@@ -652,6 +654,7 @@ function registerLifestealRuleElement({ quiet = false } = {}) {
 					nullable: true,
 					label: localizeRuleElementFormText("Common.ModifierType", "Modifier Type"),
 					choices: localizeRuleElementModifierTypes(MODIFIER_TYPES),
+					placeholder: localizeRuleElementModifierTypes(["untyped"]).untyped,
 					initial: null
 				}),
 				selector: new fields.StringField({

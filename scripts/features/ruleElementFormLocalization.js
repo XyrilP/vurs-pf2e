@@ -5,6 +5,7 @@ const RULE_ELEMENT_FORM_TRANSLATIONS = {
 		Mode: "Mode",
 		ModifierType: "Modifier Type",
 		BeforeReduction: "Calculate Before Reduction",
+		DefaultWhenOmitted: "When omitted: {value}",
 		Modes: {
 			Threshold: "Threshold",
 			Flat: "Flat",
@@ -12,7 +13,8 @@ const RULE_ELEMENT_FORM_TRANSLATIONS = {
 		}
 	},
 	CriticalProtection: {
-		Definition: "Definition"
+		Definition: "Definition",
+		DefinitionPlaceholder: "No condition (always applies)"
 	},
 	HealingEffectiveness: {
 		Threshold: "Healing Effectiveness Threshold"
@@ -37,8 +39,15 @@ const RULE_ELEMENT_FORM_TRANSLATIONS = {
 			square: "Square",
 			bounce: "Bounce"
 		},
+		Tabs: {
+			General: "General",
+			Area: "Area",
+			Damage: "Damage",
+			Bounce: "Bounce"
+		},
 		Distance: "Distance",
 		Within: "Within",
+		NoLimit: "No limit",
 		Width: "Width",
 		Threshold: "Collateral Damage Threshold",
 		BounceShots: "Bounce Shots",
@@ -56,6 +65,7 @@ const RULE_ELEMENT_FORM_TRANSLATIONS = {
 		Divided: "Divide Damage",
 		AreaDamage: "Area Damage",
 		DamageType: "Damage Type",
+		SourceDamageType: "Use source damage type",
 		Placement: "Placement",
 		Placements: {
 			Target: "Target",
@@ -96,6 +106,46 @@ export function localizeRuleElementModifierTypes(types) {
 		return [type, localized === key ? type : localized];
 	}));
 }
+
+function addRuleElementDefaultPlaceholders(app, html) {
+	const root = html?.[0] ?? html;
+	if (!root?.querySelectorAll) return;
+
+	const system = game[game.system.id] ?? game.pf2e;
+	for (const form of root.querySelectorAll(".rule-form[data-key]")) {
+		const schema = system?.RuleElements?.all?.[form.dataset.key]?.schema;
+		if (!schema) continue;
+
+		for (const input of form.querySelectorAll("[name^='system.rules.']")) {
+			const fieldName = input.name.split(".").at(-1);
+			const placeholder = schema.fields?.[fieldName]?.placeholder;
+			if (placeholder === null || placeholder === undefined || placeholder === "") continue;
+
+			if (input instanceof HTMLSelectElement) {
+				const blankOption = input.querySelector('option[value=""]');
+				if (blankOption) blankOption.textContent = game.i18n.format(
+					"VURS.RuleElements.Common.DefaultWhenOmitted",
+					{ value: placeholder }
+				);
+			} else if (input instanceof HTMLInputElement && input.type === "checkbox") {
+				const group = input.closest(".form-group");
+				if (!group || group.dataset.vursDefaultHint === "true") continue;
+				const hint = document.createElement("p");
+				hint.className = "hint";
+				hint.textContent = game.i18n.format(
+					"VURS.RuleElements.Common.DefaultWhenOmitted",
+					{ value: placeholder }
+				);
+				group.append(hint);
+				group.dataset.vursDefaultHint = "true";
+			} else {
+				input.placeholder = String(placeholder);
+			}
+		}
+	}
+}
+
+Hooks.on("renderItemSheet", addRuleElementDefaultPlaceholders);
 
 registerRuleElementFormLocalization();
 Hooks.once("init", registerRuleElementFormLocalization);
