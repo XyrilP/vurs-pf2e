@@ -10,6 +10,7 @@ import {
 	refreshVursPlayResourcesDrawer,
 	renderVursPlayResourcesDrawer
 } from "./features/playResources.js";
+import "./features/pf2eHud.js";
 import {
 	addNpcConfigurationButton,
 	renderNpcRelationshipStatistics

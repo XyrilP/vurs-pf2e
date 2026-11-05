@@ -40,7 +40,6 @@
         "BurstFire": {
             "Title": "Burst-Fire",
             "Prepared": "Burst-Fire prepared. Select this weapon's Strike and MAP to fire.",
-            "MAPLabel": "Burst-Fire (MAP {modifier})",
             "RateOfFire": "Rate of Fire",
             "Recoil": "Recoil",
             "AtMAP": "at MAP {map}",

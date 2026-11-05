@@ -194,6 +194,269 @@
   width: 100%;
 }
 
+#pf2e-hud-persistent:has(> .vurs-play-resources-hud) {
+  grid-template-rows:
+    [play-resources-start] auto [play-resources-end effects-start] auto
+    [effects-end top-start] var(--row-1fr)
+    [top-end middle-start] var(--row-3fr)
+    [middle-end bottom-start] var(--row-2fr)
+    [bottom-end];
+}
+
+:is(#pf2e-hud-persistent, #pf2e-hud-token) > .vurs-play-resources-hud {
+  align-items: flex-start;
+  box-sizing: border-box;
+  display: flex;
+  gap: 0.4rem;
+  grid-column: full;
+  grid-row: play-resources;
+  margin: 0;
+  min-width: 0;
+  padding: 0.2rem 0.35rem;
+  pointer-events: all;
+}
+
+#pf2e-hud-token > .vurs-play-resources-hud {
+  background: transparent;
+  border-radius: 0;
+  bottom: calc(100% + 5.3rem);
+  grid-column: auto;
+  grid-row: auto;
+  left: 50%;
+  max-width: min(90vw, 32rem);
+  position: absolute;
+  transform: translateX(-50%);
+  width: max-content;
+  z-index: 2;
+}
+
+#pf2e-hud-token > .vurs-play-resources-hud > ol {
+  flex: 0 1 auto;
+  flex-wrap: wrap;
+  justify-content: center;
+}
+
+:is(#pf2e-hud-persistent, #pf2e-hud-token) > .vurs-play-resources-hud .vurs-play-resource-hud-apply {
+  align-self: center;
+  flex: 0 0 auto;
+  font-size: 0.65rem;
+  line-height: 1;
+  min-height: 1.1rem;
+  padding: 0.08rem 0.2rem;
+}
+
+:is(#pf2e-hud-persistent, #pf2e-hud-token) > .vurs-play-resources-hud .vurs-play-resource-hud-apply[hidden] {
+  display: none !important;
+}
+
+:is(#pf2e-hud-persistent, #pf2e-hud-token) > .vurs-play-resources-hud > ol {
+  align-items: flex-start;
+  display: flex;
+  flex-wrap: wrap;
+  flex: 1 1 auto;
+  gap: 0.25rem 0.55rem;
+  list-style: none;
+  margin: 0;
+  min-width: 0;
+  padding: 0;
+}
+
+:is(#pf2e-hud-persistent, #pf2e-hud-token) > .vurs-play-resources-hud > ol > .vurs-play-resource {
+  align-items: center;
+  display: flex;
+  flex: 0 0 3.2rem;
+  flex-direction: column;
+  font-size: 0.7rem;
+  gap: 0.1rem;
+  margin: 0;
+  min-width: 0;
+}
+
+:is(#pf2e-hud-persistent, #pf2e-hud-token) > .vurs-play-resources-hud > ol > .vurs-play-resource-hud-apply-item {
+  align-items: center;
+  display: flex;
+  flex: 0 0 auto;
+  margin: 0;
+  min-width: 0;
+}
+
+:is(#pf2e-hud-persistent, #pf2e-hud-token) > .vurs-play-resources-hud > ol > li[data-resource="budgetPoints"],
+:is(#pf2e-hud-persistent, #pf2e-hud-token) > .vurs-play-resources-hud > ol > li[data-resource="magicPoints"] {
+  align-items: stretch;
+  flex: 0 1 7rem;
+  max-width: 7rem;
+  min-width: 5rem;
+}
+
+:is(#pf2e-hud-persistent, #pf2e-hud-token) > .vurs-play-resources-hud [data-resource="budgetPoints"] .vurs-play-resource-frame,
+:is(#pf2e-hud-persistent, #pf2e-hud-token) > .vurs-play-resources-hud [data-resource="magicPoints"] .vurs-play-resource-frame {
+  box-sizing: border-box;
+  display: grid;
+  gap: 0.06rem;
+  grid-template-columns: minmax(0, 1fr);
+  grid-template-rows: min-content 0.72rem min-content;
+  justify-items: stretch;
+  min-width: 0;
+  padding: 1px 3px;
+  width: 100%;
+}
+
+:is(#pf2e-hud-persistent, #pf2e-hud-token) > .vurs-play-resources-hud [data-resource="budgetPoints"] .vurs-play-resource-frame > .label,
+:is(#pf2e-hud-persistent, #pf2e-hud-token) > .vurs-play-resources-hud [data-resource="magicPoints"] .vurs-play-resource-frame > .label {
+  font-size: 0.65rem;
+  line-height: 1;
+  text-align: center;
+}
+
+:is(#pf2e-hud-persistent, #pf2e-hud-token) > .vurs-play-resources-hud [data-resource="budgetPoints"] .vurs-budget-points-bar,
+:is(#pf2e-hud-persistent, #pf2e-hud-token) > .vurs-play-resources-hud [data-resource="magicPoints"] .vurs-play-resource-segments {
+  background-color: rgba(255, 255, 255, 0.25);
+  border: 0;
+  box-sizing: border-box;
+  height: 0.75rem;
+  margin: 0;
+  min-height: 0.75rem;
+  min-width: 2rem;
+  padding: 0;
+  position: relative;
+  width: 100%;
+}
+
+:is(#pf2e-hud-persistent, #pf2e-hud-token) > .vurs-play-resources-hud .vurs-play-resource-frame {
+  box-sizing: border-box;
+  min-width: 0;
+  width: 100%;
+}
+
+:is(#pf2e-hud-persistent, #pf2e-hud-token) > .vurs-play-resources-hud .vurs-play-resource-edit-values {
+  display: block;
+  font-size: 0.66rem;
+  font-variant-numeric: tabular-nums;
+  text-align: center;
+  white-space: nowrap;
+}
+
+:is(#pf2e-hud-persistent, #pf2e-hud-token) > .vurs-play-resources-hud .vurs-budget-coin-stacks {
+  align-items: center;
+  display: flex;
+  inset: 0;
+  justify-content: space-evenly;
+  pointer-events: none;
+  position: absolute;
+}
+
+:is(#pf2e-hud-persistent, #pf2e-hud-token) > .vurs-play-resources-hud .vurs-budget-coin-stack {
+  height: 0.8rem;
+  position: relative;
+  width: 0.55rem;
+}
+
+:is(#pf2e-hud-persistent, #pf2e-hud-token) > .vurs-play-resources-hud .vurs-budget-coin-stack .coin {
+  bottom: calc(var(--coin-index, 0) * 0.12rem);
+  color: #80651d;
+  font-size: 0.5rem;
+  left: 0;
+  line-height: 0.4rem;
+  position: absolute;
+  text-shadow: 0 0 1px #000;
+  width: 0.55rem;
+}
+
+:is(#pf2e-hud-persistent, #pf2e-hud-token) > .vurs-play-resources-hud .vurs-budget-coin-stack .coin.is-filled {
+  color: #f1c40f;
+}
+
+:is(#pf2e-hud-persistent, #pf2e-hud-token) > .vurs-play-resources-hud [data-resource="magicPoints"] .vurs-play-resource-segments {
+  align-content: start;
+  align-items: center;
+  display: grid;
+  gap: 0;
+  grid-auto-flow: row;
+  grid-auto-rows: 0.55rem;
+  grid-template-columns: repeat(10, 0.55rem);
+  height: auto;
+  justify-content: center;
+  min-height: 0.75rem;
+  overflow: visible;
+}
+
+:is(#pf2e-hud-persistent, #pf2e-hud-token) > .vurs-play-resources-hud .vurs-mp-star {
+  color: var(--segment-color, #5ab8ff) !important;
+  font-size: 0.46rem;
+  height: 0.55rem;
+  line-height: 0.55rem;
+  margin: 0;
+  text-align: center;
+  width: 0.55rem;
+}
+
+:is(#pf2e-hud-persistent, #pf2e-hud-token) > .vurs-play-resources-hud .vurs-mp-star.is-empty {
+  opacity: 0.5;
+}
+
+:is(#pf2e-hud-persistent, #pf2e-hud-token) > .vurs-play-resources-hud .vurs-play-resource-control {
+  align-items: center;
+  appearance: none;
+  background: rgba(255, 255, 255, 0.35);
+  border: 0;
+  border-radius: 50%;
+  box-shadow: none;
+  cursor: pointer;
+  display: inline-grid;
+  height: 1.5rem;
+  justify-items: center;
+  margin: 0;
+  min-height: 0;
+  min-width: 1.5rem;
+  padding: 0;
+  position: relative;
+  width: 1.5rem;
+}
+
+:is(#pf2e-hud-persistent, #pf2e-hud-token) > .vurs-play-resources-hud .vurs-play-resource-control:focus-visible {
+  outline: 2px solid var(--color-warm-2, #c90) !important;
+  outline-offset: 1px;
+}
+
+:is(#pf2e-hud-persistent, #pf2e-hud-token) > .vurs-play-resources-hud .vurs-play-resource-control img {
+  background: transparent;
+  border: 0;
+  height: 100%;
+  object-fit: contain;
+  position: absolute;
+  width: 100%;
+}
+
+:is(#pf2e-hud-persistent, #pf2e-hud-token) .vurs-play-resources-hud .vurs-play-resource-edit {
+  appearance: textfield;
+  background: transparent;
+  border: 0;
+  box-shadow: none;
+  color: inherit;
+  font: inherit;
+  min-width: 1ch;
+  outline: none;
+  padding: 0;
+  text-align: center;
+  width: auto;
+}
+
+:is(#pf2e-hud-persistent, #pf2e-hud-token) .vurs-play-resources-hud .vurs-play-resource-maximum {
+  display: inline-flex;
+  position: relative;
+}
+
+:is(#pf2e-hud-persistent, #pf2e-hud-token) .vurs-play-resources-hud .vurs-play-resource-max-reduction-delta {
+  color: #ff3b3b;
+  font-size: 0.55em;
+  font-weight: 700;
+  pointer-events: none;
+  position: absolute;
+  right: -0.35em;
+  text-shadow: -1px -1px 0 #1a0d0d, 1px -1px 0 #1a0d0d, -1px 1px 0 #1a0d0d, 1px 1px 0 #1a0d0d;
+  white-space: nowrap;
+}
+
 :is(.actor.sheet.character .sidebar > .vurs-play-resources, .vurs-play-resources-drawer .vurs-play-resources) .vurs-play-resource-control .value {
   background: transparent;
   border-radius: 0;

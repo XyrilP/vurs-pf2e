@@ -22,7 +22,6 @@ const weaponSheetRoots = new WeakSet();
 const BURST_FIRE_TRANSLATIONS = {
 	Title: "Burst-Fire",
 	Prepared: "Burst-Fire prepared. Select this weapon's Strike and MAP to fire.",
-	MAPLabel: "Burst-Fire (MAP {modifier})",
 	RateOfFireShort: "RoF {shots}",
 	RateOfFire: "Rate of Fire",
 	Recoil: "Recoil",
@@ -97,16 +96,23 @@ function updatePreparedBurstFireButton(root, strikeElement, isPrepared, actor) {
 	}
 	if (actor?.type === "npc") return;
 
-	const attackGroup = strikeElement.querySelector(":scope > section > .button-group.tags")
-		?? strikeElement.querySelector(":scope > .button-group");
+	const hudStrike = strikeElement.matches(".item.attack[data-index]");
+	const attackGroup = hudStrike
+		? strikeElement.querySelector(":scope > .variants")
+		: strikeElement.querySelector(":scope > section > .button-group.tags")
+			?? strikeElement.querySelector(":scope > .button-group");
 	if (!attackGroup) return;
 	attackGroup.classList.toggle("vurs-burst-fire-armed", isPrepared);
-	for (const attackButton of attackGroup.querySelectorAll('button[data-action="strike-attack"]')) {
+	for (const attackButton of attackGroup.querySelectorAll('[data-action="strike-attack"]')) {
 		if (!attackButton.dataset.vursOriginalLabel) {
 			attackButton.dataset.vursOriginalLabel = attackButton.innerHTML;
 			attackButton.dataset.vursOriginalAriaLabelSet = String(attackButton.hasAttribute("aria-label"));
+			attackButton.dataset.vursOriginalTitleSet = String(attackButton.hasAttribute("title"));
 			if (attackButton.hasAttribute("aria-label")) {
 				attackButton.dataset.vursOriginalAriaLabel = attackButton.getAttribute("aria-label");
+			}
+			if (attackButton.hasAttribute("title")) {
+				attackButton.dataset.vursOriginalTitle = attackButton.getAttribute("title");
 			}
 		}
 		const variantIndex = Number(attackButton.dataset.variantIndex ?? 0);
@@ -118,37 +124,39 @@ function updatePreparedBurstFireButton(root, strikeElement, isPrepared, actor) {
 			} else {
 				attackButton.removeAttribute("aria-label");
 			}
+			if (attackButton.dataset.vursOriginalTitleSet === "true") {
+				attackButton.setAttribute("title", attackButton.dataset.vursOriginalTitle);
+			} else {
+				attackButton.removeAttribute("title");
+			}
 			continue;
 		}
 
-		const actionIndex = Number(strikeElement.dataset.actionIndex);
+		const actionIndex = Number(strikeElement.dataset.actionIndex ?? strikeElement.dataset.index);
 		const strike = actor?.system?.actions?.[actionIndex];
 		const variant = strike?.variants?.[variantIndex];
 		const baseLabel = game.i18n.localize("PF2E.WeaponStrikeLabel");
 		const labelRemainder = String(variant?.label ?? "").replace(baseLabel, "").trim();
-		const modifier = labelRemainder.match(/^[+-]?\d+/)?.[0] ?? labelRemainder;
+		const modifier = variantIndex > 0
+			? labelRemainder.replace(/^MAP\s*/i, "")
+			: labelRemainder.match(/^[+-]?\d+/)?.[0] ?? labelRemainder;
 		const effectiveMAP = variantIndex > 0
 			? getEffectiveStrikeMAP(strike, variantIndex, actor)
 			: 0;
-		const label = variantIndex === 0
-			? game.i18n.localize("VURS.BurstFire.Title")
-			: game.i18n.format("VURS.BurstFire.MAPLabel", {
-				modifier: effectiveMAP === 0 ? "0" : `-${effectiveMAP}`
-			});
-		attackButton.replaceChildren();
+		const label = game.i18n.localize("VURS.BurstFire.Title");
 		if (variantIndex === 0) {
-			const name = document.createElement("span");
-			name.className = "name";
-			name.textContent = label;
-			const glyph = document.createElement("span");
-			glyph.className = "action-glyph";
-			glyph.textContent = "2";
-			attackButton.append(name, document.createTextNode(" "), glyph, document.createTextNode(` ${modifier}`));
+			attackButton.textContent = `${label} ${modifier}`.trim();
 		} else {
-			attackButton.textContent = `${modifier} ${label}`;
+			attackButton.textContent = `MAP ${modifier}`.trim();
 		}
 		attackButton.classList.add("vurs-burst-fire-variant");
-		attackButton.setAttribute("aria-label", `${label} ${modifier}`);
+		const accessibleLabel = variantIndex === 0
+			? `${label} ${modifier}`.trim()
+			: `MAP ${modifier}`;
+		attackButton.setAttribute("aria-label", accessibleLabel);
+		attackButton.title = variantIndex === 0
+			? `${label} at MAP 0`
+			: `${label} at MAP -${effectiveMAP}`;
 	}
 }
 
@@ -172,6 +180,14 @@ function displayBurstFireRecoilArea(actor, strike) {
 	if (shapes) displayCollateralArea(shapes, [], 4000);
 }
 
+function getHudStrike(actor, strikeElement) {
+	const actions = actor?.system?.actions ?? [];
+	const itemId = strikeElement.dataset.itemId;
+	const indexedStrike = actions[Number(strikeElement.dataset.index)];
+	if (indexedStrike?.item?.id === itemId) return indexedStrike;
+	return actions.find(strike => strike.item?.id === itemId);
+}
+
 function prepareBurstFire(actor, strike, root, strikeElement) {
 	const key = actor.uuid ?? actor.id;
 	const current = preparedBurstFires.get(key);
@@ -184,6 +200,45 @@ function prepareBurstFire(actor, strike, root, strikeElement) {
 	preparedBurstFires.set(key, { itemId: strike.item.id, actor, root, strikeElement });
 	updatePreparedBurstFireButton(root, strikeElement, true, actor);
 	displayBurstFireRecoilArea(actor, strike);
+}
+
+export function handleBurstFireHudClick(event, actor, target, root) {
+	const strikeElement = target.closest(".item.attack[data-index]");
+	if (!strikeElement || !root.contains(strikeElement)) return false;
+	const strike = getHudStrike(actor, strikeElement);
+	if (!strike) return false;
+
+	const altUsageIndex = target.dataset.altUsage;
+	const altUsage = altUsageIndex === undefined ? null : strike.altUsages?.[Number(altUsageIndex)];
+	if (altUsage?.type === "burst-fire") {
+		if (Number(target.dataset.variantIndex ?? 0) !== 0) return false;
+		event.preventDefault();
+		event.stopImmediatePropagation();
+		target.classList.add("vurs-burst-fire-trigger");
+		target.setAttribute(
+			"aria-pressed",
+			String(preparedBurstFires.get(actor.uuid ?? actor.id)?.itemId === strike.item.id)
+		);
+		prepareBurstFire(actor, strike, root, strikeElement);
+		return true;
+	}
+
+	const key = actor.uuid ?? actor.id;
+	const prepared = preparedBurstFires.get(key);
+	if (!prepared || target.hasAttribute("data-alt-usage")) return false;
+	if (prepared.itemId !== strike.item?.id) {
+		clearPreparedBurstFire(key);
+		return false;
+	}
+
+	event.preventDefault();
+	event.stopImmediatePropagation();
+	clearPreparedBurstFire(key);
+	void rollBurstFire(actor, strike, Number(target.dataset.variantIndex ?? 0), { event }).catch(error => {
+		console.error(`${MODULE_ID} | Could not confirm prepared Burst-Fire for ${strike.item.name}`, error);
+		ui.notifications.error(game.i18n.localize("VURS.BurstFire.Warnings.RollFailed"));
+	});
+	return true;
 }
 
 function clearPreparedBurstFireForItem(item) {

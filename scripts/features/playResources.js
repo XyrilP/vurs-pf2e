@@ -208,6 +208,114 @@ export function hasVursPlayResourcesDrawer(root) {
 	return playResourceDrawerPanels.has(sheetWindow);
 }
 
+export function renderVursPlayResourcesHudPanel(panel, actor, { refresh = false } = {}) {
+	if (!(panel instanceof HTMLElement)) return false;
+	const root = panel.matches("#pf2e-hud-persistent, #pf2e-hud-token")
+		? panel
+		: panel.closest("#pf2e-hud-persistent, #pf2e-hud-token");
+	let section = root?.querySelector(":scope > .vurs-play-resources-hud")
+		?? panel.querySelector(":scope > .vurs-play-resources-hud");
+	root?.querySelector(":scope > .vurs-play-resource-hud-icons")?.remove();
+	if (root?.id === "pf2e-hud-persistent") {
+		root.querySelectorAll('[data-panel="resources"] > .vurs-play-resources-hud, [data-panel="npc-extras"] > .vurs-play-resources-hud')
+			.forEach(legacySection => legacySection.remove());
+	}
+	if (!actor ||
+		!(actor.isOfType?.("character") || actor.isOfType?.("npc") || ["character", "npc"].includes(actor.type))) {
+		section?.remove();
+		if (root) {
+			delete root.dataset.vursHudResourcesActorUuid;
+			delete root.dataset.vursHudResourcesRendered;
+		}
+		return false;
+	}
+	preloadResourceIcons();
+
+	const actorUuid = actor.uuid ?? actor.id;
+	const isNewActor = root?.dataset.vursHudResourcesActorUuid !== actorUuid;
+	if (section && section.dataset.actorUuid !== actorUuid) {
+		section.remove();
+		section = null;
+	}
+	if (!refresh && root?.dataset.vursHudResourcesRendered === "true" && !isNewActor) {
+		return Boolean(section);
+	}
+	if (isNewActor) {
+		void ensurePlayResourceMaxDefaults(actor).catch(error =>
+			console.error(`vurs-pf2e | Failed to initialize Play resource defaults for ${actor.name}`, error)
+		);
+	}
+	const entries = getPlayResourceEntries(actor);
+	if (!entries.length) {
+		section?.remove();
+		if (root) {
+			root.dataset.vursHudResourcesActorUuid = actorUuid;
+			root.dataset.vursHudResourcesRendered = "true";
+		}
+		return false;
+	}
+
+	if (!section) {
+		section = document.createElement("section");
+		section.className = "vurs-play-resources vurs-play-resources-hud";
+		section.dataset.actorUuid = actorUuid;
+		const apply = document.createElement("button");
+		apply.type = "button";
+		apply.className = "vurs-play-apply vurs-play-resource-hud-apply";
+		apply.textContent = "Apply";
+		apply.title = "Click to apply; right-click to discard; Ctrl+right-click to reset; Ctrl+Shift+right-click to hard reset";
+		apply.setAttribute("aria-label", "Apply staged changes; right-click to discard; Ctrl+right-click to reset resources; Ctrl+Shift+right-click to hard reset Play Resources");
+		const handleContextMenu = event => {
+			event.preventDefault();
+			if (event.ctrlKey && event.shiftKey) void hardResetPlayResources(panel, actor, apply);
+			else if (event.ctrlKey) void resetPlayResources(panel, actor, apply);
+			else {
+				discardPendingPlayResourceChanges(section, actor);
+				apply.textContent = "Apply";
+			}
+		};
+		apply.addEventListener("click", event => {
+			event.preventDefault();
+			void applyPlayResourceChanges(panel, actor, section, apply);
+		});
+		apply.addEventListener("contextmenu", handleContextMenu);
+		const applyItem = document.createElement("li");
+		applyItem.className = "vurs-play-resource-hud-apply-item";
+		applyItem.append(apply);
+		const list = document.createElement("ol");
+		list.append(applyItem);
+		section.append(list);
+	}
+	(root ?? panel).append(section);
+
+	const pending = section._vursPendingUpdates ?? {};
+	for (const resource of entries) {
+		const value = pending[`${resource.key}.value`];
+		if (value !== undefined) resource.value = Math.clamp(finiteResourceNumber(value), 0, resource.max);
+		const maxReduction = pending[`${resource.key}.maxReduction`];
+		if (maxReduction !== undefined) applyPlayResourceMaxReduction(actor, resource, maxReduction);
+	}
+	const list = section.querySelector("ol");
+	const apply = section.querySelector(".vurs-play-apply");
+	let applyItem = apply.closest(".vurs-play-resource-hud-apply-item");
+	if (!applyItem) {
+		applyItem = document.createElement("li");
+		applyItem.className = "vurs-play-resource-hud-apply-item";
+		applyItem.append(apply);
+	}
+	list.replaceChildren(...entries.map(resource => createPlayResourceRow(resource, actor)), applyItem);
+	const hasPending = Object.keys(pending).length > 0;
+	apply.disabled = false;
+	apply.classList.toggle("has-pending-changes", hasPending);
+	apply.hidden = !hasPending;
+	apply.textContent = "Apply";
+	if (root) {
+		root.dataset.vursHudResourcesActorUuid = actorUuid;
+		root.dataset.vursHudResourcesRendered = "true";
+	}
+	return true;
+}
+
 function createPlayResourceDrawer(sheetWindow, actor, actorKey, root, app) {
 	const wrapper = document.createElement("div");
 	wrapper.className = "vurs-play-resources-drawer";
@@ -468,6 +576,11 @@ function getNpcSheetBackgroundStyle(sheetWindow, themeSource) {
 
 function renderPlayResourcesAfterChange(root, actor) {
 	if (root instanceof HTMLElement) {
+		const hudPanel = root.querySelector?.(":scope > .vurs-play-resources-hud") ? root : null;
+		if (hudPanel) {
+			renderVursPlayResourcesHudPanel(hudPanel, actor);
+			return;
+		}
 		const sheetWindow = root.closest(".window-app") ?? root;
 		const panel = playResourceDrawerPanels.get(sheetWindow);
 		if (panel) {
@@ -896,6 +1009,9 @@ async function resetPlayResources(root, actor, button) {
 
 	const section = button.closest(".vurs-play-resources");
 	if (section?._vursPendingUpdates) delete section._vursPendingUpdates;
+	if (section?.classList.contains("vurs-play-resources-hud")) {
+		updatePendingPlayResourceState(section, null);
+	}
 	button.textContent = "Apply";
 	button.classList.remove("has-pending-changes");
 	button.disabled = true;
@@ -919,6 +1035,9 @@ async function hardResetPlayResources(root, actor, button) {
 
 	const section = button.closest(".vurs-play-resources");
 	if (section?._vursPendingUpdates) delete section._vursPendingUpdates;
+	if (section?.classList.contains("vurs-play-resources-hud")) {
+		updatePendingPlayResourceState(section, null);
+	}
 	button.textContent = "Apply";
 	button.classList.remove("has-pending-changes");
 	button.disabled = true;
@@ -1759,6 +1878,7 @@ async function savePlayResourceFlags(actor, updates, control) {
 		const hasPending = Object.keys(pending).length > 0;
 		apply.disabled = false;
 		apply.classList.toggle("has-pending-changes", hasPending);
+		if (section.classList.contains("vurs-play-resources-hud")) apply.hidden = !hasPending;
 		apply.textContent = "Apply";
 	}
 }
@@ -1771,7 +1891,9 @@ function updatePendingPlayResourceState(section, row) {
 		Boolean(resourceKey && Object.keys(pending).some(path => path.startsWith(`${resourceKey}.`)))
 	);
 	const apply = section.querySelector(".vurs-play-apply");
-	apply?.classList.toggle("has-pending-changes", Object.keys(pending).length > 0);
+	const hasPending = Object.keys(pending).length > 0;
+	apply?.classList.toggle("has-pending-changes", hasPending);
+	if (section.classList.contains("vurs-play-resources-hud") && apply) apply.hidden = !hasPending;
 }
 
 function discardPendingPlayResourceChanges(section, actor) {
@@ -1804,7 +1926,6 @@ function discardPendingPlayResourceChanges(section, actor) {
 			const iconSource = preloadedResourceIcons.get(iconFile)?.src ?? `${RESOURCE_ICON_BASE}${iconFile}`;
 			if (icon.getAttribute("src") !== iconSource) icon.src = iconSource;
 		}
-
 		if (resource.key === "budgetPoints") {
 			const bar = row.querySelector(".vurs-budget-points-bar");
 			if (bar) {
@@ -1838,6 +1959,7 @@ function discardPendingPlayResourceChanges(section, actor) {
 	const apply = section.querySelector(".vurs-play-apply");
 	apply?.classList.remove("has-pending-changes");
 	if (apply) apply.textContent = "Apply";
+	updatePendingPlayResourceState(section, null);
 	if (styleRankResource) {
 		const sheet = section._vursPlayStyleRoot ?? section.closest("form");
 		if (sheet) renderStyleRankOverlay(sheet, actor, styleRankResource.value);
@@ -1893,6 +2015,7 @@ async function applyPlayResourceChanges(root, actor, section, button) {
 		console.error("vurs-pf2e | Failed to apply Play resource changes", error);
 		button.disabled = false;
 	} finally {
+		if (button.isConnected) button.disabled = false;
 		if (section.isConnected) {
 			const currentApply = section.querySelector(".vurs-play-apply");
 			if (currentApply) {

@@ -23,13 +23,13 @@ const SETTING_KEYS = Object.freeze({
 });
 
 function requestSettingsRefresh(settingName) {
-  const confirm = globalThis.Dialog?.confirm;
-  if (typeof confirm !== "function") {
+  const dialog = globalThis.Dialog;
+  if (typeof dialog?.confirm !== "function") {
     globalThis.ui?.notifications?.warn?.(`${settingName} changed. Refresh the page to apply it.`);
     return;
   }
 
-  confirm({
+  dialog.confirm({
     title: "Refresh Required",
     content: `<p>${settingName} changed. Refresh the page now to apply it?</p>`,
     yes: () => window.location.reload(),

@@ -3,6 +3,33 @@
 	outline-offset: 1px;
 }
 
+.pf2e-hud-element .variant.attack.vurs-burst-fire-trigger {
+	cursor: pointer;
+}
+
+.pf2e-hud-element .variant.attack.vurs-burst-fire-trigger.vurs-burst-fire-prepared {
+	outline: 2px solid var(--color-warm-2, #c90);
+	outline-offset: 1px;
+}
+
+#pf2e-hud-sidebar .item .variants.vurs-burst-fire-armed,
+#pf2e-hud-persistent .item .variants.vurs-burst-fire-armed {
+	box-sizing: border-box;
+	flex-wrap: wrap;
+	max-width: 100%;
+	min-width: 0;
+	width: 100%;
+}
+
+#pf2e-hud-sidebar .item .variants.vurs-burst-fire-armed .variant.attack.vurs-burst-fire-variant,
+#pf2e-hud-persistent .item .variants.vurs-burst-fire-armed .variant.attack.vurs-burst-fire-variant {
+	box-sizing: border-box;
+	flex: 0 1 auto;
+	max-width: 100%;
+	padding-inline: 3px;
+	white-space: nowrap;
+}
+
 .vurs-burst-fire-item-settings .vurs-burst-fire-stat-fields {
 	gap: var(--space-8);
 }

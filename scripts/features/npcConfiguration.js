@@ -10,7 +10,6 @@ const PLAYER_TOKEN_RING_COLOR_SETTING = "colorTokenRingsByPlayer";
 const MIN_NPC_LEVEL = -1;
 const MAX_NPC_LEVEL = 100;
 const OWNER_PERMISSION_LEVEL = CONST.DOCUMENT_OWNERSHIP_LEVELS.OWNER;
-const NPC_LEVEL_DC_PATCH = Symbol.for(`${MODULE_ID}.npcLevelDcPatch`);
 const NPC_FOLLOWER_TRAIT_PATCH = Symbol.for(`${MODULE_ID}.npcFollowerTraitPatch`);
 const NPC_RELATIONSHIP_PANEL_STATE = new Map();
 const NPC_RELATIONSHIP_PANELS = new Map();
@@ -20,6 +19,7 @@ const GM_SELECTED_TOKEN_UUIDS = new Map();
 const LOCAL_FOLLOWER_CONTROL_REQUESTS = new Map();
 const LOCAL_FOLLOWER_CONTROL_RELEASES = new Set();
 const FOLLOWER_CONTROL_RELEASE_TIMERS = new Map();
+let npcLevelDcWrapperRegistered = false;
 const DIRECT_SCALING_STAT_PATHS = Object.freeze([
 	"system.attributes.ac.value",
 	"system.saves.fortitude.value",
@@ -1492,39 +1492,52 @@ function applyNpcLevelDcAdjustment(actor) {
 			};
 		}
 	}
-	if (prototype[NPC_LEVEL_DC_PATCH]) return;
-	const originalPrepareDerivedData = prototype.prepareDerivedData;
-	if (typeof originalPrepareDerivedData !== "function") {
+	if (npcLevelDcWrapperRegistered) return;
+	const target = "CONFIG.PF2E.Actor.documentClasses.npc.prototype.prepareDerivedData";
+	if (typeof CONFIG.PF2E?.Actor?.documentClasses?.npc?.prototype?.prepareDerivedData !== "function") {
 		console.error(`${MODULE_ID} | Could not install NPC area-fire DC scaling: the NPC preparation method is unavailable.`);
 		return;
 	}
-	Object.defineProperty(prototype, NPC_LEVEL_DC_PATCH, { value: true });
-	prototype.prepareDerivedData = function (...args) {
-		const result = originalPrepareDerivedData.apply(this, args);
-		if (!isNpcActor(this)) return result;
-		applyNpcConfigurationSkillScaling(this);
-		const dcAdjustment = getNpcConfigurationDcAdjustment(this);
-		const Modifier = game.pf2e?.Modifier;
-		if (!dcAdjustment) return result;
-		if (typeof Modifier !== "function") {
-			console.error(`${MODULE_ID} | Could not apply NPC area-fire DC scaling: the PF2e Modifier API is unavailable.`);
-			return result;
-		}
+	if (typeof globalThis.libWrapper?.register !== "function") {
+		console.error(`${MODULE_ID} | Could not install NPC area-fire DC scaling: libWrapper is unavailable.`);
+		return;
+	}
+	try {
+		globalThis.libWrapper.register(
+			MODULE_ID,
+			target,
+			function (wrapped, ...args) {
+				const result = wrapped(...args);
+				if (!isNpcActor(this)) return result;
+				applyNpcConfigurationSkillScaling(this);
+				const dcAdjustment = getNpcConfigurationDcAdjustment(this);
+				const Modifier = game.pf2e?.Modifier;
+				if (!dcAdjustment) return result;
+				if (typeof Modifier !== "function") {
+					console.error(`${MODULE_ID} | Could not apply NPC area-fire DC scaling: the PF2e Modifier API is unavailable.`);
+					return result;
+				}
 
-		for (const selector of ["area-fire-dc", "auto-fire-dc"]) {
-			const modifiers = this.synthetics.modifiers[selector] ??= [];
-			if (modifiers.some(modifier => modifier.vursNpcLevelScaling)) continue;
-			const modifier = () => new Modifier({
-				slug: "vurs-npc-level-dc",
-				label: "Leveled NPC DC",
-				modifier: dcAdjustment,
-				type: "untyped"
-			});
-			modifier.vursNpcLevelScaling = true;
-			modifiers.push(modifier);
-		}
-		return result;
-	};
+				for (const selector of ["area-fire-dc", "auto-fire-dc"]) {
+					const modifiers = this.synthetics.modifiers[selector] ??= [];
+					if (modifiers.some(modifier => modifier.vursNpcLevelScaling)) continue;
+					const modifier = () => new Modifier({
+						slug: "vurs-npc-level-dc",
+						label: "Leveled NPC DC",
+						modifier: dcAdjustment,
+						type: "untyped"
+					});
+					modifier.vursNpcLevelScaling = true;
+					modifiers.push(modifier);
+				}
+				return result;
+			},
+			"WRAPPER"
+		);
+		npcLevelDcWrapperRegistered = true;
+	} catch (error) {
+		console.error(`${MODULE_ID} | Failed to register NPC area-fire DC scaling wrapper for ${target}`, error);
+	}
 }
 
 function applyNpcConfigurationSkillScaling(actor) {
