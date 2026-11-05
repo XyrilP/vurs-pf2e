@@ -737,21 +737,25 @@ async function rollBurstFire(actor, strike, startingMAP, options = {}) {
 			damageTarget = primaryToken;
 			const path = createPath(sourceToken, primaryToken, null, shapes);
 			if (path) paths.push(path);
+		} else if (outcome === "criticalFailure") {
+			note = "VURS.BurstFire.Notes.CriticalMiss";
+			const path = createPath(sourceToken, primaryToken, null, shapes, {
+				continueToEdge: true,
+				extendToEdge: true
+			});
+			if (path) paths.push(path);
 		} else {
 			secondaryTargets ??= getEligibleSecondaryTargets(shapes, sourceToken, primaryToken);
 			const secondary = getNextSecondaryTarget(secondaryTargets, visited);
-			const criticalMiss = outcome === "criticalFailure";
 			if (secondary) damageTarget = secondary.object ?? secondary;
 			const path = createPath(sourceToken, secondary ?? primaryToken, null, shapes, {
-				continueToEdge: criticalMiss || !secondary,
-				extendToEdge: criticalMiss || !secondary
+				continueToEdge: !secondary,
+				extendToEdge: !secondary
 			});
 			if (path) paths.push(path);
 
 			if (!secondary) {
 				note = "VURS.BurstFire.Notes.NoSecondaryTarget";
-			} else if (criticalMiss) {
-				note = "VURS.BurstFire.Notes.CriticalMiss";
 			} else {
 				halfDamage = true;
 				note = "VURS.BurstFire.Notes.HalfDamage";

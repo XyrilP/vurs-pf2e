@@ -782,12 +782,15 @@ function applyGMTokenSelection(userId, sceneId, tokenUuids) {
 }
 
 function broadcastGMTokenSelection() {
-	if (!game.user?.isGM || !followerControlSocket) return;
+	if (!game.user?.isGM) return;
 
 	const sceneId = canvas.scene?.id ?? null;
 	const tokenUuids = (canvas.tokens?.controlled ?? [])
 		.map(token => token.document?.uuid)
 		.filter(uuid => typeof uuid === "string");
+	applyGMTokenSelection(game.user.id, sceneId, tokenUuids);
+	if (!followerControlSocket) return;
+
 	void followerControlSocket.executeForEveryone(
 		"applyGMTokenSelection",
 		game.user.id,
@@ -828,17 +831,10 @@ function getUserTokenRingColor(user) {
 function getPlayerTokenRingColor(actor, token) {
 	if (!actor || game.settings.get(MODULE_ID, PLAYER_TOKEN_RING_COLOR_SETTING) !== true) return null;
 
-	let assignedGM = null;
-	for (const user of game.users?.contents ?? []) {
-		if (!user.isGM || (user.character?.id ?? user.character) !== actor.id) continue;
-		if (assignedGM) {
-			assignedGM = null;
-			break;
-		}
-		assignedGM = user;
+	if (game.user?.isGM && token?.controlled) {
+		const selectedGMColor = getUserTokenRingColor(game.user);
+		if (selectedGMColor) return selectedGMColor;
 	}
-	const assignedGMColor = getUserTokenRingColor(assignedGM);
-	if (assignedGMColor) return assignedGMColor;
 
 	const tokenUuid = token?.document?.uuid;
 	const selectedGM = [...GM_SELECTED_TOKEN_UUIDS.entries()]
@@ -850,10 +846,18 @@ function getPlayerTokenRingColor(actor, token) {
 		const selectedGMColor = getUserTokenRingColor(game.users.get(selectedGM[0]));
 		if (selectedGMColor) return selectedGMColor;
 	}
-	if (game.user?.isGM && token?.controlled) {
-		const selectedGMColor = getUserTokenRingColor(game.user);
-		if (selectedGMColor) return selectedGMColor;
+
+	let assignedGM = null;
+	for (const user of game.users?.contents ?? []) {
+		if (!user.isGM || (user.character?.id ?? user.character) !== actor.id) continue;
+		if (assignedGM) {
+			assignedGM = null;
+			break;
+		}
+		assignedGM = user;
 	}
+	const assignedGMColor = getUserTokenRingColor(assignedGM);
+	if (assignedGMColor) return assignedGMColor;
 
 	const controlState = foundry.utils.getProperty(actor, FOLLOWER_CONTROL_PATH);
 	const controller = controlState?.userId ? game.users.get(controlState.userId) : null;
@@ -886,7 +890,9 @@ function getPlayerTokenRingColor(actor, token) {
 function refreshTokenRingColors(actor) {
 	for (const token of canvas.tokens?.placeables ?? []) {
 		if (actor && getFollowerControlActor(token)?.uuid !== actor.uuid) continue;
-		if (token.document.ring?.enabled) token.ring?.configureVisuals();
+		if (token.document.ring?.enabled) {
+			token.renderFlags.set({ refreshRingVisuals: true });
+		}
 	}
 }
 
@@ -1119,7 +1125,6 @@ function registerFollowerTokenControlWrappers() {
 function onFollowerTokenControl(token, controlled) {
 	const actor = getFollowerControlActor(token);
 	if (game.user?.isGM) {
-		if (token.document?.ring?.enabled) token.ring?.configureVisuals();
 		broadcastGMTokenSelection();
 		return;
 	}

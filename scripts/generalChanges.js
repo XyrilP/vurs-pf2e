@@ -21,6 +21,14 @@ import {
 import { applyFullVursSkillAttributes, applyVursHitPoints } from "./features/modes/fullVurs.js";
 import { applyAgnosticVursSkillAttributes } from "./features/modes/agnosticVurs.js";
 import {
+	addMainAttributeBuilderControl,
+	addMainAttributeIndicator,
+	applyMainAttributeBoost,
+	applyMainAttributeToStrike,
+	getMainAttribute,
+	registerMainAttributeDamageModifiers
+} from "./features/mainAttribute.js";
+import {
 	applyVursConsolidatedSkillAttributes,
 	applyVursStatisticSkillMirrors,
 	addVursExtendedSaveRows,
@@ -412,13 +420,13 @@ Hooks.on("renderApplicationV2", (app, element, context, options) => {
 			options?.actor
 		].find(candidate => candidate?.documentName === "Actor" || candidate?.type === "npc") ??
 			game.actors?.contents?.find(
-				candidate =>
-					candidate.apps?.[app?.id] === app &&
-					candidate?.type === "npc"
+				candidate => candidate.apps?.[app?.id] === app
 			);
 
 		// Do not render Play Resources in the generic ApplicationV2 hook.
 
+		if (getActorSystemMode(actor) === "vurs") addMainAttributeBuilderControl(app, root, actor);
+		addMainAttributeIndicator(root, actor);
 		addNpcRestButton(root, actor);
 		if (!isSupportedVursActor(actor)) return;
 		reorderAttributeBuilderColumns(root, actor);
@@ -690,6 +698,7 @@ function applyActorSheetPresentation(app, element) {
 	}
 	requestAnimationFrame(() => addVursMaxHpReductionControl(root, actor));
 	allowNegativeHpEntry(root, actor);
+	addMainAttributeIndicator(root, actor);
 	reorderCharacterSheetAttributes(root, actor);
 	applyActorAbilityLabels(root, actor);
 	colorVursAttributeModifierFrames(root, actor);
@@ -2106,6 +2115,58 @@ function registerVursCharacterPreparationWrappers(actorClass = CONFIG.PF2E?.Acto
 	if (!actorClass?.prototype) return;
 	if (typeof globalThis.libWrapper?.register !== "function") return;
 	const wrappers = {
+		prepareBuildData: function (wrapped, ...args) {
+			const result = wrapped(...args);
+			if (getActorSystemMode(this) === "vurs") applyMainAttributeBoost(this);
+			return result;
+		},
+		prepareStrike: function (wrapped, ...args) {
+			const attribute = getActorSystemMode(this) === "vurs" ? getMainAttribute(this) : null;
+			const item = args[0];
+			if (!attribute || !item?.system) return wrapped(...args);
+
+			const originalDefaultAttribute = Object.getOwnPropertyDescriptor(item, "defaultAttribute");
+			const abilityModifiers = this.system?.abilities;
+			const originalAbilityModifiers = new Map();
+			let defaultAttributeOverridden = false;
+			try {
+				Object.defineProperty(item, "defaultAttribute", {
+					configurable: true,
+					value: attribute
+				});
+				defaultAttributeOverridden = true;
+				const mainModifier = abilityModifiers?.[attribute]?.mod;
+				if (Number.isFinite(mainModifier)) {
+					for (const [ability, data] of Object.entries(abilityModifiers)) {
+						if (ability === attribute || !Number.isFinite(data?.mod)) continue;
+						originalAbilityModifiers.set(ability, data.mod);
+						data.mod = Math.min(data.mod, mainModifier - 1);
+					}
+				}
+				if (item.defaultAttribute !== attribute) {
+					console.error(`${MODULE_ID} | Could not set Main Attribute for ${item.name}'s Strike`);
+				}
+			} catch (error) {
+				console.error(`${MODULE_ID} | Failed to set Main Attribute for ${item.name}'s Strike`, error);
+			}
+
+			let strike;
+			try {
+				strike = wrapped(...args);
+			} finally {
+				for (const [ability, modifier] of originalAbilityModifiers) {
+					abilityModifiers[ability].mod = modifier;
+				}
+				if (defaultAttributeOverridden) {
+					if (originalDefaultAttribute) {
+						Object.defineProperty(item, "defaultAttribute", originalDefaultAttribute);
+					} else {
+						delete item.defaultAttribute;
+					}
+				}
+			}
+			return applyMainAttributeToStrike(this, strike, item, attribute);
+		},
 		prepareSaves: function (wrapped, ...args) {
 			if (actorUsesVursSystem(this) && this.system?.saves) {
 				if (this.system.saves.fortitude) this.system.saves.fortitude.attribute = "str";
@@ -2199,6 +2260,7 @@ function registerVursCharacterPreparationWrappers(actorClass = CONFIG.PF2E?.Acto
 					VURS_ABILITY_LABELS.str,
 					true
 				);
+				if (getActorSystemMode(this) === "vurs") registerMainAttributeDamageModifiers(this);
 				if (actorUsesAgnosticVurs(this) || (!isFullVursMode() &&
 					(actorHasVursSystemFlag(this) || actorHasAgnosticSystemFlag(this)))) applyActorAbilityDataLabels(this);
 			} else if (isAnyVursMode()) {
@@ -2658,6 +2720,8 @@ function reorderCharacterSheetAttributes(element, actor) {
 
 async function migrateLegacyVursActorFlags() {
 	const migrations = [
+		{ legacy: "mainAttribute", current: "flags.vurs.mainAttribute" },
+		{ legacy: "MainAttribute", current: "flags.vurs.mainAttribute" },
 		{ legacy: "hp.maxReduction", current: "flags.vurs.hp.maxReduction" },
 		{ legacy: "hpReduction", current: "flags.vurs.hp.maxReduction" },
 		{ legacy: "vursSystem", current: "flags.vurs.vursSystem" },

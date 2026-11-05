@@ -33,6 +33,10 @@
         "Combats": "Encounters"
     },
     "VURS": {
+        "MainAttribute": {
+            "Label": "Main Attribute",
+            "ChooseHint": "Choose one attribute."
+        },
         "BurstFire": {
             "Title": "Burst-Fire",
             "Prepared": "Burst-Fire prepared. Select this weapon's Strike and MAP to fire.",

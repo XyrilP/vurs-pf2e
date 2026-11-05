@@ -30,6 +30,8 @@ const autoRolledDamageMessages = new Set();
 const autoRolledStrikeMessages = new Set();
 const pendingAreaDamageRolls = new Map();
 const pendingToolbeltSpellDamageRolls = new Map();
+const pendingToolbeltHealingTemplateRolls = new Map();
+const pendingToolbeltHealingRegions = new Map();
 const pendingAutomatedDamageSources = new Map();
 const automatedDamageSourceByMessage = new Map();
 const pendingToolbeltDamageSources = new Map();
@@ -50,6 +52,8 @@ let damageSocket = null;
 let secretDamageHookInstalled = false;
 let groupedDamageUndoInstalled = false;
 let damageAutomationInstalled = false;
+let toolbeltHealingRegionDeleteGuardInstalled = false;
+let toolbeltHealingTargetDialogObserver = null;
 let elevationDistanceWarningShown = false;
 
 const OVERLAY_CHANNEL = `module.${MODULE_ID}`;
@@ -1417,6 +1421,135 @@ function hasHealingSpellDamage(message, data) {
 		(typeof formula === "string" && /\[(?:healing|temp-healing)\]/i.test(formula));
 }
 
+function isHealEmanation(message) {
+	return message?.item?.type === "spell" &&
+		message.item.slug === "heal" &&
+		message.item.system?.area?.type === "emanation";
+}
+
+function initializeToolbeltHealingTargetData(message, userId) {
+	if ((userId && userId !== game.user.id) ||
+		!isToolbeltTargetHelperActive() ||
+		!isHealEmanation(message)) return;
+
+	const targetData = getToolbeltTargetData(message);
+	if (targetData?.type) return;
+	message.updateSource({
+		flags: {
+			"pf2e-toolbelt": {
+				targetHelper: {
+					...foundry.utils.deepClone(targetData ?? {}),
+					type: "spell"
+				}
+			}
+		}
+	});
+}
+
+function initializeToolbeltHealingRegionTokens(region, messageId, userId) {
+	if ((userId && userId !== game.user.id) ||
+		!isToolbeltTargetHelperActive() ||
+		!isHealEmanation(game.messages.get(messageId))) return;
+	if (!(region?.tokens instanceof Set) || typeof canvas.scene?.tokens?.values !== "function") {
+		console.warn(`${MODULE_ID} | Could not initialize Toolbelt targets for Heal region ${region?.id ?? "unknown"}`);
+		return;
+	}
+
+	for (const token of canvas.scene.tokens) {
+		if (typeof token.testInsideRegion !== "function") {
+			console.warn(`${MODULE_ID} | TokenDocument.testInsideRegion is unavailable for Heal region ${region.id}`);
+			return;
+		}
+		if (token.testInsideRegion(region)) region.tokens.add(token);
+	}
+}
+
+function releasePendingToolbeltHealingRegion(regionId) {
+	const pending = pendingToolbeltHealingRegions.get(regionId);
+	if (!pending) return;
+	clearTimeout(pending.timeout);
+	pendingToolbeltHealingRegions.delete(regionId);
+	if (!pendingToolbeltHealingRegions.size && toolbeltHealingTargetDialogObserver) {
+		toolbeltHealingTargetDialogObserver.disconnect();
+		toolbeltHealingTargetDialogObserver = null;
+	}
+}
+
+function trackPendingToolbeltHealingRegion(region, messageId, userId) {
+	if ((userId && userId !== game.user.id) ||
+		!isToolbeltTargetHelperActive() ||
+		game.settings.get("pf2e-toolbelt", "targetHelper.template") !== true ||
+		!isHealEmanation(game.messages.get(messageId))) return;
+
+	const pending = {
+		dialog: null,
+		timeout: setTimeout(() => releasePendingToolbeltHealingRegion(region.id), 300000)
+	};
+	pendingToolbeltHealingRegions.set(region.id, pending);
+
+	if (toolbeltHealingTargetDialogObserver) return;
+	const onTargetDialogChange = () => {
+		const dialog = document.querySelector("dialog.pf2e-toolbelt-template-helper");
+		if (dialog) {
+			for (const [regionId, entry] of pendingToolbeltHealingRegions) {
+				if (entry.dialog) continue;
+				entry.dialog = dialog;
+				dialog.addEventListener(
+					"close",
+					() => releasePendingToolbeltHealingRegion(regionId),
+					{ once: true }
+				);
+				break;
+			}
+		}
+		for (const [regionId, entry] of pendingToolbeltHealingRegions) {
+			if (entry.dialog && !entry.dialog.isConnected) {
+				releasePendingToolbeltHealingRegion(regionId);
+			}
+		}
+	};
+	toolbeltHealingTargetDialogObserver = new MutationObserver(onTargetDialogChange);
+	toolbeltHealingTargetDialogObserver.observe(document.documentElement, {
+		childList: true,
+		subtree: true
+	});
+	onTargetDialogChange();
+}
+
+function preventPrematureToolbeltHealingRegionDeletion(wrapped, embeddedName, ids, ...args) {
+	if (embeddedName !== "Region" || !Array.isArray(ids)) {
+		return wrapped(embeddedName, ids, ...args);
+	}
+
+	const regions = this.regions;
+	const retainedIds = [];
+	for (const id of ids) {
+		const region = regions?.get(id);
+		const messageId = region?.flags?.pf2e?.messageId;
+		if (pendingToolbeltHealingRegions.has(id) &&
+			isHealEmanation(game.messages.get(messageId))) continue;
+		retainedIds.push(id);
+	}
+
+	if (retainedIds.length === ids.length) return wrapped(embeddedName, ids, ...args);
+	return wrapped(embeddedName, retainedIds, ...args);
+}
+
+function installToolbeltHealingRegionDeleteGuard() {
+	if (toolbeltHealingRegionDeleteGuardInstalled) return;
+	try {
+		globalThis.libWrapper.register(
+			MODULE_ID,
+			"CONFIG.Scene.documentClass.prototype.deleteEmbeddedDocuments",
+			preventPrematureToolbeltHealingRegionDeletion,
+			"WRAPPER"
+		);
+		toolbeltHealingRegionDeleteGuardInstalled = true;
+	} catch (error) {
+		console.error(`${MODULE_ID} | Failed to protect Heal regions during Toolbelt targeting`, error);
+	}
+}
+
 function isActorAffectedByEnergyType(actor, damageType) {
 	if (typeof actor?.isAffectedBy === "function") {
 		const affected = actor.isAffectedBy(damageType);
@@ -1822,7 +1955,6 @@ function canAutoApplyDamageMessage(message, data) {
 	if (association.workflow === "healing") {
 		if (!hasHealingSpellDamage(sourceMessage, sourceData)) return false;
 		if (isToolbeltTargetHelperActive() &&
-			sourceData?.type === "spell" &&
 			getAcceptedToolbeltTargets(sourceData)) {
 			return getPendingToolbeltSaveTokens(
 				sourceData,
@@ -1897,8 +2029,20 @@ function autoRollCardDamage(message, html) {
 	const data = getToolbeltTargetData(message);
 	const workflow = getSupportedDamageWorkflow(message, data);
 	if (!workflow) {
-		if (!automaticDamage) return;
 		if (!hasHealingSpellDamage(message, data)) return;
+		if (isToolbeltTargetHelperActive() &&
+			isHealEmanation(message) &&
+			templateAction) {
+			const autoPlace = game.settings.get(MODULE_ID, "automaticTemplatePlacement") === true;
+			if (automaticDamage || autoPlace) {
+				startToolbeltHealingTemplateFlow(message, templateAction, damageAction, data, {
+					autoPlace,
+					autoDamage: automaticDamage
+				});
+			}
+			return;
+		}
+		if (!automaticDamage) return;
 		if (isToolbeltTargetHelperActive() && data?.type === "spell") {
 			if (Object.keys(data.saveVariants ?? {}).length) return;
 			if (!getAcceptedToolbeltTargets(data) &&
@@ -1929,6 +2073,62 @@ function autoRollCardDamage(message, html) {
 	pendingToolbeltSpellDamageRolls.set(message.id, { action: damageAction, workflow });
 	autoRollToolbeltSaves(message, data);
 	finishPendingToolbeltSpellDamage(message, data);
+}
+
+function startToolbeltHealingTemplateFlow(message, templateAction, damageAction, data, {
+	autoPlace,
+	autoDamage
+}) {
+	if (getAcceptedToolbeltTargets(data)) {
+		if (autoDamage) autoClickDamageAction(message, damageAction, "healing");
+		return;
+	}
+
+	let pending = pendingToolbeltHealingTemplateRolls.get(message.id);
+	if (!pending) {
+		pending = {
+			templateAction,
+			damageAction,
+			autoDamage,
+			timeout: setTimeout(() => {
+				if (pendingToolbeltHealingTemplateRolls.get(message.id) !== pending) return;
+				pendingToolbeltHealingTemplateRolls.delete(message.id);
+				autoRolledDamageMessages.delete(`${message.id}:${templateAction}`);
+			}, 300000)
+		};
+		pendingToolbeltHealingTemplateRolls.set(message.id, pending);
+	}
+
+	if (!autoPlace || autoRolledDamageMessages.has(`${message.id}:${templateAction}`)) return;
+
+	autoRolledDamageMessages.add(`${message.id}:${templateAction}`);
+	clickRenderedChatButton(
+		message.id,
+		`[data-action="${templateAction}"]`,
+		() => {
+			clearTimeout(pending.timeout);
+			pendingToolbeltHealingTemplateRolls.delete(message.id);
+			autoRolledDamageMessages.delete(`${message.id}:${templateAction}`);
+			console.warn(
+				`${MODULE_ID} | Could not find the rendered ${templateAction} button for Heal message ${message.id}`
+			);
+		},
+		() => game.messages.get(message.id)?.author?.id === game.user.id
+	);
+}
+
+function finishToolbeltHealingTemplateFlow(message, data) {
+	const pending = pendingToolbeltHealingTemplateRolls.get(message.id);
+	if (!pending ||
+		message.author?.id !== game.user.id ||
+		!getAcceptedToolbeltTargets(data)) return;
+
+	clearTimeout(pending.timeout);
+	pendingToolbeltHealingTemplateRolls.delete(message.id);
+	autoRolledDamageMessages.delete(`${message.id}:${pending.templateAction}`);
+	if (pending.autoDamage) {
+		autoClickDamageAction(message, pending.damageAction, "healing");
+	}
 }
 
 function autoClickDamageAction(message, action, workflow) {
@@ -2002,9 +2202,11 @@ function startToolbeltAreaDamageFlow(message, templateAction, damageAction, {
 function installAutoAreaDamageFlow() {
 	installTemplatePlacementSheetMinimizer();
 	Hooks.on("canvasReady", installTemplatePlacementSheetMinimizer);
-	Hooks.on("createRegion", region => {
+	Hooks.on("createRegion", (region, _options, userId) => {
 		const messageId = foundry.utils.getProperty(region, "flags.pf2e.messageId") ??
 			region?.getFlag?.("pf2e", "messageId");
+		initializeToolbeltHealingRegionTokens(region, messageId, userId);
+		trackPendingToolbeltHealingRegion(region, messageId, userId);
 		const flow = typeof messageId === "string"
 			? pendingAreaDamageRolls.get(messageId)
 			: null;
@@ -2162,6 +2364,7 @@ function associateToolbeltDamageSource(damageMessage) {
 }
 
 async function transferToolbeltSpellSavesToDamage(damageMessage) {
+	if (!isActiveGM()) return;
 	const sourceId = toolbeltDamageSourceByMessage.get(damageMessage.id);
 	if (!sourceId || !game.modules.get("pf2e-toolbelt")?.active) return;
 	const sourceMessage = game.messages.get(sourceId);
@@ -2771,7 +2974,9 @@ function retryToolbeltDamageApplication(message) {
 function installDamageAutomation() {
 	if (damageAutomationInstalled) return;
 	installAutoAreaDamageFlow();
+	installToolbeltHealingRegionDeleteGuard();
 	Hooks.on("preCreateChatMessage", (message, _data, _options, userId) => {
+		initializeToolbeltHealingTargetData(message, userId);
 		tagAutomatedDamageMessage(message, userId);
 	});
 	Hooks.on("createChatMessage", message => {
@@ -2821,6 +3026,7 @@ function installDamageAutomation() {
 			const data = game.modules.get("pf2e-toolbelt")?.active
 				? getToolbeltTargetData(updatedMessage)
 				: null;
+			finishToolbeltHealingTemplateFlow(updatedMessage, data);
 			if (data && ["spell", "area"].includes(data.type)) {
 				transferPendingToolbeltDamageSaves(updatedMessage);
 				autoRollToolbeltSaves(updatedMessage, data);

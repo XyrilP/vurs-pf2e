@@ -199,12 +199,12 @@ const AUTO_CLICKER_SETTINGS = Object.freeze([
   {
     key: SETTING_KEYS.automaticDamageRolls,
     name: "Automatically Roll Eligible Damage and Healing",
-    hint: "Automatically roll damage and healing for successful Strikes, eligible healing spells, accepted Auto-Fire/Area-Fire targets, and accepted basic-save spells. Mixed vitality/void effects follow PF2E target healing rules; only targets damaged by that energy type need a save. Area damage waits for the template and accepted targets, and spell damage waits for required saves."
+    hint: "Automatically roll damage and healing for successful Strikes, eligible healing spells, accepted Auto-Fire/Area-Fire targets, and accepted basic-save spells. Three-action Heal waits for Toolbelt's emanation target selection. Mixed vitality/void effects follow PF2E target healing rules; only targets damaged by that energy type need a save. Area damage waits for the template and accepted targets, and spell damage waits for required saves."
   },
   {
     key: SETTING_KEYS.automaticTemplatePlacement,
     name: "Automatically Place Area Templates",
-    hint: "Automatically start PF2e's native template placement for eligible basic-save spells and Auto-Fire/Area-Fire. You still choose the area position and direction for Toolbelt targeting. When disabled, click the template button manually."
+    hint: "Automatically start PF2e's native template placement for eligible basic-save spells, three-action Heal emanations, and Auto-Fire/Area-Fire. You still choose the area position and direction for Toolbelt targeting. Toolbelt's Dismiss Template option controls whether a placed region remains visible after target selection. When disabled, click the template button manually."
   },
   {
     key: SETTING_KEYS.automaticNpcSavingThrows,
@@ -290,7 +290,7 @@ function registerModuleSettings() {
 
   registerSetting(settings, SETTING_KEYS.colorTokenRingsByPlayer, {
     name: "Color Dynamic Token Rings by Player",
-    hint: "Prioritize the assigned GM or a GM selecting the token (shared with players) over player colors; otherwise use the assigned player or sole owner. An active follower controller takes priority over other player colors.",
+    hint: "A GM selecting the token takes priority. Otherwise use the assigned GM, active follower controller, assigned player, or sole owner.",
     scope: "world",
     config: true,
     type: Boolean,
@@ -309,7 +309,7 @@ function registerModuleSettings() {
 
   registerSetting(settings, SETTING_KEYS.automaticDamageRolls, {
     name: "Automatically Roll Eligible Damage and Healing",
-    hint: "Automatically roll damage and healing for successful Strikes, eligible healing spells, accepted Auto-Fire/Area-Fire targets, and accepted basic-save spells. Mixed vitality/void effects follow PF2E target healing rules; only targets damaged by that energy type need a save. Area damage waits for the template and accepted targets, and spell damage waits for required saves.",
+    hint: "Automatically roll damage and healing for successful Strikes, eligible healing spells, accepted Auto-Fire/Area-Fire targets, and accepted basic-save spells. Three-action Heal waits for Toolbelt's emanation target selection. Mixed vitality/void effects follow PF2E target healing rules; only targets damaged by that energy type need a save. Area damage waits for the template and accepted targets, and spell damage waits for required saves.",
     scope: "world",
     config: false,
     type: Boolean,
@@ -318,7 +318,7 @@ function registerModuleSettings() {
 
   registerSetting(settings, SETTING_KEYS.automaticTemplatePlacement, {
     name: "Automatically Place Area Templates",
-    hint: "Automatically start PF2E's native template placement for eligible basic-save spells and Auto-Fire/Area-Fire. You still choose the area position and direction for Toolbelt targeting. When disabled, click the template button manually.",
+    hint: "Automatically start PF2E's native template placement for eligible basic-save spells, three-action Heal emanations, and Auto-Fire/Area-Fire. You still choose the area position and direction for Toolbelt targeting. Toolbelt's Dismiss Template option controls whether a placed region remains visible after target selection. When disabled, click the template button manually.",
     scope: "world",
     config: false,
     type: Boolean,

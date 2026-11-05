@@ -1,0 +1,28 @@
+.vurs-main-attribute-row .attributes {
+  display: grid;
+  grid-template-columns: repeat(6, 5.25rem);
+}
+
+.vurs-main-attribute-row .row-column {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.vurs-main-attribute-row .description {
+  text-decoration-line: underline;
+  text-decoration-style: dotted;
+  text-underline-offset: 0.15em;
+}
+
+.actor.sheet.character .subsection.attributes .vurs-main-attribute-indicator {
+  bottom: var(--space-4);
+  color: inherit;
+  font-size: var(--font-size-12);
+  position: absolute;
+  right: var(--space-2);
+}
+
+.actor.sheet.character .subsection.attributes h2.abbreviation:has(.apex) .vurs-main-attribute-indicator {
+  right: calc(var(--space-2) + var(--font-size-12) + var(--space-4));
+}

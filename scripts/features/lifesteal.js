@@ -17,6 +17,7 @@ const damageSelectorCache = new WeakMap();
 const damageSourceMessagesByRoll = new WeakMap();
 const damageSourceMessagesByItemUuid = new Map();
 const damageSourceMessageItemUuids = new WeakMap();
+const lifestealHealingQueues = new Map();
 const damageHandlers = globalThis[Symbol.for(`${MODULE_ID}.applyDamageHandlers`)] ??= new Set();
 const damageTransactionState = globalThis[Symbol.for(`${MODULE_ID}.damageTransactions`)] ??= {
 	params: new WeakMap(),
@@ -187,6 +188,20 @@ export function runDamageTransactionActorOperation(parentParams, actor, operatio
 	const previous = transaction.actorOperations.get(key) ?? Promise.resolve();
 	const current = previous.then(operation);
 	transaction.actorOperations.set(key, current.catch(() => {}));
+	return current;
+}
+
+function queueLifestealHealingOperation(parentParams, actor, operation) {
+	const key = actor.uuid ?? actor.id ?? actor;
+	const previous = lifestealHealingQueues.get(key) ?? Promise.resolve();
+	const current = previous.then(() =>
+		runDamageTransactionActorOperation(parentParams, actor, operation)
+	);
+	const queue = current.catch(() => {});
+	lifestealHealingQueues.set(key, queue);
+	void queue.then(() => {
+		if (lifestealHealingQueues.get(key) === queue) lifestealHealingQueues.delete(key);
+	});
 	return current;
 }
 
@@ -1121,7 +1136,7 @@ async function finalizeQueuedLifesteal(transaction) {
 		const sourceCollateralCardIds = [...new Set(
 			batch.flatMap(request => request.sourceCollateralCardIds)
 		)];
-		await runDamageTransactionActorOperation(
+		await queueLifestealHealingOperation(
 			transaction.rootParams,
 			attacker,
 			() => healDamageDealer(
@@ -1269,12 +1284,16 @@ async function applyLifesteal(actor, wrapped, args) {
 			total + request.amount, 0
 		);
 		const modifiers = [...new Set(healingRequests.flatMap(request => request.modifiers))];
-		const { healing: healed, card } = await healDamageDealer(
-			attacker,
-			adjustedHealing,
+		const { healing: healed, card } = await queueLifestealHealingOperation(
 			params,
-			sources,
-			{ modifiers, healingEffectiveness: healingEffectivenessSources }
+			attacker,
+			() => healDamageDealer(
+				attacker,
+				adjustedHealing,
+				params,
+				sources,
+				{ modifiers, healingEffectiveness: healingEffectivenessSources }
+			)
 		);
 		if (healed > 0 && card) {
 			let remainingHealing = healed;
