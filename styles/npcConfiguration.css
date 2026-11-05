@@ -196,6 +196,20 @@
   align-items: center;
 }
 
+.vurs-npc-configuration-content .npc-config-follower-field {
+  grid-template-columns: minmax(0, 1fr) minmax(8rem, 1.5fr);
+  align-items: center;
+}
+
+.vurs-npc-configuration-content .npc-config-follower-preview {
+  font-weight: 600;
+}
+
+.vurs-npc-configuration-content .npc-config-follower-level-warning {
+  color: var(--color-level-warning, var(--color-text-warning, #9a6700));
+  font-weight: 600;
+}
+
 .vurs-npc-configuration-content .npc-config-relationship-label {
   display: flex;
   align-items: center;

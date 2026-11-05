@@ -17,7 +17,9 @@ const SETTING_KEYS = Object.freeze({
   manualDamageApplication: "manualDamageApplication",
   automaticDamageRolls: "automaticDamageRolls",
   automaticTemplatePlacement: "automaticTemplatePlacement",
-  automaticNpcSavingThrows: "automaticNpcSavingThrows"
+  automaticNpcSavingThrows: "automaticNpcSavingThrows",
+  allowPlayersToControlFollowers: "allowPlayersToControlFollowers",
+  colorTokenRingsByPlayer: "colorTokenRingsByPlayer"
 });
 
 function requestSettingsRefresh(settingName) {
@@ -196,8 +198,8 @@ class VursFeatureSettings extends foundry.applications.api.HandlebarsApplication
 const AUTO_CLICKER_SETTINGS = Object.freeze([
   {
     key: SETTING_KEYS.automaticDamageRolls,
-    name: "Automatically Roll Eligible Damage",
-    hint: "Automatically roll damage for normal Strikes only when the attack succeeds or critically succeeds, plus accepted Auto-Fire/Area-Fire targets and accepted basic-save spells. Area damage waits for the template to be placed and targets accepted; basic-save workflows also wait for every targeted save. Other damage and healing are not automated."
+    name: "Automatically Roll Eligible Damage and Healing",
+    hint: "Automatically roll damage and healing for successful Strikes, eligible healing spells, accepted Auto-Fire/Area-Fire targets, and accepted basic-save spells. Mixed vitality/void effects follow PF2E target healing rules; only targets damaged by that energy type need a save. Area damage waits for the template and accepted targets, and spell damage waits for required saves."
   },
   {
     key: SETTING_KEYS.automaticTemplatePlacement,
@@ -207,12 +209,12 @@ const AUTO_CLICKER_SETTINGS = Object.freeze([
   {
     key: SETTING_KEYS.automaticNpcSavingThrows,
     name: "Automatically Roll Eligible Toolbelt Saves",
-    hint: "Requires PF2E Toolbelt Target Helper. After area templates are placed and targets accepted, the GM rolls basic saves for eligible saving-throw spells and Auto-Fire/Area-Fire, including saves for player-owned actors. Damage waits until every targeted save resolves."
+    hint: "Requires PF2E Toolbelt Target Helper. After area templates are placed and targets accepted, the GM rolls basic saves for eligible saving-throw spells and Auto-Fire/Area-Fire, including saves for player-owned actors. Damage waits until every target that needs a save has resolved it."
   },
   {
     key: SETTING_KEYS.manualDamageApplication,
     name: "Manual Damage Application",
-    hint: "When enabled, Auto-Clicker leaves damage application manual. When disabled, it applies damage only after an eligible workflow has succeeded and its required saves are resolved."
+    hint: "When enabled, Auto-Clicker leaves damage and healing application manual. When disabled, it applies eligible results only after the workflow and any required saves are resolved."
   }
 ]);
 
@@ -276,9 +278,29 @@ function registerModuleSettings() {
     }
   });
 
+  registerSetting(settings, SETTING_KEYS.allowPlayersToControlFollowers, {
+    name: "Allow Players to Control Followers",
+    hint: "When enabled, players may control assigned followers. The first player to control one holds exclusive follower control until releasing it; an NPC's Follower override takes precedence.",
+    scope: "world",
+    config: true,
+    type: Boolean,
+    default: false,
+    onChange: value => Hooks.callAll(`${MODULE_ID}.followerPlayerControlChanged`, value === true)
+  });
+
+  registerSetting(settings, SETTING_KEYS.colorTokenRingsByPlayer, {
+    name: "Color Dynamic Token Rings by Player",
+    hint: "Prioritize the assigned GM or a GM selecting the token (shared with players) over player colors; otherwise use the assigned player or sole owner. An active follower controller takes priority over other player colors.",
+    scope: "world",
+    config: true,
+    type: Boolean,
+    default: true,
+    onChange: () => Hooks.callAll(`${MODULE_ID}.playerTokenRingColorsChanged`)
+  });
+
   registerSetting(settings, SETTING_KEYS.manualDamageApplication, {
     name: "Manual Damage Application",
-    hint: "When enabled, Auto-Clicker leaves damage application manual. When disabled, it applies damage only after an eligible workflow has succeeded and its required saves are resolved.",
+    hint: "When enabled, Auto-Clicker leaves damage and healing application manual. When disabled, it applies eligible results only after the workflow and any required saves are resolved.",
     scope: "world",
     config: false,
     type: Boolean,
@@ -286,8 +308,8 @@ function registerModuleSettings() {
   });
 
   registerSetting(settings, SETTING_KEYS.automaticDamageRolls, {
-    name: "Automatically Roll Eligible Damage",
-    hint: "Automatically roll damage for normal Strikes only when the attack succeeds or critically succeeds, plus accepted Auto-Fire/Area-Fire targets and accepted basic-save spells. Area damage waits for the template to be placed and targets accepted; basic-save workflows also wait for every targeted save. Other damage and healing are not automated.",
+    name: "Automatically Roll Eligible Damage and Healing",
+    hint: "Automatically roll damage and healing for successful Strikes, eligible healing spells, accepted Auto-Fire/Area-Fire targets, and accepted basic-save spells. Mixed vitality/void effects follow PF2E target healing rules; only targets damaged by that energy type need a save. Area damage waits for the template and accepted targets, and spell damage waits for required saves.",
     scope: "world",
     config: false,
     type: Boolean,
@@ -305,7 +327,7 @@ function registerModuleSettings() {
 
   registerSetting(settings, SETTING_KEYS.automaticNpcSavingThrows, {
     name: "Automatically Roll Eligible Toolbelt Saves",
-    hint: "Requires PF2E Toolbelt Target Helper. After area templates are placed and targets accepted, the GM rolls basic saves for eligible saving-throw spells and Auto-Fire/Area-Fire, including saves for player-owned actors. Damage waits until every targeted save resolves.",
+    hint: "Requires PF2E Toolbelt Target Helper. After area templates are placed and targets accepted, the GM rolls basic saves for eligible saving-throw spells and Auto-Fire/Area-Fire, including saves for player-owned actors. Damage waits until every target that needs a save has resolved it.",
     scope: "world",
     config: false,
     type: Boolean,

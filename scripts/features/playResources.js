@@ -836,13 +836,18 @@ function getPlayResourceEntries(actor) {
 			return Math.max(0, baseMax);
 		})();
 		const maxReduction = maxReductionValue;
+		const alwaysShowActionPoints = definition.key === "actionPoints" &&
+			isNpcActor(actor) &&
+			actorUsesVursSystem(actor) &&
+			!actorUsesAgnosticVurs(actor);
 
+		// Full VURS NPC AP stays visible even when its stored maximum is zero.
 		// BP and MP remain visible when maxReduction reduces their maximum to zero.
 		// Other resources retain the existing behavior.
 		// Hide resources with no base maximum unless external MP or a BP reduction
 		// keeps the resource relevant.
-		if (baseMax <= 0 && magicContribution <= 0 && maxExtra <= 0 && maxReduction <= 0) return [];
-		if (max <= 0 && maxReduction <= 0) return [];
+		if (!alwaysShowActionPoints && baseMax <= 0 && magicContribution <= 0 && maxExtra <= 0 && maxReduction <= 0) return [];
+		if (!alwaysShowActionPoints && max <= 0 && maxReduction <= 0) return [];
 
 		// New resources start full by default. Style Rank and Karma Points are
 		// intentionally passive/empty until the user sets them.
@@ -1045,11 +1050,13 @@ function getFullVursDefaultMax(actor, resourceKey) {
 
 	switch (resourceKey) {
 		case "actionPoints": {
-			// The system author explicitly specifies Agnostic NPC AP as the
-			// visibility exception: hidden Mobility still contributes to its max.
-			const mobilityRank = skillRank("mobility", agnostic);
-			return mobilityRank === undefined ? undefined
-				: Math.max(agnostic ? 3 : 2, 2 + Math.min(attributeModifier("dex"), mobilityRank));
+			// AP stays derived from hidden Mobility; a missing full VURS NPC
+			// Mobility entry falls back to the formula's two-AP minimum.
+			const mobilityRank = skillRank("mobility", true);
+			if (mobilityRank === undefined) {
+				return isNpcActor(actor) && !agnostic ? 2 : undefined;
+			}
+			return Math.max(agnostic ? 3 : 2, 2 + Math.min(attributeModifier("dex"), mobilityRank));
 		}
 		case "staminaPoints":
 			return calculateNpcSkillResource(skillRank("athletics"), rank =>

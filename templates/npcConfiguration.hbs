@@ -3,15 +3,17 @@
   <nav class="tabs" aria-label="NPC configuration sections">
     <button type="button" class="active" data-npc-config-tab="levels" aria-selected="true">Leveled NPC</button>
     <button type="button" data-npc-config-tab="relationships" aria-selected="false">Relationship</button>
+    <button type="button" data-npc-config-tab="follower" aria-selected="false">Follower</button>
     <button type="button" data-npc-config-tab="resources" aria-selected="false">Play Resources</button>
   </nav>
   <section class="npc-config-panel" data-npc-config-panel="levels">
     <div class="npc-config-level-inputs">
       <label class="form-group">
         <span>Adjusted Level</span>
-        <input type="number" name="addedLevels" step="1" value="{{addedLevels}}" {{#unless editable}}disabled{{/unless}}>
+        <input type="number" name="addedLevels" step="1" value="{{addedLevels}}" {{#if followerActive}}readonly{{/if}} {{#unless editable}}disabled{{/unless}}>
       </label>
     </div>
+    {{#if followerActive}}<p class="hint">Adjusted Level is controlled by the Follower tab while this NPC is assigned to a party.</p>{{/if}}
     <p class="hint">Final Level: <span data-final-level>{{finalLevel}}</span></p>
     <details class="npc-config-scaling">
       <summary>Stat Scaling</summary>
@@ -52,6 +54,34 @@
       {{/each}}
     </div>
     <p class="npc-config-relationship-rank">Relationship Rank: <output data-relationship-rank>{{relationshipRank}}</output> · Level bonus: <output data-relationship-level-adjustment>{{relationshipLevelAdjustment}}</output></p>
+  </section>
+  <section class="npc-config-panel" data-npc-config-panel="follower" hidden>
+    <p class="hint">Assign this NPC to a PF2e Party to scale it to the average level of the party's player characters plus the Base Follower Level. Negative offsets make the follower lower level than the party.</p>
+    <label class="form-group npc-config-follower-field">
+      <span>Party</span>
+      <select name="follower.partyUuid" {{#unless editable}}disabled{{/unless}}>
+        <option value="">Not assigned</option>
+        {{#each followerParties}}
+        <option value="{{uuid}}" {{#if selected}}selected{{/if}}>{{name}}</option>
+        {{/each}}
+      </select>
+    </label>
+    <label class="form-group npc-config-follower-field">
+      <span>Base Follower Level</span>
+      <input type="number" name="follower.baseLevel" step="1" value="{{followerBaseLevel}}" {{#unless editable}}disabled{{/unless}}>
+    </label>
+    <label class="form-group npc-config-follower-field">
+      <span>Player Control</span>
+      <select name="follower.playerControlOverride" {{#unless editable}}disabled{{/unless}}>
+        {{#each followerPlayerControlOptions}}
+        <option value="{{value}}" {{#if selected}}selected{{/if}}>{{label}}</option>
+        {{/each}}
+      </select>
+    </label>
+    <p class="hint">Player control applies only while a Party is assigned. Always/Never overrides the module setting. Only one player can control a follower at a time; releasing its token ends control.</p>
+    <p class="npc-config-follower-preview">Party Average: <output data-follower-party-level>{{followerPartyLevelLabel}}</output> · Target Level: <output data-follower-target-level>{{followerTargetLevelLabel}}</output></p>
+    <p class="hint npc-config-follower-level-warning" data-follower-level-warning role="status" {{#unless followerLevelWarning}}hidden{{/unless}}>{{followerLevelWarning}}</p>
+    <p class="hint npc-config-follower-status" data-follower-status role="status">{{followerStatus}}</p>
   </section>
   <section class="npc-config-panel" data-npc-config-panel="resources" hidden>
     <p class="hint">Leave a field blank to use the derived maximum. An optional Foundry Roll formula replaces that maximum. Results are rounded down; maximum-reduction effects still apply.</p>

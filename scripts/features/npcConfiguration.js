@@ -3,9 +3,23 @@ import { getAttributePresentation } from "./consolidatedSkills.js";
 
 const MODULE_ID = "vurs-pf2e";
 const NPC_CONFIGURATION_PATH = "flags.vurs.npcConfiguration";
+const FOLLOWER_OWNERSHIP_PATH = "flags.vurs.followerOwnershipPermissions";
+const FOLLOWER_CONTROL_PATH = "flags.vurs.followerControl";
+const FOLLOWER_CONTROL_SETTING = "allowPlayersToControlFollowers";
+const PLAYER_TOKEN_RING_COLOR_SETTING = "colorTokenRingsByPlayer";
+const MIN_NPC_LEVEL = -1;
+const MAX_NPC_LEVEL = 100;
+const OWNER_PERMISSION_LEVEL = CONST.DOCUMENT_OWNERSHIP_LEVELS.OWNER;
 const NPC_LEVEL_DC_PATCH = Symbol.for(`${MODULE_ID}.npcLevelDcPatch`);
+const NPC_FOLLOWER_TRAIT_PATCH = Symbol.for(`${MODULE_ID}.npcFollowerTraitPatch`);
 const NPC_RELATIONSHIP_PANEL_STATE = new Map();
 const NPC_RELATIONSHIP_PANELS = new Map();
+const SCHEDULED_FOLLOWER_SYNCS = new Map();
+const FOLLOWER_ACTOR_OPERATION_QUEUES = new Map();
+const GM_SELECTED_TOKEN_UUIDS = new Map();
+const LOCAL_FOLLOWER_CONTROL_REQUESTS = new Map();
+const LOCAL_FOLLOWER_CONTROL_RELEASES = new Set();
+const FOLLOWER_CONTROL_RELEASE_TIMERS = new Map();
 const DIRECT_SCALING_STAT_PATHS = Object.freeze([
 	"system.attributes.ac.value",
 	"system.saves.fortitude.value",
@@ -159,6 +173,7 @@ export function addNpcConfigurationButton(root, actor) {
 		<option value="" selected disabled>NPC Configuration</option>
 		<option value="levels">Leveled NPC</option>
 		<option value="relationships">Relationship</option>
+		<option value="follower">Follower</option>
 		<option value="resources">Play Resources</option>
 	`;
 	selector.addEventListener("change", () => {
@@ -420,6 +435,838 @@ function isNpcActor(actor) {
 	return Boolean(actor?.isOfType?.("npc") || actor?.type === "npc");
 }
 
+function getFollowerParty(uuid) {
+	if (typeof uuid !== "string" || !uuid) return null;
+	return game.actors?.contents?.find(actor => actor.uuid === uuid && actor.type === "party") ?? null;
+}
+
+function getFollowerPartyLevel(party) {
+	const partyMembers = party?.system?.details?.members;
+	const members = Array.isArray(partyMembers)
+		? partyMembers.map(member => {
+			const uuid = typeof member === "string" ? member : member?.uuid;
+			return typeof uuid === "string"
+				? game.actors?.contents?.find(actor => actor.uuid === uuid) ?? fromUuidSync(uuid)
+				: null;
+		})
+		: party?.members ?? [];
+	const memberLevels = members
+		.filter(member => member?.type === "character")
+		.map(member => readFiniteNumber(member.level)
+			?? readFiniteNumber(foundry.utils.getProperty(member, "system.details.level.value")))
+		.filter(level => Number.isSafeInteger(level));
+	if (!memberLevels.length) return null;
+	return Math.floor(memberLevels.reduce((sum, level) => sum + level, 0) / memberLevels.length);
+}
+
+function getFollowerLevelData(configuration, baseLevel) {
+	const follower = configuration?.follower;
+	const party = getFollowerParty(follower?.partyUuid);
+	const partyLevel = getFollowerPartyLevel(party);
+	const baseFollowerLevel = Number.isSafeInteger(Number(follower?.baseFollowerLevel))
+		? Number(follower.baseFollowerLevel)
+		: 0;
+	const storedTargetLevel = readFiniteNumber(follower?.appliedTargetLevel);
+	const active = typeof follower?.partyUuid === "string" && follower.partyUuid.length > 0;
+	const targetLevel = partyLevel === null
+		? active && Number.isSafeInteger(storedTargetLevel)
+			? storedTargetLevel
+			: null
+		: partyLevel + baseFollowerLevel;
+	return {
+		active,
+		party,
+		partyLevel,
+		baseFollowerLevel,
+		targetLevel,
+		addedLevels: Number.isSafeInteger(targetLevel) && Number.isSafeInteger(baseLevel)
+			? targetLevel - baseLevel
+			: Number(configuration?.addedLevels) || 0
+	};
+}
+
+function clampNpcLevel(level) {
+	return Math.min(MAX_NPC_LEVEL, Math.max(MIN_NPC_LEVEL, level));
+}
+
+function getFollowerLevelClampWarning(level) {
+	if (!Number.isSafeInteger(level)) return "";
+	if (level < MIN_NPC_LEVEL) {
+		return `Follower level ${level} is below the minimum of ${MIN_NPC_LEVEL}; it will be adjusted to ${MIN_NPC_LEVEL}.`;
+	}
+	if (level > MAX_NPC_LEVEL) {
+		return `Follower level ${level} is above the maximum of ${MAX_NPC_LEVEL}; it will be adjusted to ${MAX_NPC_LEVEL}.`;
+	}
+	return "";
+}
+
+function getEffectiveNpcAddedLevels(configuration, baseLevel) {
+	const followerLevel = getFollowerLevelData(configuration, baseLevel);
+	return followerLevel.active ? followerLevel.addedLevels : Number(configuration?.addedLevels) || 0;
+}
+
+function getFollowerPartyOptions(configuration) {
+	const selectedPartyUuid = configuration?.follower?.partyUuid ?? "";
+	const parties = (game.actors?.contents ?? [])
+		.filter(actor => actor.type === "party")
+		.sort((left, right) => left.name.localeCompare(right.name))
+		.map(party => ({
+			uuid: party.uuid,
+			name: party.name,
+			selected: party.uuid === selectedPartyUuid
+		}));
+	if (selectedPartyUuid && !parties.some(party => party.selected)) {
+		parties.unshift({
+			uuid: selectedPartyUuid,
+			name: "Unavailable Party",
+			selected: true,
+			unavailable: true
+		});
+	}
+	return parties;
+}
+
+function shouldGrantFollowerPlayerOwnership(actor) {
+	const follower = foundry.utils.getProperty(actor, `${NPC_CONFIGURATION_PATH}.follower`);
+	if (typeof follower?.partyUuid !== "string" || !follower.partyUuid) return false;
+	switch (follower.playerControlOverride) {
+		case "allow":
+			return true;
+		case "deny":
+			return false;
+		default:
+			return game.settings.get(MODULE_ID, FOLLOWER_CONTROL_SETTING) === true;
+	}
+}
+
+function getFollowerControlActor(tokenOrDocument) {
+	const tokenDocument = tokenOrDocument?.document ?? tokenOrDocument;
+	const actor = tokenOrDocument?.actor ?? tokenDocument?.actor ?? tokenOrDocument;
+	const actorId = tokenDocument?.actorId ?? actor?.id;
+	return game.actors?.get(actorId) ?? actor?.baseActor ?? actor ?? null;
+}
+
+function getActiveFollowerController(actor) {
+	if (!isNpcActor(actor) || !shouldGrantFollowerPlayerOwnership(actor)) return null;
+	const controlState = foundry.utils.getProperty(actor, FOLLOWER_CONTROL_PATH);
+	const controller = controlState?.userId ? game.users.get(controlState.userId) : null;
+	if (!controller ||
+		controller.isGM ||
+		controller.active === false ||
+		!Array.isArray(controlState.tokenUuids) ||
+		controlState.tokenUuids.length === 0) {
+		return null;
+	}
+	return controller;
+}
+
+async function syncFollowerPlayerOwnership(actor) {
+	if (!game.user?.isGM || !isNpcActor(actor)) return;
+	const ownership = actor.ownership ?? actor._source?.ownership ?? {};
+	const savedPermissions = foundry.utils.getProperty(actor, FOLLOWER_OWNERSHIP_PATH) ?? {};
+	const nextSavedPermissions = foundry.utils.deepClone(savedPermissions);
+	const ownershipUpdates = {};
+	const nextOwnership = foundry.utils.deepClone(ownership);
+	let ownershipRequiresReplacement = false;
+	const grantOwnership = shouldGrantFollowerPlayerOwnership(actor);
+	const controlState = foundry.utils.getProperty(actor, FOLLOWER_CONTROL_PATH);
+	const controller = controlState?.userId ? game.users.get(controlState.userId) : null;
+	const activeControl = grantOwnership &&
+		controller &&
+		!controller.isGM &&
+		controller.active !== false &&
+		Array.isArray(controlState.tokenUuids) &&
+		controlState.tokenUuids.length > 0
+		? controlState
+		: null;
+
+	if (activeControl) return;
+
+	if (controlState && !activeControl) {
+		ownershipUpdates["flags.vurs.-=followerControl"] = null;
+	}
+
+	if (grantOwnership) {
+		for (const user of game.users?.contents ?? []) {
+			if (user.isGM) continue;
+			if (!Object.hasOwn(nextSavedPermissions, user.id)) {
+				nextSavedPermissions[user.id] = Object.hasOwn(ownership, user.id)
+					? ownership[user.id]
+					: null;
+			}
+			const targetPermission = OWNER_PERMISSION_LEVEL;
+			if (nextOwnership[user.id] !== targetPermission) {
+				nextOwnership[user.id] = targetPermission;
+				ownershipUpdates[`ownership.${user.id}`] = targetPermission;
+			}
+		}
+	} else {
+		for (const [userId, previousPermission] of Object.entries(nextSavedPermissions)) {
+			if (previousPermission === null) {
+				if (Object.hasOwn(nextOwnership, userId)) {
+					delete nextOwnership[userId];
+					ownershipRequiresReplacement = true;
+				}
+			} else if (nextOwnership[userId] !== previousPermission) {
+				nextOwnership[userId] = previousPermission;
+				ownershipUpdates[`ownership.${userId}`] = previousPermission;
+			}
+			delete nextSavedPermissions[userId];
+		}
+	}
+
+	if (ownershipRequiresReplacement) {
+		for (const key of Object.keys(ownershipUpdates)) {
+			if (key.startsWith("ownership.")) delete ownershipUpdates[key];
+		}
+		ownershipUpdates.ownership = nextOwnership;
+	}
+	if (JSON.stringify(savedPermissions) !== JSON.stringify(nextSavedPermissions)) {
+		ownershipUpdates[FOLLOWER_OWNERSHIP_PATH] = nextSavedPermissions;
+	}
+	if (Object.keys(ownershipUpdates).length) {
+		await actor.update(ownershipUpdates, {
+			render: false,
+			vursFollowerOwnershipUpdate: true,
+			vursFollowerControlUpdate: true
+		});
+	}
+}
+
+async function syncAllFollowerPlayerOwnership() {
+	if (!game.user?.isGM) return;
+	const actors = new Map();
+	for (const actor of game.actors?.contents ?? []) actors.set(actor.uuid, actor);
+	for (const scene of game.scenes?.contents ?? []) {
+		for (const token of scene.tokens ?? []) {
+			const actor = getFollowerControlActor(token);
+			if (actor) actors.set(actor.uuid, actor);
+		}
+	}
+	for (const actor of actors.values()) {
+		const hasFollowerConfiguration = Boolean(
+			foundry.utils.getProperty(actor, `${NPC_CONFIGURATION_PATH}.follower.partyUuid`)
+		);
+		const hasSavedPermissions = Object.keys(
+			foundry.utils.getProperty(actor, FOLLOWER_OWNERSHIP_PATH) ?? {}
+		).length > 0;
+		const hasControlClaim = Boolean(foundry.utils.getProperty(actor, FOLLOWER_CONTROL_PATH));
+		if (!isNpcActor(actor) ||
+			(!hasFollowerConfiguration && !hasSavedPermissions && !hasControlClaim)) continue;
+		try {
+			await queueFollowerPlayerOwnershipSync(actor);
+		} catch (error) {
+			console.error(`vurs-pf2e | Failed to synchronize player ownership for follower ${actor.name}`, error);
+			ui.notifications.error(`Could not synchronize player permissions for ${actor.name}. See the console for details.`);
+		}
+	}
+}
+
+function queueFollowerPlayerOwnershipSync(actor) {
+	if (!game.user?.isGM || !isNpcActor(actor)) return Promise.resolve();
+	return queueFollowerActorOperation(actor, () => syncFollowerPlayerOwnership(actor));
+}
+
+function queueFollowerActorOperation(actor, operation) {
+	if (!game.user?.isGM || !isNpcActor(actor)) return Promise.resolve();
+	const queueKey = actor.uuid ?? actor.id;
+	const previous = FOLLOWER_ACTOR_OPERATION_QUEUES.get(queueKey) ?? Promise.resolve();
+	const queued = previous.then(operation, operation);
+	FOLLOWER_ACTOR_OPERATION_QUEUES.set(queueKey, queued);
+	return queued.finally(() => {
+		if (FOLLOWER_ACTOR_OPERATION_QUEUES.get(queueKey) === queued) {
+			FOLLOWER_ACTOR_OPERATION_QUEUES.delete(queueKey);
+		}
+	});
+}
+
+async function handleFollowerControlRequest(tokenUuid, action) {
+	const userId = this?.socketdata?.userId;
+	const user = userId ? game.users.get(userId) : null;
+	if (!user || user.isGM || typeof tokenUuid !== "string" ||
+		!["acquire", "release"].includes(action)) {
+		return { granted: false, reason: "invalid-request" };
+	}
+
+	const tokenDocument = await fromUuid(tokenUuid);
+	const actor = getFollowerControlActor(tokenDocument);
+	if (!actor || !isNpcActor(actor)) return { granted: false, reason: "not-follower" };
+
+	return queueFollowerActorOperation(actor, async () => {
+		let controlState = foundry.utils.getProperty(actor, FOLLOWER_CONTROL_PATH) ?? {};
+		if (action === "release") {
+			if (controlState.userId !== userId ||
+				!Array.isArray(controlState.tokenUuids) ||
+				!controlState.tokenUuids.includes(tokenUuid)) {
+				return { granted: false, reason: "not-controller" };
+			}
+			const tokenUuids = controlState.tokenUuids.filter(uuid => uuid !== tokenUuid);
+			if (tokenUuids.length) {
+				await actor.update({
+					[FOLLOWER_CONTROL_PATH]: { ...controlState, tokenUuids }
+				}, { render: false, vursFollowerControlUpdate: true });
+			} else {
+				await actor.update({
+					"flags.vurs.-=followerControl": null
+				}, { render: false, vursFollowerControlUpdate: true });
+				await syncFollowerPlayerOwnership(actor);
+			}
+			return { granted: false, released: true };
+		}
+
+		if (!shouldGrantFollowerPlayerOwnership(actor)) {
+			return { granted: false, reason: "player-control-disabled" };
+		}
+		const currentController = controlState.userId
+			? game.users.get(controlState.userId)
+			: null;
+		const activeController = currentController &&
+			currentController.active !== false &&
+			!currentController.isGM &&
+			Array.isArray(controlState.tokenUuids) &&
+			controlState.tokenUuids.length > 0;
+		if (controlState.userId && !activeController) {
+			await actor.update({
+				"flags.vurs.-=followerControl": null
+			}, { render: false, vursFollowerControlUpdate: true });
+			controlState = {};
+		}
+		if (controlState.userId && controlState.userId !== userId) {
+			return {
+				granted: false,
+				reason: "already-controlled",
+				controllerName: game.users.get(controlState.userId)?.name
+			};
+		}
+		const tokenUuids = controlState.userId === userId && Array.isArray(controlState.tokenUuids)
+			? [...new Set([...controlState.tokenUuids, tokenUuid])]
+			: [tokenUuid];
+		await actor.update({
+			[FOLLOWER_CONTROL_PATH]: { userId, tokenUuids }
+		}, { render: false, vursFollowerControlUpdate: true });
+		return { granted: true };
+	});
+}
+
+let followerControlSocket = null;
+
+function registerFollowerControlSocket() {
+	if (followerControlSocket) return;
+	if (!globalThis.socketlib?.registerModule) {
+		console.error(`${MODULE_ID} | SocketLib is required for exclusive follower control`);
+		return;
+	}
+	const socket = globalThis.socketlib.registerModule(MODULE_ID);
+	if (!socket || typeof socket.register !== "function") {
+		console.error(`${MODULE_ID} | SocketLib did not register the module socket; enable "socket" in module.json and reload the world`);
+		return;
+	}
+	followerControlSocket = socket;
+	followerControlSocket.register("handleFollowerControlRequest", handleFollowerControlRequest);
+	followerControlSocket.register("applyGMTokenSelection", applyGMTokenSelection);
+	followerControlSocket.register("broadcastGMTokenSelection", broadcastGMTokenSelection);
+}
+
+function applyGMTokenSelection(userId, sceneId, tokenUuids) {
+	const user = game.users?.get(userId);
+	if (!user?.isGM || !Array.isArray(tokenUuids)) return;
+
+	const selectedTokenUuids = new Set(tokenUuids.filter(uuid => typeof uuid === "string"));
+	if (selectedTokenUuids.size && typeof sceneId === "string") {
+		GM_SELECTED_TOKEN_UUIDS.set(userId, { sceneId, tokenUuids: selectedTokenUuids });
+	} else {
+		GM_SELECTED_TOKEN_UUIDS.delete(userId);
+	}
+
+	refreshTokenRingColors();
+}
+
+function broadcastGMTokenSelection() {
+	if (!game.user?.isGM || !followerControlSocket) return;
+
+	const sceneId = canvas.scene?.id ?? null;
+	const tokenUuids = (canvas.tokens?.controlled ?? [])
+		.map(token => token.document?.uuid)
+		.filter(uuid => typeof uuid === "string");
+	void followerControlSocket.executeForEveryone(
+		"applyGMTokenSelection",
+		game.user.id,
+		sceneId,
+		tokenUuids
+	).catch(error => {
+		console.error(`${MODULE_ID} | Failed to synchronize GM token selection`, error);
+	});
+}
+
+function requestGMTokenSelectionSync() {
+	if (!followerControlSocket) return;
+	if (game.user?.isGM) {
+		broadcastGMTokenSelection();
+		return;
+	}
+
+	void followerControlSocket.executeAsGM("broadcastGMTokenSelection").catch(error => {
+		console.error(`${MODULE_ID} | Failed to request GM token selection`, error);
+	});
+}
+
+function playerTokenRingColors(wrapped, ...args) {
+	const colors = wrapped(...args);
+	const color = getPlayerTokenRingColor(getFollowerControlActor(this), this);
+	if (!color) return colors;
+	return {
+		...colors,
+		ring: color,
+		background: color
+	};
+}
+
+function getUserTokenRingColor(user) {
+	return user?.color ? Color.fromString(user.color.toString()) : null;
+}
+
+function getPlayerTokenRingColor(actor, token) {
+	if (!actor || game.settings.get(MODULE_ID, PLAYER_TOKEN_RING_COLOR_SETTING) !== true) return null;
+
+	let assignedGM = null;
+	for (const user of game.users?.contents ?? []) {
+		if (!user.isGM || (user.character?.id ?? user.character) !== actor.id) continue;
+		if (assignedGM) {
+			assignedGM = null;
+			break;
+		}
+		assignedGM = user;
+	}
+	const assignedGMColor = getUserTokenRingColor(assignedGM);
+	if (assignedGMColor) return assignedGMColor;
+
+	const tokenUuid = token?.document?.uuid;
+	const selectedGM = [...GM_SELECTED_TOKEN_UUIDS.entries()]
+		.find(([, selection]) =>
+			selection.sceneId === canvas.scene?.id &&
+			selection.tokenUuids.has(tokenUuid)
+		);
+	if (selectedGM) {
+		const selectedGMColor = getUserTokenRingColor(game.users.get(selectedGM[0]));
+		if (selectedGMColor) return selectedGMColor;
+	}
+	if (game.user?.isGM && token?.controlled) {
+		const selectedGMColor = getUserTokenRingColor(game.user);
+		if (selectedGMColor) return selectedGMColor;
+	}
+
+	const controlState = foundry.utils.getProperty(actor, FOLLOWER_CONTROL_PATH);
+	const controller = controlState?.userId ? game.users.get(controlState.userId) : null;
+	if (controller &&
+		!controller.isGM &&
+		controller.active !== false &&
+		Array.isArray(controlState.tokenUuids) &&
+		controlState.tokenUuids.length > 0) {
+		return getUserTokenRingColor(controller);
+	}
+
+	const users = game.users?.contents ?? [];
+	let assignedPlayer = null;
+	for (const user of users) {
+		if (user.isGM || (user.character?.id ?? user.character) !== actor.id) continue;
+		if (assignedPlayer) return null;
+		assignedPlayer = user;
+	}
+	if (assignedPlayer) return getUserTokenRingColor(assignedPlayer);
+
+	let owner = null;
+	for (const user of users) {
+		if (user.isGM || !actor.testUserPermission(user, OWNER_PERMISSION_LEVEL)) continue;
+		if (owner) return null;
+		owner = user;
+	}
+	return getUserTokenRingColor(owner);
+}
+
+function refreshTokenRingColors(actor) {
+	for (const token of canvas.tokens?.placeables ?? []) {
+		if (actor && getFollowerControlActor(token)?.uuid !== actor.uuid) continue;
+		if (token.document.ring?.enabled) token.ring?.configureVisuals();
+	}
+}
+
+function refreshAllTokenRingColors() {
+	refreshTokenRingColors(null);
+}
+
+function registerFollowerTokenColorWrapper() {
+	if (typeof globalThis.libWrapper?.register !== "function") {
+		console.error(`${MODULE_ID} | libWrapper is required to apply player colors to token rings`);
+		return;
+	}
+	if (typeof CONFIG.Token.objectClass?.prototype?.getRingColors !== "function") {
+		console.error(`${MODULE_ID} | Foundry's Token.getRingColors method is unavailable; player token colors cannot be applied`);
+		return;
+	}
+	try {
+		globalThis.libWrapper.register(
+			MODULE_ID,
+			"CONFIG.Token.objectClass.prototype.getRingColors",
+			playerTokenRingColors,
+			"WRAPPER"
+		);
+	} catch (error) {
+		console.error(`${MODULE_ID} | Failed to register player token color wrapper`, error);
+		ui.notifications.error("Could not register player token colors. See the console for details.");
+	}
+}
+
+function getLocallyControlledFollowerTokens(tokens) {
+	if (game.user?.isGM) return [];
+	return tokens.filter(token => {
+		const actor = getFollowerControlActor(token);
+		if (!isNpcActor(actor) ||
+			!foundry.utils.getProperty(actor, `${NPC_CONFIGURATION_PATH}.follower.partyUuid`)) {
+			return false;
+		}
+		const tokenUuid = token.document?.uuid;
+		const controlState = foundry.utils.getProperty(actor, FOLLOWER_CONTROL_PATH);
+		return Boolean(tokenUuid && (
+			(controlState?.userId === game.user.id &&
+				Array.isArray(controlState.tokenUuids) &&
+				controlState.tokenUuids.includes(tokenUuid)) ||
+			LOCAL_FOLLOWER_CONTROL_REQUESTS.has(tokenUuid)
+		));
+	});
+}
+
+function releaseFollowerTokens(tokens) {
+	for (const token of tokens) {
+		if (token.controlled) token.release();
+	}
+}
+
+function ownsFollowerControlClaim(token) {
+	const actor = getFollowerControlActor(token);
+	const tokenUuid = token.document?.uuid;
+	const controlState = foundry.utils.getProperty(actor, FOLLOWER_CONTROL_PATH);
+	return Boolean(tokenUuid && (
+		(controlState?.userId === game.user?.id &&
+			Array.isArray(controlState.tokenUuids) &&
+			controlState.tokenUuids.includes(tokenUuid)) ||
+		LOCAL_FOLLOWER_CONTROL_REQUESTS.has(tokenUuid)
+	));
+}
+
+function finishFollowerControlRelease(tokenUuid) {
+	LOCAL_FOLLOWER_CONTROL_RELEASES.delete(tokenUuid);
+}
+
+function scheduleFollowerControlClaimRelease(token) {
+	const tokenUuid = token.document?.uuid;
+	if (!tokenUuid) return;
+	const currentTimer = FOLLOWER_CONTROL_RELEASE_TIMERS.get(tokenUuid);
+	if (currentTimer) clearTimeout(currentTimer);
+	const timer = setTimeout(() => {
+		if (FOLLOWER_CONTROL_RELEASE_TIMERS.get(tokenUuid) !== timer) return;
+		FOLLOWER_CONTROL_RELEASE_TIMERS.delete(tokenUuid);
+		if (!token.controlled) releaseFollowerControlClaim(token);
+	}, 150);
+	FOLLOWER_CONTROL_RELEASE_TIMERS.set(tokenUuid, timer);
+}
+
+function releaseFollowerControlClaim(token) {
+	const actor = getFollowerControlActor(token);
+	const tokenUuid = token.document?.uuid;
+	if (!tokenUuid || game.user?.isGM) return;
+	if (LOCAL_FOLLOWER_CONTROL_RELEASES.has(tokenUuid)) return;
+
+	const request = LOCAL_FOLLOWER_CONTROL_REQUESTS.get(tokenUuid);
+	if (request?.pending) {
+		LOCAL_FOLLOWER_CONTROL_RELEASES.add(tokenUuid);
+		request.released = true;
+		return;
+	}
+	const controlState = foundry.utils.getProperty(actor, FOLLOWER_CONTROL_PATH);
+	const ownsClaim = controlState?.userId === game.user.id &&
+		Array.isArray(controlState.tokenUuids) &&
+		controlState.tokenUuids.includes(tokenUuid);
+	if ((!request && !ownsClaim) || LOCAL_FOLLOWER_CONTROL_RELEASES.has(tokenUuid)) return;
+	LOCAL_FOLLOWER_CONTROL_REQUESTS.delete(tokenUuid);
+	if (!followerControlSocket) {
+		console.error(`${MODULE_ID} | Cannot release follower control because SocketLib is unavailable`);
+		ui.notifications.error("Could not release follower control because SocketLib is unavailable.");
+		return;
+	}
+
+	LOCAL_FOLLOWER_CONTROL_RELEASES.add(tokenUuid);
+	void followerControlSocket.executeAsGM("handleFollowerControlRequest", tokenUuid, "release")
+		.catch(error => {
+			console.error(`${MODULE_ID} | Failed to release control of follower ${actor?.name ?? tokenUuid}`, error);
+			ui.notifications.error(`Could not release control of ${actor?.name ?? "the follower"}. See the console for details.`);
+		})
+		.finally(() => finishFollowerControlRelease(tokenUuid));
+}
+
+function renderFollowerControlTokenHud(hud, html) {
+	const root = html instanceof HTMLElement ? html : html?.[0];
+	const token = hud.object;
+	const actor = getFollowerControlActor(token);
+	if (game.user?.isGM ||
+		!isNpcActor(actor) ||
+		!foundry.utils.getProperty(actor, `${NPC_CONFIGURATION_PATH}.follower.partyUuid`) ||
+		!ownsFollowerControlClaim(token)) return;
+
+	const controls = root?.querySelector(".col.right") ?? root?.querySelector(".col") ?? root;
+	if (!controls || controls.querySelector('[data-vurs-action="release-follower-control"]')) return;
+	const button = document.createElement("button");
+	button.type = "button";
+	button.className = "control-icon";
+	button.dataset.vursAction = "release-follower-control";
+	button.title = "Release follower control";
+	button.setAttribute("aria-label", "Release follower control");
+	button.innerHTML = '<i class="fa-solid fa-hand"></i>';
+	button.addEventListener("click", event => {
+		event.preventDefault();
+		event.stopPropagation();
+		releaseFollowerControlClaim(token);
+		token.release();
+	});
+	controls.append(button);
+}
+
+function tokenBoundsOverlapSelection(token, selection) {
+	const bounds = token.bounds;
+	if (!bounds ||
+		![selection.x, selection.y, selection.width, selection.height].every(Number.isFinite)) {
+		return true;
+	}
+	const left = Math.min(selection.x, selection.x + selection.width);
+	const right = Math.max(selection.x, selection.x + selection.width);
+	const top = Math.min(selection.y, selection.y + selection.height);
+	const bottom = Math.max(selection.y, selection.y + selection.height);
+	return bounds.x <= right &&
+		bounds.x + bounds.width >= left &&
+		bounds.y <= bottom &&
+		bounds.y + bounds.height >= top;
+}
+
+function preventControlOfPossessedFollower(wrapped, ...args) {
+	const canControl = wrapped(...args);
+	const requestingUser = args[0] ?? game.user;
+	if (!canControl || !requestingUser || requestingUser.isGM) return canControl;
+	const controller = getActiveFollowerController(getFollowerControlActor(this));
+	return !controller || controller.id === requestingUser.id;
+}
+
+function releaseFollowerTokensControlledByOtherPlayer(actor) {
+	if (game.user?.isGM) return;
+	const controller = getActiveFollowerController(actor);
+	if (!controller || controller.id === game.user?.id) return;
+	for (const token of canvas.tokens?.placeables ?? []) {
+		if (getFollowerControlActor(token)?.uuid === actor.uuid && token.controlled) {
+			token.release();
+		}
+	}
+}
+
+function releaseFollowerTokensOutsideSelection(wrapped, ...args) {
+	const result = wrapped(...args);
+	const [selection = {}, options = {}] = args;
+	if (options.releaseOthers === false) return result;
+	const release = () => {
+		if (this !== canvas.tokens) return;
+		const selectedFollowers = getLocallyControlledFollowerTokens(this.controlled ?? []);
+		releaseFollowerTokens(selectedFollowers.filter(token =>
+			!tokenBoundsOverlapSelection(token, selection)
+		));
+	};
+	if (result && typeof result.then === "function") {
+		return result.then(value => {
+			release();
+			return value;
+		});
+	}
+	queueMicrotask(release);
+	return result;
+}
+
+function registerFollowerTokenControlWrappers() {
+	if (typeof globalThis.libWrapper?.register !== "function") {
+		console.error(`${MODULE_ID} | libWrapper is required to handle follower control`);
+		return;
+	}
+	if (typeof CONFIG.Token.objectClass?.prototype?._canControl !== "function") {
+		console.error(`${MODULE_ID} | Foundry's Token._canControl method is unavailable; possessed followers cannot be made unselectable`);
+		ui.notifications.error("Could not register follower possession selection rules. See the console for details.");
+		return;
+	}
+	const registrations = [
+		[
+			"CONFIG.Token.objectClass.prototype._canControl",
+			preventControlOfPossessedFollower
+		],
+		[
+			"foundry.canvas.layers.TokenLayer.prototype.selectObjects",
+			releaseFollowerTokensOutsideSelection
+		]
+	];
+	for (const [target, wrapper] of registrations) {
+		try {
+			globalThis.libWrapper.register(MODULE_ID, target, wrapper, "WRAPPER");
+		} catch (error) {
+			console.error(`${MODULE_ID} | Failed to register follower control wrapper for ${target}`, error);
+			ui.notifications.error("Could not register follower control behavior. See the console for details.");
+		}
+	}
+}
+
+function onFollowerTokenControl(token, controlled) {
+	const actor = getFollowerControlActor(token);
+	if (game.user?.isGM) {
+		if (token.document?.ring?.enabled) token.ring?.configureVisuals();
+		broadcastGMTokenSelection();
+		return;
+	}
+	const controller = getActiveFollowerController(actor);
+	if (controlled && controller && controller.id !== game.user?.id) {
+		token.release();
+		return;
+	}
+	const tokenUuid = token.document?.uuid;
+	if (!tokenUuid) return;
+
+	if (controlled) {
+		const releaseTimer = FOLLOWER_CONTROL_RELEASE_TIMERS.get(tokenUuid);
+		if (releaseTimer) {
+			clearTimeout(releaseTimer);
+			FOLLOWER_CONTROL_RELEASE_TIMERS.delete(tokenUuid);
+		}
+		const existingRequest = LOCAL_FOLLOWER_CONTROL_REQUESTS.get(tokenUuid);
+		if (existingRequest?.pending) {
+			existingRequest.released = false;
+			LOCAL_FOLLOWER_CONTROL_RELEASES.delete(tokenUuid);
+			return;
+		}
+		if (LOCAL_FOLLOWER_CONTROL_RELEASES.has(tokenUuid)) {
+			token.release();
+			return;
+		}
+		if (!isNpcActor(actor) ||
+			!foundry.utils.getProperty(actor, `${NPC_CONFIGURATION_PATH}.follower.partyUuid`) ||
+			!shouldGrantFollowerPlayerOwnership(actor)) {
+			return;
+		}
+		if (!followerControlSocket) {
+			token.release();
+			ui.notifications.error("Exclusive follower control is unavailable because SocketLib is not ready.");
+			return;
+		}
+		if (existingRequest) {
+			return;
+		}
+
+		const request = { pending: true, released: false };
+		LOCAL_FOLLOWER_CONTROL_REQUESTS.set(tokenUuid, request);
+		void followerControlSocket.executeAsGM("handleFollowerControlRequest", tokenUuid, "acquire")
+			.then(result => {
+				if (!result?.granted) {
+					if (LOCAL_FOLLOWER_CONTROL_REQUESTS.get(tokenUuid) === request) {
+						LOCAL_FOLLOWER_CONTROL_REQUESTS.delete(tokenUuid);
+					}
+					LOCAL_FOLLOWER_CONTROL_RELEASES.delete(tokenUuid);
+					if (token.controlled) token.release();
+					if (result?.reason === "already-controlled") {
+						ui.notifications.warn(`${actor.name} is currently controlled by ${result.controllerName ?? "another player"}.`);
+					} else if (result?.reason === "player-control-disabled") {
+						ui.notifications.warn(`Player control is disabled for ${actor.name}.`);
+					} else if (result?.reason === "not-follower") {
+						ui.notifications.warn(`${actor.name} is no longer configured as a follower.`);
+					}
+					return;
+				}
+				request.pending = false;
+				if (request.released || !token.controlled) {
+					LOCAL_FOLLOWER_CONTROL_REQUESTS.delete(tokenUuid);
+					return followerControlSocket.executeAsGM("handleFollowerControlRequest", tokenUuid, "release")
+						.finally(() => finishFollowerControlRelease(tokenUuid));
+				}
+			})
+			.catch(error => {
+				if (LOCAL_FOLLOWER_CONTROL_REQUESTS.get(tokenUuid) === request) {
+					LOCAL_FOLLOWER_CONTROL_REQUESTS.delete(tokenUuid);
+				}
+				LOCAL_FOLLOWER_CONTROL_RELEASES.delete(tokenUuid);
+				if (token.controlled) token.release();
+				console.error(`${MODULE_ID} | Failed to acquire control of follower ${actor.name}`, error);
+				ui.notifications.error(`Could not acquire control of ${actor.name}. See the console for details.`);
+			});
+		return;
+	}
+
+	scheduleFollowerControlClaimRelease(token);
+}
+
+function releaseLocalFollowerControlClaims() {
+	for (const [tokenUuid, request] of LOCAL_FOLLOWER_CONTROL_REQUESTS) {
+		if (request.pending) {
+			request.released = true;
+			continue;
+		}
+		LOCAL_FOLLOWER_CONTROL_REQUESTS.delete(tokenUuid);
+		if (!followerControlSocket) continue;
+		void followerControlSocket.executeAsGM("handleFollowerControlRequest", tokenUuid, "release")
+			.catch(error => {
+				console.error(`${MODULE_ID} | Failed to release follower control during canvas teardown`, error);
+				ui.notifications.error("Could not release follower control while changing scenes. See the console for details.");
+			});
+	}
+}
+
+function refreshFollowerTokenColors(actor) {
+	for (const token of canvas.tokens?.placeables ?? []) {
+		if (getFollowerControlActor(token)?.uuid !== actor.uuid) continue;
+		token.refresh();
+		token.ring?.configureVisuals();
+	}
+}
+
+function refreshFollowerTokenColorsForUser(userId) {
+	for (const token of canvas.tokens?.placeables ?? []) {
+		if (foundry.utils.getProperty(getFollowerControlActor(token), `${FOLLOWER_CONTROL_PATH}.userId`) === userId) {
+			token.ring?.configureVisuals();
+		}
+	}
+}
+
+function isFollowerControlStateChange(path) {
+	return path === FOLLOWER_CONTROL_PATH ||
+		path.startsWith(`${FOLLOWER_CONTROL_PATH}.`) ||
+		path === "flags.vurs.-=followerControl";
+}
+
+async function releaseFollowerClaimsForUser(userId) {
+	if (!game.user?.isGM || !userId) return;
+	const actors = new Map();
+	for (const actor of game.actors?.contents ?? []) actors.set(actor.uuid, actor);
+	for (const scene of game.scenes?.contents ?? []) {
+		for (const token of scene.tokens ?? []) {
+			const actor = getFollowerControlActor(token);
+			if (actor) actors.set(actor.uuid, actor);
+		}
+	}
+	for (const actor of actors.values()) {
+		if (foundry.utils.getProperty(actor, `${FOLLOWER_CONTROL_PATH}.userId`) !== userId) continue;
+		try {
+			await queueFollowerActorOperation(actor, async () => {
+				await actor.update({ "flags.vurs.-=followerControl": null }, {
+					render: false,
+					vursFollowerControlUpdate: true
+				});
+				await syncFollowerPlayerOwnership(actor);
+			});
+		} catch (error) {
+			console.error(`${MODULE_ID} | Failed to release follower control for ${actor.name}`, error);
+			ui.notifications.error(`Could not release follower control for ${actor.name}. See the console for details.`);
+		}
+	}
+}
+
 function getNpcPlayResourceDerivedFormula(actor, resourceKey) {
 	const agnostic = actorUsesAgnosticVurs(actor);
 	const usesVurs = actorUsesVursSystem(actor);
@@ -601,9 +1448,46 @@ function getScalingMultiplier(scaling, key, legacyKey = key, defaultValue = 0) {
 	return setting.enabled ? setting.multiplier : 0;
 }
 
+function addNpcFollowerTraitRule(rules, actor) {
+	if (!isNpcActor(actor) ||
+		!foundry.utils.getProperty(actor, `${NPC_CONFIGURATION_PATH}.follower.partyUuid`)) {
+		return rules;
+	}
+	const followerRule = {
+		key: "ActorTraits",
+		add: ["follower"],
+		remove: [],
+		priority: 51,
+		ignored: false,
+		actor,
+		onApplyActiveEffects() {
+			const traits = actor.system?.traits?.value;
+			if (!Array.isArray(traits)) return;
+			if (!traits.includes("follower")) {
+				traits.push("follower");
+				actor.rollOptions.all["self:trait:follower"] = true;
+			}
+		}
+	};
+	return [...rules, followerRule].sort((left, right) => left.priority - right.priority);
+}
+
 function applyNpcLevelDcAdjustment(actor) {
 	const prototype = actor?.constructor?.prototype;
-	if (!prototype || prototype[NPC_LEVEL_DC_PATCH]) return;
+	if (!prototype) return;
+	if (!prototype[NPC_FOLLOWER_TRAIT_PATCH]) {
+		const originalPrepareRuleElements = prototype.prepareRuleElements;
+		if (typeof originalPrepareRuleElements !== "function") {
+			console.error(`${MODULE_ID} | Could not install follower trait Rule Element: NPC rule preparation is unavailable.`);
+		} else {
+			Object.defineProperty(prototype, NPC_FOLLOWER_TRAIT_PATCH, { value: true });
+			prototype.prepareRuleElements = function (...args) {
+				const rules = originalPrepareRuleElements.apply(this, args);
+				return addNpcFollowerTraitRule(rules, this);
+			};
+		}
+	}
+	if (prototype[NPC_LEVEL_DC_PATCH]) return;
 	const originalPrepareDerivedData = prototype.prepareDerivedData;
 	if (typeof originalPrepareDerivedData !== "function") {
 		console.error(`${MODULE_ID} | Could not install NPC area-fire DC scaling: the NPC preparation method is unavailable.`);
@@ -696,12 +1580,12 @@ function getNpcConfigurationLevelAdjustment(
 	const relationshipAdjustment = configuration.relationshipStatistics
 		? getRelationshipLevelAdjustment(getRelationshipRank(statistics))
 		: Number(configuration.affection) || 0;
-	const addedLevels = (Number(configuration.addedLevels) || 0) + relationshipAdjustment;
-	if (!addedLevels) return 0;
 	const baseLevel = Number(foundry.utils.getProperty(
 		configuration,
 		"originalData.system.details.level.value"
 	));
+	const addedLevels = getEffectiveNpcAddedLevels(configuration, baseLevel) + relationshipAdjustment;
+	if (!addedLevels) return 0;
 	return getLevelScalingAdjustment(
 		baseLevel + addedLevels,
 		addedLevels,
@@ -1424,9 +2308,38 @@ class NpcConfigurationApplication extends foundry.applications.api.HandlebarsApp
 					- (configuration.relationshipStatistics
 						? relationshipLevelAdjustment
 						: Number(configuration.affection) || 0);
+		const followerLevel = getFollowerLevelData(configuration, baseLevel);
+		const finalLevel = baseLevel
+			+ (followerLevel.active ? followerLevel.addedLevels : addedLevels)
+			+ relationshipLevelAdjustment;
+		const followerLevelWarning = followerLevel.active
+			? getFollowerLevelClampWarning(finalLevel)
+			: "";
 		return {
 			actorName: this.actor.name,
 			addedLevels,
+			followerActive: followerLevel.active,
+			followerBaseLevel: followerLevel.baseFollowerLevel,
+			followerPlayerControlOptions: [
+				{ value: "inherit", label: "Use module setting" },
+				{ value: "allow", label: "Always allow player control" },
+				{ value: "deny", label: "Never allow player control" }
+			].map(option => ({
+				...option,
+				selected: (configuration.follower?.playerControlOverride ?? "inherit") === option.value
+			})),
+			followerParties: getFollowerPartyOptions(configuration),
+			followerPartyLevelLabel: followerLevel.partyLevel === null
+				? "Unavailable"
+				: String(followerLevel.partyLevel),
+			followerTargetLevelLabel: followerLevel.targetLevel === null
+				? "Unavailable"
+				: String(followerLevel.targetLevel),
+			followerStatus: !followerLevel.active
+				? "This NPC is not currently assigned to a party."
+				: followerLevel.partyLevel === null
+					? "No valid player-character members are available. The last applied follower level is preserved."
+					: "The party average is rounded down before applying the Base Follower Level.",
 			relationshipFields: NPC_RELATIONSHIP_STATISTICS.map(field => ({
 				...field,
 				...getAttributePresentation(field.attribute, this.actor),
@@ -1436,7 +2349,8 @@ class NpcConfigurationApplication extends foundry.applications.api.HandlebarsApp
 			relationshipRank,
 			relationshipLevelAdjustment,
 			baseLevel,
-			finalLevel: baseLevel + addedLevels + relationshipLevelAdjustment,
+			finalLevel: followerLevel.active ? clampNpcLevel(finalLevel) : finalLevel,
+			followerLevelWarning,
 			scalingGroups: getNpcLevelScalingGroups(
 				configuration.originalData?.system ?? this.actor._source.system,
 				configuration.scaling,
@@ -1458,6 +2372,9 @@ class NpcConfigurationApplication extends foundry.applications.api.HandlebarsApp
 			: this.element?.querySelector("form");
 		if (!form || form.dataset.vursNpcConfigurationHandlers) return;
 		form.dataset.baseLevel = String(context.baseLevel);
+		form.dataset.followerAppliedTarget = String(
+			foundry.utils.getProperty(this.actor, `${NPC_CONFIGURATION_PATH}.follower.appliedTargetLevel`) ?? ""
+		);
 		form.dataset.vursNpcConfigurationHandlers = "true";
 		form.addEventListener("submit", event => {
 			event.preventDefault();
@@ -1488,6 +2405,7 @@ class NpcConfigurationApplication extends foundry.applications.api.HandlebarsApp
 			});
 		});
 		form.addEventListener("input", () => this.#updateRelationshipSummary(form));
+		form.addEventListener("change", () => this.#updateRelationshipSummary(form));
 		this.#updateRelationshipSummary(form);
 	}
 
@@ -1500,38 +2418,95 @@ class NpcConfigurationApplication extends foundry.applications.api.HandlebarsApp
 		const levelAdjustment = getRelationshipLevelAdjustment(rank);
 		const baseLevel = Number(form.dataset.baseLevel);
 		const addedLevels = Number(form.elements.namedItem("addedLevels")?.value) || 0;
+		const selectedParty = getFollowerParty(form.elements.namedItem("follower.partyUuid")?.value);
+		const partyLevel = getFollowerPartyLevel(selectedParty);
+		const followerOffset = Number(form.elements.namedItem("follower.baseLevel")?.value) || 0;
+		const followerTarget = partyLevel === null ? null : partyLevel + followerOffset;
+		const storedTarget = readFiniteNumber(form.dataset.followerAppliedTarget);
+		const partyUuid = form.elements.namedItem("follower.partyUuid")?.value;
+		const followerActive = Boolean(partyUuid);
+		const effectiveLevel = followerTarget ?? (
+			Number.isSafeInteger(storedTarget) ? storedTarget : baseLevel + addedLevels
+		);
+		const calculatedFinalLevel = followerActive
+			? effectiveLevel + levelAdjustment
+			: baseLevel + addedLevels + levelAdjustment;
+		const followerLevelWarning = followerActive
+			? getFollowerLevelClampWarning(calculatedFinalLevel)
+			: "";
 		const rankOutput = form.querySelector("[data-relationship-rank]");
 		if (rankOutput) rankOutput.textContent = Number(rank.toFixed(2)).toString();
 		form.querySelectorAll("[data-relationship-level-adjustment]").forEach(output => {
 			output.textContent = String(levelAdjustment);
 		});
 		const finalLevelOutput = form.querySelector("[data-final-level]");
-		if (finalLevelOutput) finalLevelOutput.textContent = String(baseLevel + addedLevels + levelAdjustment);
+		if (finalLevelOutput) {
+			finalLevelOutput.textContent = String(
+				followerActive ? clampNpcLevel(calculatedFinalLevel) : calculatedFinalLevel
+			);
+		}
+		const followerLevelWarningOutput = form.querySelector("[data-follower-level-warning]");
+		if (followerLevelWarningOutput) {
+			followerLevelWarningOutput.textContent = followerLevelWarning;
+			followerLevelWarningOutput.hidden = !followerLevelWarning;
+		}
+		const partyLevelOutput = form.querySelector("[data-follower-party-level]");
+		if (partyLevelOutput) partyLevelOutput.textContent = partyLevel === null ? "Unavailable" : String(partyLevel);
+		const targetLevelOutput = form.querySelector("[data-follower-target-level]");
+		if (targetLevelOutput) {
+			targetLevelOutput.textContent = partyLevel === null
+				? Number.isSafeInteger(storedTarget) ? String(storedTarget) : "Unavailable"
+				: String(followerTarget);
+		}
+		const status = form.querySelector("[data-follower-status]");
+		if (status) {
+			const partyUuid = form.elements.namedItem("follower.partyUuid")?.value;
+			status.textContent = !partyUuid
+				? "This NPC is not currently assigned to a party."
+				: partyLevel === null
+					? "No valid player-character members are available. The last applied follower level is preserved."
+					: "The party average is rounded down before applying the Base Follower Level.";
+		}
 	}
 
-	async #save(form) {
+	async synchronizeFollowerLevel() {
+		await this.#save(null, true);
+	}
+
+	async #save(form, synchronizeFollower = false) {
 		if (!this.actor.isOwner) {
-			ui.notifications.warn("You do not have permission to configure this NPC.");
+			if (!synchronizeFollower) ui.notifications.warn("You do not have permission to configure this NPC.");
 			return;
 		}
-		const saveButton = form.querySelector('[type="submit"]');
+		if (!form && !synchronizeFollower) return;
+		const saveButton = form?.querySelector('[type="submit"]');
 		if (saveButton?.disabled) return;
 		if (saveButton) saveButton.disabled = true;
 		let actorUpdateSucceeded = false;
+		let followerPermissionsSynchronized = true;
 		try {
-			const formData = new FormData(form);
-			const addedLevelsValue = String(formData.get("addedLevels") ?? "").trim();
+			const formData = form ? new FormData(form) : null;
+			const currentConfiguration = foundry.utils.getProperty(this.actor, NPC_CONFIGURATION_PATH) ?? {};
+			const addedLevelsValue = String(
+				synchronizeFollower
+					? currentConfiguration.addedLevels ?? 0
+					: formData.get("addedLevels") ?? ""
+			).trim();
 			const addedLevels = Number(addedLevelsValue);
 			if (!addedLevelsValue || !Number.isSafeInteger(addedLevels)) {
-				ui.notifications.warn("Adjusted Level must be a whole number.");
+				if (!synchronizeFollower) ui.notifications.warn("Adjusted Level must be a whole number.");
 				return;
 			}
 			const relationshipStatistics = {};
 			for (const { key, label } of NPC_RELATIONSHIP_STATISTICS) {
-				const valueString = String(formData.get(`relationshipStatistics.${key}`) ?? "").trim();
+				const valueString = String(
+					synchronizeFollower
+						? getRelationshipStatistics(currentConfiguration)[key]
+						: formData.get(`relationshipStatistics.${key}`) ?? ""
+				).trim();
 				const value = Number(valueString);
 				if (!valueString || !Number.isSafeInteger(value)) {
-					ui.notifications.warn(`${label} must be a whole number.`);
+					if (!synchronizeFollower) ui.notifications.warn(`${label} must be a whole number.`);
 					return;
 				}
 				relationshipStatistics[key] = value;
@@ -1539,7 +2514,6 @@ class NpcConfigurationApplication extends foundry.applications.api.HandlebarsApp
 			const relationshipRank = getRelationshipRank(relationshipStatistics);
 			const relationshipLevelAdjustment = getRelationshipLevelAdjustment(relationshipRank);
 
-			const currentConfiguration = foundry.utils.getProperty(this.actor, NPC_CONFIGURATION_PATH) ?? {};
 			const previousAddedLevels = Number.isInteger(Number(currentConfiguration.addedLevels))
 				? Number(currentConfiguration.addedLevels)
 				: 0;
@@ -1548,6 +2522,7 @@ class NpcConfigurationApplication extends foundry.applications.api.HandlebarsApp
 				? getRelationshipLevelAdjustment(getRelationshipRank(previousRelationshipStatistics))
 				: Number(currentConfiguration.affection) || 0;
 			const previousScaling = currentConfiguration.levelScaling ?? {};
+			const savedScaling = currentConfiguration.scaling ?? {};
 			const priorOriginalLevel = Number(foundry.utils.getProperty(
 				currentConfiguration,
 				"originalData.system.details.level.value"
@@ -1564,31 +2539,104 @@ class NpcConfigurationApplication extends foundry.applications.api.HandlebarsApp
 				previousScaling,
 				baseLevel
 			);
-			const totalLevelBonus = addedLevels + relationshipLevelAdjustment;
-			const effectiveLevel = Number(foundry.utils.getProperty(originalSystem, "details.level.value")) + totalLevelBonus;
-			if (!Number.isSafeInteger(effectiveLevel) || effectiveLevel < -1 || effectiveLevel > 100) {
-				ui.notifications.warn("The resulting NPC level must be between -1 and 100.");
+			const followerPartyUuid = String(
+				synchronizeFollower
+					? currentConfiguration.follower?.partyUuid ?? ""
+					: formData.get("follower.partyUuid") ?? ""
+			).trim();
+			const baseFollowerLevelValue = String(
+				synchronizeFollower
+					? currentConfiguration.follower?.baseFollowerLevel ?? 0
+					: formData.get("follower.baseLevel") ?? 0
+			).trim();
+			const baseFollowerLevel = Number(baseFollowerLevelValue);
+			if (!baseFollowerLevelValue || !Number.isSafeInteger(baseFollowerLevel)) {
+				if (!synchronizeFollower) ui.notifications.warn("Base Follower Level must be a whole number.");
+				return;
+			}
+			const playerControlOverride = String(
+				synchronizeFollower
+					? currentConfiguration.follower?.playerControlOverride ?? "inherit"
+					: formData.get("follower.playerControlOverride") ?? "inherit"
+			);
+			if (!["inherit", "allow", "deny"].includes(playerControlOverride)) {
+				if (!synchronizeFollower) ui.notifications.warn("Choose a valid follower player-control override.");
+				return;
+			}
+			const followerParty = getFollowerParty(followerPartyUuid);
+			const followerPartyLevel = getFollowerPartyLevel(followerParty);
+			const priorFollower = currentConfiguration.follower ?? {};
+			const priorFollowerTarget = readFiniteNumber(priorFollower.appliedTargetLevel);
+			const preservedFollowerTarget = Number.isSafeInteger(priorFollowerTarget)
+				? priorFollowerTarget
+				: baseLevel + getEffectiveNpcAddedLevels(currentConfiguration, baseLevel);
+			const followerTargetLevel = followerPartyUuid
+				? followerPartyLevel === null
+					? preservedFollowerTarget
+					: followerPartyLevel + baseFollowerLevel
+				: null;
+			if (followerPartyUuid && !Number.isSafeInteger(followerTargetLevel)) {
+				if (!synchronizeFollower) ui.notifications.warn("The resulting follower target level must be a safe whole number.");
+				return;
+			}
+			if (synchronizeFollower) {
+				if (!followerPartyUuid || followerPartyLevel === null || followerTargetLevel === priorFollowerTarget) return;
+			} else if (followerPartyUuid && followerPartyLevel === null) {
+				ui.notifications.warn("No player characters with valid levels are in the assigned Party. The last applied follower level will be preserved.");
+			}
+			const effectiveAddedLevels = followerPartyUuid && Number.isSafeInteger(followerTargetLevel)
+				? followerTargetLevel - baseLevel
+				: addedLevels;
+			const totalLevelBonus = effectiveAddedLevels + relationshipLevelAdjustment;
+			const calculatedEffectiveLevel = Number(foundry.utils.getProperty(originalSystem, "details.level.value")) + totalLevelBonus;
+			if (!Number.isSafeInteger(calculatedEffectiveLevel)) {
+				if (!synchronizeFollower) {
+					ui.notifications.warn(`The resulting NPC level must be between ${MIN_NPC_LEVEL} and ${MAX_NPC_LEVEL}.`);
+				}
+				return;
+			}
+			const effectiveLevel = followerPartyUuid
+				? clampNpcLevel(calculatedEffectiveLevel)
+				: calculatedEffectiveLevel;
+			if (!followerPartyUuid &&
+				(effectiveLevel < MIN_NPC_LEVEL || effectiveLevel > MAX_NPC_LEVEL)) {
+				if (!synchronizeFollower) {
+					ui.notifications.warn(`The resulting NPC level must be between ${MIN_NPC_LEVEL} and ${MAX_NPC_LEVEL}.`);
+				}
 				return;
 			}
 			const scaling = {};
 			const scalingGroups = getNpcLevelScalingGroups(originalSystem, {}, this.actor);
 			for (const { fields } of scalingGroups) {
-				for (const { key, label, defaultValue } of fields) {
-					const value = String(formData.get(`scaling.${key}`) ?? "").trim();
+				for (const { key, label, defaultValue, defaultEnabled } of fields) {
+					const storedSetting = savedScaling[key];
+					const value = String(
+						synchronizeFollower
+							? storedSetting?.multiplier ?? defaultValue
+							: formData.get(`scaling.${key}`) ?? ""
+					).trim();
 					const multiplier = value ? Number(value) : defaultValue;
 					if (!Number.isFinite(multiplier) || multiplier < 0 || multiplier > 100) {
-						ui.notifications.warn(`${label} scaling must be between 0 and 100.`);
+						if (!synchronizeFollower) ui.notifications.warn(`${label} scaling must be between 0 and 100.`);
 						return;
 					}
 					scaling[key] = {
 						multiplier,
-						enabled: formData.get(`scalingEnabled.${key}`) === "on"
+						enabled: synchronizeFollower
+							? storedSetting
+								? storedSetting.enabled !== false
+								: defaultEnabled !== false
+							: formData.get(`scalingEnabled.${key}`) === "on"
 					};
 				}
 			}
 			const formulas = {};
 			for (const { key } of NPC_CONFIGURATION_RESOURCES) {
-				const formula = String(formData.get(`formulas.${key}`) ?? "").trim();
+				const formula = String(
+					synchronizeFollower
+						? currentConfiguration.formulas?.[key] ?? ""
+						: formData.get(`formulas.${key}`) ?? ""
+				).trim();
 				if (!formula) continue;
 				evaluateFormula(this.actor, key, formula);
 				formulas[key] = formula;
@@ -1610,6 +2658,16 @@ class NpcConfigurationApplication extends foundry.applications.api.HandlebarsApp
 			const configuration = {
 				formulas: savedFormulas,
 				addedLevels,
+				follower: {
+					partyUuid: followerPartyUuid,
+					baseFollowerLevel,
+					playerControlOverride,
+					...(followerPartyUuid
+						? { appliedTargetLevel: followerTargetLevel }
+						: Number.isSafeInteger(priorFollowerTarget)
+							? { appliedTargetLevel: priorFollowerTarget }
+							: {})
+				},
 				relationshipStatistics,
 				baseLevel,
 				scaling,
@@ -1681,22 +2739,205 @@ class NpcConfigurationApplication extends foundry.applications.api.HandlebarsApp
 					{ render: false }
 				);
 			}
+			followerPermissionsSynchronized = false;
+			await queueFollowerPlayerOwnershipSync(this.actor);
+			followerPermissionsSynchronized = true;
 			if (this.actor.sheet?.rendered) {
 				await this.actor.sheet.render(true);
 			}
-			await new Promise(resolve => requestAnimationFrame(resolve));
-			this.bringToFront();
+			if (form) {
+				await new Promise(resolve => requestAnimationFrame(resolve));
+				this.bringToFront();
+			}
 		} catch (error) {
-			console.error(`vurs-pf2e | Failed to save NPC configuration for ${this.actor.name}`, error);
-			const message = actorUpdateSucceeded
-				? `NPC stats were updated for ${this.actor.name}, but an embedded item or linked strike could not be updated. Save again to retry.`
-				: `Could not save NPC configuration for ${this.actor.name}. See the console for details.`;
+			console.error(
+				`vurs-pf2e | Failed to ${synchronizeFollower
+					? "synchronize follower level"
+					: !followerPermissionsSynchronized
+						? "synchronize follower player permissions"
+						: "save NPC configuration"} for ${this.actor.name}`,
+				error
+			);
+			const message = !followerPermissionsSynchronized
+				? `NPC configuration was saved for ${this.actor.name}, but player permissions could not be synchronized. See the console for details.`
+				: synchronizeFollower
+				? actorUpdateSucceeded
+					? `Follower stats were updated for ${this.actor.name}, but an embedded item or linked strike could not be updated. Check the console and retry after correcting the issue.`
+					: `Could not synchronize the follower level for ${this.actor.name}. See the console for details.`
+				: actorUpdateSucceeded
+					? `NPC stats were updated for ${this.actor.name}, but an embedded item or linked strike could not be updated. Save again to retry.`
+					: `Could not save NPC configuration for ${this.actor.name}. See the console for details.`;
 			ui.notifications.error(message);
 		} finally {
 			if (saveButton?.isConnected) saveButton.disabled = false;
 		}
 	}
 }
+
+function scheduleFollowerLevelSync(actor) {
+	if (!game.user?.isGM || !isNpcActor(actor)) return;
+	const configuration = foundry.utils.getProperty(actor, NPC_CONFIGURATION_PATH);
+	if (!configuration?.follower?.partyUuid || SCHEDULED_FOLLOWER_SYNCS.has(actor.uuid)) return;
+	const timeout = setTimeout(async () => {
+		const startingConfiguration = foundry.utils.getProperty(actor, NPC_CONFIGURATION_PATH);
+		const startingFollower = startingConfiguration?.follower;
+		const startingPartyLevel = getFollowerPartyLevel(getFollowerParty(startingFollower?.partyUuid));
+		const startingExpectedLevel = startingPartyLevel === null
+			? null
+			: startingPartyLevel + Number(startingFollower?.baseFollowerLevel);
+		try {
+			await new NpcConfigurationApplication(actor).synchronizeFollowerLevel();
+		} catch (error) {
+			console.error(`vurs-pf2e | Failed to synchronize follower level for ${actor.name}`, error);
+		} finally {
+			SCHEDULED_FOLLOWER_SYNCS.delete(actor.uuid);
+			const currentConfiguration = foundry.utils.getProperty(actor, NPC_CONFIGURATION_PATH);
+			const follower = currentConfiguration?.follower;
+			const party = getFollowerParty(follower?.partyUuid);
+			const partyLevel = getFollowerPartyLevel(party);
+			const expectedLevel = partyLevel === null
+				? null
+				: partyLevel + Number(follower?.baseFollowerLevel);
+			if (Number.isSafeInteger(expectedLevel) &&
+				expectedLevel !== startingExpectedLevel) {
+				scheduleFollowerLevelSync(actor);
+			}
+		}
+	}, 0);
+	SCHEDULED_FOLLOWER_SYNCS.set(actor.uuid, timeout);
+}
+
+function scheduleFollowerPartySync(party) {
+	if (party?.type !== "party") return;
+	for (const actor of game.actors?.contents ?? []) {
+		if (foundry.utils.getProperty(actor, `${NPC_CONFIGURATION_PATH}.follower.partyUuid`) === party.uuid) {
+			scheduleFollowerLevelSync(actor);
+		}
+	}
+}
+
+function scheduleAllFollowerLevelSyncs() {
+	for (const actor of game.actors?.contents ?? []) scheduleFollowerLevelSync(actor);
+}
+
+Hooks.once("init", () => {
+	registerFollowerTokenColorWrapper();
+	registerFollowerTokenControlWrappers();
+});
+Hooks.once("socketlib.ready", registerFollowerControlSocket);
+
+Hooks.once("ready", () => {
+	registerFollowerControlSocket();
+	scheduleAllFollowerLevelSyncs();
+	void syncAllFollowerPlayerOwnership();
+	requestGMTokenSelectionSync();
+});
+
+Hooks.on(`${MODULE_ID}.followerPlayerControlChanged`, () => {
+	void syncAllFollowerPlayerOwnership();
+});
+
+Hooks.on("createUser", () => {
+	void syncAllFollowerPlayerOwnership();
+	refreshAllTokenRingColors();
+});
+
+Hooks.on(`${MODULE_ID}.playerTokenRingColorsChanged`, refreshAllTokenRingColors);
+
+Hooks.on("updateUser", (user, changes = {}) => {
+	void syncAllFollowerPlayerOwnership();
+	refreshFollowerTokenColorsForUser(user.id);
+	const changedUserPaths = Object.keys(foundry.utils.flattenObject(changes ?? {}));
+	if (changedUserPaths.some(path =>
+		path === "color" ||
+		path.startsWith("color.") ||
+		path === "character" ||
+		path.startsWith("character.")
+	)) {
+		refreshAllTokenRingColors();
+	}
+	if (game.user?.isGM && user.active === false) {
+		void releaseFollowerClaimsForUser(user.id);
+	}
+	if (user.isGM && user.active === false && GM_SELECTED_TOKEN_UUIDS.delete(user.id)) {
+		refreshAllTokenRingColors();
+	}
+});
+
+Hooks.on("deleteUser", user => {
+	GM_SELECTED_TOKEN_UUIDS.delete(user.id);
+	refreshAllTokenRingColors();
+	if (!game.user?.isGM) return;
+	void releaseFollowerClaimsForUser(user.id);
+});
+
+Hooks.on("controlToken", onFollowerTokenControl);
+Hooks.on("canvasReady", requestGMTokenSelectionSync);
+Hooks.on("renderTokenHUD", renderFollowerControlTokenHud);
+Hooks.on("canvasTearDown", releaseLocalFollowerControlClaims);
+
+Hooks.on("createActor", actor => {
+	if (isNpcActor(actor)) {
+		void queueFollowerPlayerOwnershipSync(actor).catch(error => {
+			console.error(`vurs-pf2e | Failed to synchronize player ownership for follower ${actor.name}`, error);
+			ui.notifications.error(`Could not synchronize player permissions for ${actor.name}. See the console for details.`);
+		});
+	}
+});
+
+Hooks.on("updateActor", (actor, changes, options = {}) => {
+	const changedPaths = Object.keys(foundry.utils.flattenObject(changes));
+	if (changedPaths.some(path => path === "ownership" || path.startsWith("ownership."))) {
+		refreshTokenRingColors(actor);
+	}
+	if (isNpcActor(actor) &&
+		changedPaths.some(isFollowerControlStateChange)) {
+		refreshFollowerTokenColors(actor);
+		releaseFollowerTokensControlledByOtherPlayer(actor);
+	}
+	if (!game.user?.isGM) return;
+	if (isNpcActor(actor) &&
+		!options.vursFollowerOwnershipUpdate &&
+		!options.vursFollowerControlUpdate &&
+		changedPaths.some(path => path === NPC_CONFIGURATION_PATH || path.startsWith(`${NPC_CONFIGURATION_PATH}.`))) {
+		void queueFollowerPlayerOwnershipSync(actor).catch(error => {
+			console.error(`vurs-pf2e | Failed to synchronize player ownership for follower ${actor.name}`, error);
+			ui.notifications.error(`Could not synchronize player permissions for ${actor.name}. See the console for details.`);
+		});
+	}
+	if (options.vursNpcConfigurationUpdate || options.vursFollowerOwnershipUpdate) return;
+	if (actor.type === "party") {
+		if (changedPaths.some(path => path.startsWith("system.details.members"))) {
+			scheduleFollowerPartySync(actor);
+		}
+		return;
+	}
+	if (actor.type !== "character" ||
+		!changedPaths.some(path => path === "system.details.level.value" || path.startsWith("system.details.level."))) {
+		return;
+	}
+	for (const party of game.actors?.contents ?? []) {
+		if (party.type !== "party") continue;
+		const members = party.system?.details?.members ?? [];
+		if (members.some(member => (typeof member === "string" ? member : member?.uuid) === actor.uuid)) {
+			scheduleFollowerPartySync(party);
+		}
+	}
+});
+
+Hooks.on("updateToken", (tokenDocument, changes, options = {}) => {
+	const actor = getFollowerControlActor(tokenDocument);
+	if (!options.vursFollowerControlUpdate || !isNpcActor(actor)) return;
+	refreshFollowerTokenColors(actor);
+});
+
+Hooks.on("createActor", actor => {
+	if (actor.type === "party") scheduleFollowerPartySync(actor);
+});
+
+Hooks.on("deleteActor", () => {
+	scheduleAllFollowerLevelSyncs();
+});
 
 Hooks.on("preUpdateActor", (actor, changes, options = {}) => {
 	if (!isNpcActor(actor) || options.vursNpcConfigurationUpdate) return;
@@ -1870,7 +3111,6 @@ Hooks.on("preCreateItem", (item, data, options = {}) => {
 	const configuration = foundry.utils.getProperty(actor, NPC_CONFIGURATION_PATH);
 	if (!configuration?.originalData?.system) return;
 	const originalSystem = foundry.utils.deepClone(data.system ?? item._source.system);
-	const addedLevels = Number(configuration.addedLevels) || 0;
 	const relationshipStatistics = getRelationshipStatistics(configuration);
 	const relationshipLevelAdjustment = configuration.relationshipStatistics
 		? getRelationshipLevelAdjustment(getRelationshipRank(relationshipStatistics))
@@ -1879,6 +3119,7 @@ Hooks.on("preCreateItem", (item, data, options = {}) => {
 		configuration,
 		"originalData.system.details.level.value"
 	));
+	const addedLevels = getEffectiveNpcAddedLevels(configuration, baseLevel);
 	const totalLevelBonus = addedLevels + relationshipLevelAdjustment;
 	const effectiveLevel = baseLevel + totalLevelBonus;
 	const adjustments = getItemAdjustmentData(

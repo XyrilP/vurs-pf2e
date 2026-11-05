@@ -69,6 +69,7 @@
                 "ModifierType": "Modifier Type",
                 "BeforeReduction": "Calculate Before Reduction",
                 "DefaultWhenOmitted": "When omitted: {value}",
+                "RequiredWithoutDefault": "Required: enter a value; no default is provided.",
                 "Modes": {
                     "Threshold": "Threshold",
                     "Flat": "Flat",

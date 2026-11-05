@@ -1,0 +1,4 @@
+.vurs-required-field-warning {
+  color: var(--color-level-warning, var(--color-text-warning, #9a6700));
+  font-weight: 600;
+}

@@ -1380,6 +1380,92 @@ function getToolbeltTargetTokens(targetUuids = []) {
 		.filter(token => token?.actor);
 }
 
+function getSpellTraits(message, data) {
+	const itemTraits = message?.item?.system?.traits?.value;
+	const traits = [
+		...(Array.isArray(itemTraits) ? itemTraits : []),
+		...(Array.isArray(data?.traits) ? data.traits : [])
+	];
+	return new Set(traits.map(trait =>
+		typeof trait === "string" ? trait : trait?.value ?? trait?.slug ?? trait?.name
+	).filter(trait => typeof trait === "string"));
+}
+
+function getSpellDamageType(message, data, roll = null) {
+	if (message?.item?.type !== "spell") return null;
+
+	const rollTypes = new Set((roll?.instances ?? [])
+		.map(instance => instance.type)
+		.filter(type => type === "vitality" || type === "void"));
+	if (rollTypes.size === 1) return rollTypes.values().next().value;
+	if (rollTypes.size > 1) return null;
+
+	const traits = getSpellTraits(message, data);
+	const traitTypes = ["vitality", "void"].filter(type => traits.has(type));
+	return traitTypes.length === 1 ? traitTypes[0] : null;
+}
+
+function hasHealingSpellDamage(message, data) {
+	if (message?.item?.type !== "spell") return false;
+	const traits = getSpellTraits(message, data);
+	const formula = message.item.system?.damage?.value ??
+		message.item.system?.damage ??
+		"";
+	return traits.has("healing") ||
+		traits.has("vitality") ||
+		traits.has("void") ||
+		(typeof formula === "string" && /\[(?:healing|temp-healing)\]/i.test(formula));
+}
+
+function isActorAffectedByEnergyType(actor, damageType) {
+	if (typeof actor?.isAffectedBy === "function") {
+		const affected = actor.isAffectedBy(damageType);
+		return typeof affected === "boolean" ? affected : null;
+	}
+
+	const negativeHealing = actor?.system?.attributes?.hp?.negativeHealing;
+	if (typeof negativeHealing !== "boolean") return null;
+	return damageType === "vitality" ? negativeHealing : !negativeHealing;
+}
+
+function getDamageRollKinds(roll) {
+	const kinds = new Set(roll?.kinds ?? []);
+	for (const instance of roll?.instances ?? []) {
+		for (const kind of instance.kinds ?? []) kinds.add(kind);
+	}
+	return kinds;
+}
+
+function getTargetDamageMultiplier(
+	roll,
+	targetActor,
+	damageMultiplier,
+	sourceMessage,
+	data = null
+) {
+	const kinds = getDamageRollKinds(roll);
+	const hasHealing = roll?.options?.healingOnly === true || kinds.has("healing");
+	const hasDamage = roll?.options?.healingOnly !== true && kinds.has("damage");
+	const damageType = getSpellDamageType(sourceMessage, data, roll);
+
+	if (hasHealing && !hasDamage) {
+		if (!damageType) return -1;
+		const affected = isActorAffectedByEnergyType(targetActor, damageType);
+		return affected === false ? -1 : null;
+	}
+	if (hasHealing && hasDamage) {
+		if (!damageType) return null;
+		const affected = isActorAffectedByEnergyType(targetActor, damageType);
+		if (affected === null) return null;
+		return affected ? damageMultiplier : -1;
+	}
+	if (hasDamage && damageType &&
+		isActorAffectedByEnergyType(targetActor, damageType) === false) {
+		return null;
+	}
+	return damageMultiplier;
+}
+
 function getRenderedChatMessageElement(messageId) {
 	return [...document.querySelectorAll(
 		`li.chat-message[data-message-id="${messageId}"]`
@@ -1434,12 +1520,31 @@ function isResolvedToolbeltSave(save) {
 	return ["criticalfailure", "failure", "success", "criticalsuccess"].includes(normalized);
 }
 
-function getPendingToolbeltSaveTokens(data, variant = getToolbeltSaveVariant(data)) {
-	if (!variant?.statistic) return [];
-	return getToolbeltTargetTokens([
+function getToolbeltSaveTargetTokens(data, sourceMessage = null) {
+	const targetTokens = getToolbeltTargetTokens([
 		...(data.targets ?? []),
 		...(data.splashTargets ?? [])
-	]).filter(token =>
+	]);
+	const damageType = getSpellDamageType(sourceMessage, data);
+	const traits = getSpellTraits(sourceMessage, data);
+	if (!damageType && sourceMessage?.item?.type === "spell" &&
+		traits.has("healing") &&
+		!traits.has("vitality") &&
+		!traits.has("void")) {
+		return [];
+	}
+	return targetTokens.filter(token =>
+		!damageType || isActorAffectedByEnergyType(token.actor, damageType) !== false
+	);
+}
+
+function getPendingToolbeltSaveTokens(
+	data,
+	variant = getToolbeltSaveVariant(data),
+	sourceMessage = null
+) {
+	if (!variant?.statistic) return [];
+	return getToolbeltSaveTargetTokens(data, sourceMessage).filter(token =>
 		!isResolvedToolbeltSave(variant.saves?.[token.id])
 	);
 }
@@ -1713,12 +1818,31 @@ function canAutoApplyDamageMessage(message, data) {
 		return getSuccessfulStrikeOutcome(sourceMessage) !== null;
 	}
 
-	if (!isToolbeltTargetHelperActive()) return false;
 	const sourceData = getToolbeltTargetData(sourceMessage);
+	if (association.workflow === "healing") {
+		if (!hasHealingSpellDamage(sourceMessage, sourceData)) return false;
+		if (isToolbeltTargetHelperActive() &&
+			sourceData?.type === "spell" &&
+			getAcceptedToolbeltTargets(sourceData)) {
+			return getPendingToolbeltSaveTokens(
+				sourceData,
+				getToolbeltSaveVariant(sourceData, sourceMessage),
+				sourceMessage
+			).length === 0 &&
+				areToolbeltDamageSavesReady(message, data);
+		}
+		return getNativeDamageTargetTokens(sourceMessage).length > 0;
+	}
+
+	if (!isToolbeltTargetHelperActive()) return false;
 	const workflow = getSupportedDamageWorkflow(sourceMessage, sourceData);
 	if (workflow !== association.workflow ||
 		!getAcceptedToolbeltTargets(sourceData) ||
-		getPendingToolbeltSaveTokens(sourceData, getToolbeltSaveVariant(sourceData, sourceMessage)).length) {
+		getPendingToolbeltSaveTokens(
+			sourceData,
+			getToolbeltSaveVariant(sourceData, sourceMessage),
+			sourceMessage
+		).length) {
 		return false;
 	}
 
@@ -1772,7 +1896,20 @@ function autoRollCardDamage(message, html) {
 	)?.dataset.action;
 	const data = getToolbeltTargetData(message);
 	const workflow = getSupportedDamageWorkflow(message, data);
-	if (!workflow || !isToolbeltTargetHelperActive()) return;
+	if (!workflow) {
+		if (!automaticDamage) return;
+		if (!hasHealingSpellDamage(message, data)) return;
+		if (isToolbeltTargetHelperActive() && data?.type === "spell") {
+			if (Object.keys(data.saveVariants ?? {}).length) return;
+			if (!getAcceptedToolbeltTargets(data) &&
+				!getNativeDamageTargetTokens(message).length) return;
+		} else if (!getNativeDamageTargetTokens(message).length) {
+			return;
+		}
+		autoClickDamageAction(message, damageAction, "healing");
+		return;
+	}
+	if (!isToolbeltTargetHelperActive()) return;
 
 	if (templateAction) {
 		const autoPlace = game.settings.get(MODULE_ID, "automaticTemplatePlacement") === true;
@@ -1924,7 +2061,11 @@ function finishAutoAreaDamageFlow(message, data, flow = pendingAreaDamageRolls.g
 	if (!isToolbeltTargetHelperActive() ||
 		!getAcceptedToolbeltTargets(data) ||
 		getSupportedDamageWorkflow(message, data) !== flow.workflow) return;
-	if (getPendingToolbeltSaveTokens(data, getToolbeltSaveVariant(data, message)).length) {
+	if (getPendingToolbeltSaveTokens(
+		data,
+		getToolbeltSaveVariant(data, message),
+		message
+	).length) {
 		if (game.settings.get(MODULE_ID, "automaticNpcSavingThrows") === true) {
 			autoRollToolbeltSaves(message, data);
 		}
@@ -1950,7 +2091,11 @@ function finishPendingToolbeltSpellDamage(message, data) {
 		!isToolbeltTargetHelperActive() ||
 		!getAcceptedToolbeltTargets(data) ||
 		getSupportedDamageWorkflow(message, data) !== pending.workflow ||
-		getPendingToolbeltSaveTokens(data, getToolbeltSaveVariant(data, message)).length) return;
+		getPendingToolbeltSaveTokens(
+			data,
+			getToolbeltSaveVariant(data, message),
+			message
+		).length) return;
 	pendingToolbeltSpellDamageRolls.delete(message.id);
 	autoClickDamageAction(message, pending.action, pending.workflow);
 }
@@ -2122,16 +2267,16 @@ function retryNativeDamageApplication(message) {
 
 function autoApplyNativeDamage(message, html) {
 	if (!pendingNativeDamageMessages.has(message.id)) return;
+	const association = getAutomatedDamageSource(message);
 	if (!isActiveGM() ||
 		game.settings.get(MODULE_ID, "manualDamageApplication") === true ||
 		!message.isDamageRoll ||
-		message.item?.system?.save?.statistic) {
+		(message.item?.system?.save?.statistic && association?.workflow !== "healing")) {
 		pendingNativeDamageMessages.delete(message.id);
 		return;
 	}
 	if (!canAutoApplyDamageMessage(message, getToolbeltTargetData(message) ?? {})) {
 		const pendingSource = findPendingAutomatedDamageSource(message);
-		const association = getAutomatedDamageSource(message);
 		const linkedStrike = association?.workflow === "strike" &&
 			game.messages.get(association.sourceId);
 		if (pendingSource || linkedStrike) {
@@ -2186,6 +2331,9 @@ function autoApplyNativeDamage(message, html) {
 		retryNativeDamageApplication(message);
 		return;
 	}
+	const sourceMessage = game.messages.get(association.sourceId);
+	const sourceData = getToolbeltTargetData(sourceMessage);
+	const damageMultiplier = message.item?.system?.save?.statistic ? null : 1;
 
 	cancelPendingNativeDamage(message.id);
 	const previouslyControlled = [...canvas.tokens.controlled];
@@ -2198,7 +2346,14 @@ function autoApplyNativeDamage(message, html) {
 				const rollIndex = Number(application.dataset.rollIndex);
 				const roll = message.rolls?.[rollIndex];
 				if (!Number.isInteger(rollIndex) || !roll) continue;
-				const multiplier = roll.options?.healingOnly === true ? -1 : 1;
+				const multiplier = getTargetDamageMultiplier(
+					roll,
+					target.actor,
+					damageMultiplier,
+					sourceMessage ?? message,
+					sourceData
+				);
+				if (multiplier === null || multiplier === 0) continue;
 				const button = application.querySelector(
 					`button[data-action="applyDamage"][data-multiplier="${multiplier}"]`
 				);
@@ -2264,7 +2419,11 @@ function areToolbeltDamageSavesReady(message, data) {
 			: null);
 	if (Object.keys(sourceData.saveVariants ?? {}).length && !sourceVariant) return false;
 	if (!sourceVariant?.statistic) return true;
-	if (getPendingToolbeltSaveTokens(sourceData, sourceVariant).length) return false;
+	const saveTargets = getToolbeltSaveTargetTokens(sourceData, sourceMessage);
+	if (!saveTargets.length) return true;
+	if (getPendingToolbeltSaveTokens(sourceData, sourceVariant, sourceMessage).length) {
+		return false;
+	}
 
 	const damageVariant = data.saveVariants?.null;
 	if (!damageVariant ||
@@ -2272,8 +2431,9 @@ function areToolbeltDamageSavesReady(message, data) {
 		damageVariant.statistic !== sourceVariant.statistic ||
 		damageVariant.dc !== sourceVariant.dc) return false;
 
-	return Object.entries(sourceVariant.saves ?? {}).every(([tokenId, sourceSave]) => {
-		const damageSave = damageVariant.saves?.[tokenId];
+	return saveTargets.every(target => {
+		const sourceSave = sourceVariant.saves?.[target.id];
+		const damageSave = damageVariant.saves?.[target.id];
 		return damageSave?.success === sourceSave.success &&
 			damageSave?.unadjustedOutcome === sourceSave.unadjustedOutcome;
 	});
@@ -2395,7 +2555,7 @@ function autoRollToolbeltSaves(message, data) {
 	const variant = getToolbeltSaveVariant(data, message);
 	if (!variant?.basic || !variant.statistic) return;
 
-	const pending = getPendingToolbeltSaveTokens(data, variant);
+	const pending = getPendingToolbeltSaveTokens(data, variant, message);
 	if (!pending.length) return;
 	const key = `${message.id}:${pending.map(token => token.uuid).sort().join(",")}`;
 	if (autoRolledToolbeltSaves.has(key)) return;
@@ -2439,21 +2599,28 @@ function autoApplyToolbeltTargetedDamage(message, html, data) {
 			continue;
 		}
 
-		const isHealing = message.rolls[rollIndex]?.options?.healingOnly === true;
+		const association = getAutomatedDamageSource(message);
+		const sourceMessage = game.messages.get(association?.sourceId) ?? message;
 		const rowMultiplier = getToolbeltRowDamageMultiplier(row);
-		let multiplier;
-		if (isHealing) {
-			multiplier = -1;
-		} else if (getAutomatedDamageSource(message)?.workflow === "strike") {
-			multiplier = 1;
+		let damageMultiplier;
+		if (association?.workflow === "strike") {
+			damageMultiplier = 1;
 		} else if (rowMultiplier !== undefined) {
-			multiplier = rowMultiplier;
+			damageMultiplier = rowMultiplier;
 		} else {
-			multiplier = Object.keys(data.saveVariants ?? {}).length ||
-				hasPendingToolbeltSaveResult(message, token)
-				? null
-				: 1;
+			const saveRequired = Object.keys(data.saveVariants ?? {}).length ||
+				(association?.workflow === "healing" &&
+					sourceMessage?.item?.system?.save?.statistic) ||
+				hasPendingToolbeltSaveResult(message, token);
+			damageMultiplier = saveRequired ? null : 1;
 		}
+		const multiplier = getTargetDamageMultiplier(
+			message.rolls[rollIndex],
+			token.actor,
+			damageMultiplier,
+			sourceMessage,
+			getToolbeltTargetData(sourceMessage) ?? data
+		);
 		if (multiplier === null || multiplier === 0) continue;
 
 		const key = `${message.id}:${token.uuid}:${rollIndex}`;

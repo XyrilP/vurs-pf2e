@@ -6,6 +6,7 @@ const RULE_ELEMENT_FORM_TRANSLATIONS = {
 		ModifierType: "Modifier Type",
 		BeforeReduction: "Calculate Before Reduction",
 		DefaultWhenOmitted: "When omitted: {value}",
+		RequiredWithoutDefault: "Required: enter a value; no default is provided.",
 		Modes: {
 			Threshold: "Threshold",
 			Flat: "Flat",
@@ -73,6 +74,15 @@ const RULE_ELEMENT_FORM_TRANSLATIONS = {
 		}
 	}
 };
+const VURS_CUSTOM_RULE_ELEMENT_KEYS = new Set([
+	"Attack Speed",
+	"Critical Rate",
+	"Critical Protection",
+	"Healing Effectiveness",
+	"Lifesteal",
+	"Damage Return",
+	"Collateral Damage"
+]);
 
 function registerRuleElementFormTranslations(entries, prefix) {
 	const translations = game.i18n?.translations;
@@ -107,7 +117,7 @@ export function localizeRuleElementModifierTypes(types) {
 	}));
 }
 
-function addRuleElementDefaultPlaceholders(app, html) {
+function addRuleElementFormHints(app, html) {
 	const root = html?.[0] ?? html;
 	if (!root?.querySelectorAll) return;
 
@@ -115,37 +125,83 @@ function addRuleElementDefaultPlaceholders(app, html) {
 	for (const form of root.querySelectorAll(".rule-form[data-key]")) {
 		const schema = system?.RuleElements?.all?.[form.dataset.key]?.schema;
 		if (!schema) continue;
+		const isVursCustomRuleElement = VURS_CUSTOM_RULE_ELEMENT_KEYS.has(form.dataset.key);
 
 		for (const input of form.querySelectorAll("[name^='system.rules.']")) {
 			const fieldName = input.name.split(".").at(-1);
-			const placeholder = schema.fields?.[fieldName]?.placeholder;
-			if (placeholder === null || placeholder === undefined || placeholder === "") continue;
+			const field = schema.fields?.[fieldName];
+			if (!field) continue;
+			const placeholder = field.placeholder;
 
-			if (input instanceof HTMLSelectElement) {
-				const blankOption = input.querySelector('option[value=""]');
-				if (blankOption) blankOption.textContent = game.i18n.format(
-					"VURS.RuleElements.Common.DefaultWhenOmitted",
-					{ value: placeholder }
-				);
-			} else if (input instanceof HTMLInputElement && input.type === "checkbox") {
-				const group = input.closest(".form-group");
-				if (!group || group.dataset.vursDefaultHint === "true") continue;
-				const hint = document.createElement("p");
-				hint.className = "hint";
-				hint.textContent = game.i18n.format(
-					"VURS.RuleElements.Common.DefaultWhenOmitted",
-					{ value: placeholder }
-				);
-				group.append(hint);
-				group.dataset.vursDefaultHint = "true";
-			} else {
-				input.placeholder = String(placeholder);
+			if (placeholder !== null && placeholder !== undefined && placeholder !== "") {
+				if (input instanceof HTMLSelectElement) {
+					const blankOption = input.querySelector('option[value=""]');
+					if (blankOption) blankOption.textContent = game.i18n.format(
+						"VURS.RuleElements.Common.DefaultWhenOmitted",
+						{ value: placeholder }
+					);
+				} else if (input instanceof HTMLInputElement && input.type === "checkbox") {
+					const group = input.closest(".form-group");
+					if (group && group.dataset.vursDefaultHint !== "true") {
+						const hint = document.createElement("p");
+						hint.className = "hint";
+						hint.textContent = game.i18n.format(
+							"VURS.RuleElements.Common.DefaultWhenOmitted",
+							{ value: placeholder }
+						);
+						group.append(hint);
+						group.dataset.vursDefaultHint = "true";
+					}
+				} else if (input instanceof HTMLInputElement || input instanceof HTMLTextAreaElement) {
+					input.placeholder = String(placeholder);
+				}
 			}
+
+			const hasDefault = (
+				field.initial !== undefined &&
+				(field.initial !== null || field.nullable === true) &&
+				field.initial !== ""
+			) || (placeholder !== null && placeholder !== undefined && placeholder !== "");
+			if (
+				!isVursCustomRuleElement ||
+				field.required !== true ||
+				hasDefault ||
+				(input instanceof HTMLInputElement && input.type === "hidden")
+			) {
+				continue;
+			}
+
+			const group = input.closest(".form-group");
+			if (!group) continue;
+			let warning = group.querySelector(":scope > .vurs-required-field-warning");
+			if (!warning) {
+				warning = document.createElement("p");
+				warning.className = "hint warning vurs-required-field-warning";
+				warning.setAttribute("aria-live", "polite");
+				warning.textContent = game.i18n.localize("VURS.RuleElements.Common.RequiredWithoutDefault");
+				group.append(warning);
+			}
+
+			const updateRequiredFieldWarning = () => {
+				const value = input instanceof HTMLInputElement && input.type === "checkbox"
+					? String(input.checked)
+					: String(input.value ?? "").trim();
+				const isMissing = value === "";
+				warning.hidden = !isMissing;
+				if (isMissing) input.setAttribute("aria-invalid", "true");
+				else input.removeAttribute("aria-invalid");
+			};
+			if (input.dataset.vursRequiredFieldWarningBound !== "true") {
+				input.addEventListener("input", updateRequiredFieldWarning);
+				input.addEventListener("change", updateRequiredFieldWarning);
+				input.dataset.vursRequiredFieldWarningBound = "true";
+			}
+			updateRequiredFieldWarning();
 		}
 	}
 }
 
-Hooks.on("renderItemSheet", addRuleElementDefaultPlaceholders);
+Hooks.on("renderItemSheet", addRuleElementFormHints);
 
 registerRuleElementFormLocalization();
 Hooks.once("init", registerRuleElementFormLocalization);
