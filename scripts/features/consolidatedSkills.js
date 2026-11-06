@@ -501,11 +501,11 @@ export function groupVursSkillsByAttribute(root, actor, localizeDefault = key =>
     defaultActor &&
     game.settings.get("vurs-pf2e", DEFAULT_VURS_SKILLS_SETTING) === true
   );
-  const showSaveSkills = defaultActor &&
-    game.settings.get("vurs-pf2e", DEFAULT_SAVE_SKILLS_SETTING) === true;
+  const showSaveSkills = shouldMirrorSaveSkills(actor);
   for (const row of list.querySelectorAll(":scope > li[data-statistic]")) {
     if (!VURS_HOMEBREW_SKILL_SLUGS.includes(row.dataset.statistic)) continue;
-    row.hidden = !showAllVursSkills && !(showSaveSkills && SAVE_SKILL_SLUGS.has(row.dataset.statistic));
+    const isSaveSkill = SAVE_SKILL_SLUGS.has(row.dataset.statistic);
+    row.hidden = isSaveSkill ? !showSaveSkills : !showAllVursSkills;
   }
 
   const usesVurs = actorUsesVursSystem(actor);
