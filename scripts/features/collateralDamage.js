@@ -14,6 +14,24 @@ import {
 	testRuleElementPredicate
 } from "./ruleElementResolvers.js";
 import { localizeRuleElementFormText } from "./ruleElementFormLocalization.js";
+import {
+	AREA_TYPES,
+	normalizeToken,
+	getPlacementGeometries,
+	getRegionForShapes,
+	getTokenCenter,
+	getTokenDistance,
+	getTokensInCollateralShape,
+	isAreaPointHighlighted,
+	isTokenCenterInArea,
+	isTokenInAreaLevel
+} from "./collateralGeometry.js";
+import {
+	DEFAULT_OVERLAY_DURATION,
+	DEFAULT_PATH_SPEED_PIXELS_PER_SECOND,
+	displayCollateralArea,
+	initializeCollateralOverlays
+} from "./collateralOverlays.js";
 
 const MODULE_ID = "vurs-pf2e";
 const RULE_KEY = "Collateral Damage";
@@ -44,10 +62,7 @@ const nativeDamageRetries = new Map();
 const toolbeltDamageObservers = new Map();
 const toolbeltDamageRetries = new Map();
 const wrappedRegionLayers = new WeakSet();
-const activeOverlays = new Map();
-const pendingOverlays = new Map();
 let CollateralDamageRuleElement = null;
-let socketHandlerInstalled = false;
 let damageSocket = null;
 let secretDamageHookInstalled = false;
 let groupedDamageUndoInstalled = false;
@@ -55,14 +70,6 @@ let damageAutomationInstalled = false;
 let toolbeltHealingRegionDeleteGuardInstalled = false;
 let toolbeltHealingTargetDialogObserver = null;
 let elevationDistanceWarningShown = false;
-
-const OVERLAY_CHANNEL = `module.${MODULE_ID}`;
-const DEFAULT_OVERLAY_DURATION = 2000;
-const MAX_OVERLAY_DURATION = 4000;
-export const DEFAULT_PATH_SPEED_PIXELS_PER_SECOND = 600;
-const PATH_LIFETIME_MS = 2000;
-const MAX_PATH_DELAY_MS = 4000;
-const AREA_TYPES = ["burst", "cone", "cube", "cylinder", "emanation", "line", "ring", "square"];
 
 function logBurstFireCollateral(stage, params, details = {}) {
 	if (!Number.isFinite(params?.vursBurstFireTraceSpeedPixelsPerSecond)) return;
@@ -407,17 +414,6 @@ function getDamageDealer(params, sourceMessage = getDamageSourceMessage(params?.
 		null;
 }
 
-function normalizeToken(token) {
-	return token?.document ?? token ?? null;
-}
-
-export function getTokenCenter(token) {
-	const document = normalizeToken(token);
-	if (!document) return null;
-	const center = document.object?.getCenterPoint?.() ?? document.getCenterPoint?.();
-	return center && { x: center.x, y: center.y };
-}
-
 function sameActor(left, right) {
 	return Boolean(left && right && (
 		left === right ||
@@ -456,61 +452,6 @@ function getDamageRecipientActor(actor, params) {
 
 	const worldActor = game.actors?.get(actor.id);
 	return sameActor(worldActor, actor) ? worldActor : actor;
-}
-
-export function getPlacementGeometries(placement, sourceToken, targetToken) {
-	const sourceCenter = getTokenCenter(sourceToken);
-	const targetCenter = getTokenCenter(targetToken);
-	if (!sourceCenter || !targetCenter) return null;
-
-	let dx = targetCenter.x - sourceCenter.x;
-	let dy = targetCenter.y - sourceCenter.y;
-	let length = Math.hypot(dx, dy);
-	if (length === 0) {
-		const fallbackAngle = Math.toRadians(normalizeToken(sourceToken).rotation ?? 0);
-		dx = Math.cos(fallbackAngle);
-		dy = Math.sin(fallbackAngle);
-		length = 1;
-	}
-	const rotation = Math.toDegrees(Math.atan2(dy, dx));
-	const originToken = normalizeToken(placement === "self" ? sourceToken : targetToken);
-	const center = placement === "self" ? sourceCenter : targetCenter;
-	const direction = { x: dx / length, y: dy / length };
-	const halfWidth = (originToken.width * canvas.grid.sizeX) / 2;
-	const halfHeight = (originToken.height * canvas.grid.sizeY) / 2;
-	const xDistance = halfWidth / Math.abs(direction.x || Number.EPSILON);
-	const yDistance = halfHeight / Math.abs(direction.y || Number.EPSILON);
-	const distanceToEdge = Math.min(xDistance, yDistance);
-	const edgeX = center.x + direction.x * distanceToEdge;
-	const edgeY = center.y + direction.y * distanceToEdge;
-	const tolerance = 1;
-
-	let corners;
-	if (Math.abs(xDistance - yDistance) <= tolerance) {
-		corners = [
-			{
-				x: center.x - Math.sign(direction.x) * halfWidth,
-				y: edgeY
-			},
-			{
-				x: edgeX,
-				y: center.y - Math.sign(direction.y) * halfHeight
-			}
-		];
-	} else if (xDistance < yDistance) {
-		const x = center.x + Math.sign(direction.x) * halfWidth;
-		corners = [
-			{ x, y: center.y - halfHeight },
-			{ x, y: center.y + halfHeight }
-		];
-	} else {
-		const y = center.y + Math.sign(direction.y) * halfHeight;
-		corners = [
-			{ x: center.x - halfWidth, y },
-			{ x: center.x + halfWidth, y }
-		];
-	}
-	return corners.map(({ x, y }) => ({ x, y, rotation }));
 }
 
 function substituteCollateralRangeValues(rule, expression, damageItem, damageSource, fieldName) {
@@ -695,25 +636,6 @@ function isAffectedByRule(rule, sourceToken, targetToken) {
 	return affects === "all" || affects === getRelationship(sourceDisposition, targetDisposition);
 }
 
-function isAreaPointHighlighted(region, center) {
-	if (!center || !region.polygonTree) return false;
-	if (region.polygonTree.testPoint(center)) return true;
-
-	const origin = region.shapes[0];
-	return Boolean(origin && Number.isFinite(origin.x) && Number.isFinite(origin.y) &&
-		Math.max(Math.abs(center.x - origin.x), Math.abs(center.y - origin.y)) < 1);
-}
-
-function isTokenCenterInArea(region, token) {
-	return isAreaPointHighlighted(region, getTokenCenter(token));
-}
-
-function isTokenInAreaLevel(region, token) {
-	const level = token.level ?? 0;
-	if (region.includedInLevel && !region.includedInLevel(level)) return false;
-	return true;
-}
-
 function getTokenDistanceWithElevation(originToken, targetToken) {
 	const origin = normalizeToken(originToken)?.object;
 	const target = normalizeToken(targetToken)?.object;
@@ -858,14 +780,6 @@ function splitAmount(amount, count) {
 	return Array.from({ length: count }, (_, index) => base + (index < remainder ? 1 : 0));
 }
 
-export function getTokenDistance(left, right) {
-	const from = getTokenCenter(left);
-	const to = getTokenCenter(right);
-	if (!from || !to) return Infinity;
-	const measurement = canvas.grid.measurePath([from, to]);
-	return Number(measurement?.distance ?? Infinity);
-}
-
 function getBounceDistance(left, right, distanceCache) {
 	const from = normalizeToken(left);
 	const to = normalizeToken(right);
@@ -893,32 +807,6 @@ function getBounceTargets(
 		if (getBounceDistance(current, token, distanceCache) > maxDistance) return false;
 		return within === null || getBounceDistance(originToken, token, distanceCache) <= within;
 	});
-}
-
-function getRegionForShapes(scene, shapes, name = "Collateral Damage") {
-	try {
-		return new CONFIG.Region.documentClass({
-			name,
-			shapes: Array.isArray(shapes) ? shapes : [shapes],
-			levels: [canvas.level.id],
-			elevation: { bottom: null, top: null, topInclusive: true }
-		}, { parent: scene });
-	} catch (error) {
-		console.error(`${MODULE_ID} | Could not create temporary ${name} area`, error);
-		return null;
-	}
-}
-
-export function getTokensInCollateralShape(shape) {
-	const scene = canvas.scene;
-	if (!scene) return [];
-	const region = getRegionForShapes(scene, shape, "Burst-Fire");
-	if (!region) return [];
-	return [...scene.tokens].filter(token =>
-		token.actor?.attributes?.hp &&
-		isTokenCenterInArea(region, token) &&
-		isTokenInAreaLevel(region, token)
-	);
 }
 
 function getEffectName(type) {
@@ -4533,283 +4421,6 @@ function installSecretDamageCardHook() {
 	secretDamageHookInstalled = true;
 }
 
-function clearOverlay(id) {
-	const overlay = activeOverlays.get(id);
-	if (!overlay) return;
-	clearTimeout(overlay.timeout);
-	overlay.destroy();
-	activeOverlays.delete(id);
-}
-
-function clearAllOverlays() {
-	for (const id of activeOverlays.keys()) clearOverlay(id);
-}
-
-function addOverlayGraphics(graphics, destroyers) {
-	destroyers.push(() => {
-		graphics.parent?.removeChild(graphics);
-		graphics.destroy();
-	});
-}
-
-function queuePendingOverlay(data) {
-	if (pendingOverlays.has(data.id)) return;
-	const receivedAt = performance.now();
-	const timeout = setTimeout(
-		() => pendingOverlays.delete(data.id),
-		data.durationMs + (Number(data.pathDelayMs) || 0)
-	);
-	pendingOverlays.set(data.id, { data, receivedAt, timeout });
-}
-
-function drawPendingOverlays(sceneId) {
-	for (const [id, pending] of pendingOverlays) {
-		clearTimeout(pending.timeout);
-		pendingOverlays.delete(id);
-		if (pending.data.sceneId !== sceneId) continue;
-		const elapsed = performance.now() - pending.receivedAt;
-		const remaining = Math.max(
-			pending.data.durationMs,
-			(Number(pending.data.pathDelayMs) || 0) + PATH_LIFETIME_MS
-		) - elapsed;
-		if (remaining > 0) {
-			drawOverlay(pending.data, remaining, elapsed);
-		}
-	}
-}
-
-function drawOverlay(
-	{ id, sceneId, shapes, paths, durationMs, color, pathDelayMs = 0, pathSpeedPixelsPerSecond = DEFAULT_PATH_SPEED_PIXELS_PER_SECOND },
-	remainingDuration = durationMs,
-	elapsedDuration = 0
-) {
-	if ((canvas.scene && canvas.scene.id !== sceneId) || remainingDuration <= 0) return;
-	if (!canvas.ready) {
-		queuePendingOverlay({
-			id,
-			sceneId,
-			shapes,
-			paths,
-			durationMs: remainingDuration,
-			color,
-			pathDelayMs: Math.max(0, pathDelayMs - elapsedDuration)
-		});
-		return;
-	}
-	if (activeOverlays.has(id)) return;
-	const validShapes = (Array.isArray(shapes) ? shapes : []).filter(shape =>
-		shape && typeof shape.type === "string" && AREA_TYPES.some(type =>
-			(type === "burst" || type === "cylinder") ? shape.type === "circle" :
-			(type === "cube" || type === "square") ? shape.type === "rectangle" :
-			shape.type === type
-		)
-	);
-	const validPaths = (Array.isArray(paths) ? paths : [])
-		.map(path => Array.isArray(path) ? { points: path } : path)
-		.filter(path =>
-			Array.isArray(path?.points) && path.points.length > 1 &&
-			path.points.every(point => Number.isFinite(point?.x) && Number.isFinite(point?.y))
-		);
-	if (!validShapes.length && !validPaths.length) return;
-	const colorValue = PIXI.utils.string2hex(color);
-	const destroyers = [];
-	let duration = Math.min(MAX_OVERLAY_DURATION, remainingDuration);
-	const pathDelay = Math.max(0, pathDelayMs - elapsedDuration);
-	if (validShapes.length) {
-		const region = getRegionForShapes(canvas.scene, validShapes);
-		if (region) {
-			const graphics = new PIXI.Graphics();
-			graphics.eventMode = "none";
-			if (canvas.grid.isGridless) {
-				graphics.lineStyle({ width: Math.max(2, canvas.dimensions.uiScale * 2), color: colorValue, alpha: 0.9 });
-				graphics.beginFill(colorValue, 0.18);
-				for (const shape of region.shapes) shape.drawShape(graphics);
-				graphics.endFill();
-			} else {
-				const bounds = region.polygonTree.bounds.clone().fit(canvas.dimensions.rect).pad(1);
-				const [i0, j0, i1, j1] = canvas.grid.getOffsetRange(bounds);
-				const dx = canvas.grid.sizeX / 2;
-				const dy = canvas.grid.sizeY / 2;
-				const cellShape = canvas.grid.getShape();
-				graphics.beginFill(colorValue, 0.25);
-				for (let i = i0; i < i1; i++) {
-					for (let j = j0; j < j1; j++) {
-						const offset = { i, j };
-						const center = canvas.grid.getCenterPoint(offset);
-						center.x = Math.round(center.x - dx) + dx;
-						center.y = Math.round(center.y - dy) + dy;
-						if (!isAreaPointHighlighted(region, center)) continue;
-						graphics.drawPolygon(cellShape.map(point => ({
-							x: center.x + point.x,
-							y: center.y + point.y
-						})));
-					}
-				}
-				graphics.endFill();
-			}
-			canvas.interface.addChild(graphics);
-			addOverlayGraphics(graphics, destroyers);
-		}
-	}
-	if (validPaths.length) {
-		const ticker = canvas.app?.ticker;
-		const graphics = new PIXI.Graphics();
-		graphics.eventMode = "none";
-		canvas.interface.addChild(graphics);
-		const pathData = validPaths.map(({ points }) => ({
-			points,
-			length: points.slice(1).reduce((total, point, index) =>
-				total + Math.hypot(point.x - points[index].x, point.y - points[index].y), 0),
-			delay: pathDelay,
-			travelMs: 0,
-			lifetimeMs: 0
-		}));
-		for (const path of pathData) {
-			path.travelMs = path.length / pathSpeedPixelsPerSecond * 1000;
-			path.lifetimeMs = Math.max(PATH_LIFETIME_MS, path.travelMs);
-		}
-		const pathsDuration = Math.max(...pathData.map(path => path.delay + path.lifetimeMs));
-		const renderDuration = Math.max(duration, pathsDuration);
-		const startTime = performance.now();
-		const drawPaths = () => {
-			graphics.clear();
-			const now = performance.now();
-			for (const pathDataEntry of pathData) {
-				const pathElapsed = now - startTime - pathDataEntry.delay;
-				if (pathElapsed < 0 || pathElapsed > pathDataEntry.lifetimeMs) continue;
-				graphics.lineStyle({
-					width: Math.max(3, canvas.dimensions.uiScale * 3),
-					color: colorValue,
-					alpha: 0.95
-				});
-				const path = pathDataEntry.points;
-				graphics.moveTo(path[0].x, path[0].y);
-				let remainingToDraw = Math.min(pathDataEntry.length, pathElapsed * pathSpeedPixelsPerSecond / 1000);
-				for (let index = 1; index < path.length; index++) {
-					const start = path[index - 1];
-					const end = path[index];
-					const segmentLength = Math.hypot(end.x - start.x, end.y - start.y);
-					if (remainingToDraw >= segmentLength) {
-						graphics.lineTo(end.x, end.y);
-						remainingToDraw -= segmentLength;
-						continue;
-					}
-					const segmentProgress = segmentLength > 0 ? remainingToDraw / segmentLength : 0;
-					graphics.lineTo(
-						start.x + (end.x - start.x) * segmentProgress,
-						start.y + (end.y - start.y) * segmentProgress
-					);
-					break;
-				}
-			}
-		};
-		let destroyed = false;
-		let animate;
-		const destroyPaths = () => {
-			if (destroyed) return;
-			destroyed = true;
-			if (animate && ticker) ticker.remove(animate);
-			graphics.parent?.removeChild(graphics);
-			graphics.destroy();
-		};
-		destroyers.push(destroyPaths);
-		if (ticker && renderDuration > 0 && pathData.some(path => path.length > 0)) {
-			animate = () => {
-				drawPaths();
-			};
-			ticker.add(animate);
-			animate();
-		} else {
-			for (const path of pathData) path.delay = 0;
-			drawPaths();
-		}
-		if (renderDuration > duration) duration = renderDuration;
-	}
-	if (!destroyers.length) return;
-
-	const timeout = setTimeout(() => clearOverlay(id), duration);
-	activeOverlays.set(id, {
-		destroy: () => destroyers.forEach(destroy => destroy()),
-		timeout
-	});
-}
-
-function installOverlaySocket() {
-	if (socketHandlerInstalled || !game.socket) return;
-	game.socket.on(OVERLAY_CHANNEL, data => {
-		if (
-			!data ||
-			data.type !== "collateral-damage-area" ||
-			typeof data.id !== "string" ||
-			typeof data.sceneId !== "string" ||
-			typeof data.color !== "string" ||
-			!/^#[\da-f]{6}$/i.test(data.color) ||
-			!Number.isFinite(data.durationMs) ||
-			data.durationMs <= 0 ||
-			data.durationMs > MAX_OVERLAY_DURATION ||
-			(data.pathDelayMs !== undefined && (
-				!Number.isFinite(data.pathDelayMs) ||
-				data.pathDelayMs < 0 ||
-				data.pathDelayMs > MAX_PATH_DELAY_MS
-			)) ||
-			(data.pathSpeedPixelsPerSecond !== undefined && (
-				!Number.isFinite(data.pathSpeedPixelsPerSecond) ||
-				data.pathSpeedPixelsPerSecond <= 0
-			)) ||
-			data.senderId === game.user.id
-		) return;
-		try {
-			drawOverlay(data);
-		} catch (error) {
-			console.error(`${MODULE_ID} | Failed to render a received ${RULE_KEY} area`, error);
-		}
-	});
-	socketHandlerInstalled = true;
-}
-
-function displayArea(
-	shapes,
-	paths,
-	durationMs = DEFAULT_OVERLAY_DURATION,
-	pathDelayMs = 0,
-	pathSpeedPixelsPerSecond = DEFAULT_PATH_SPEED_PIXELS_PER_SECOND
-) {
-	if (!canvas.scene || (!shapes.length && !paths.length)) return;
-	const data = {
-		type: "collateral-damage-area",
-		id: foundry.utils.randomID(),
-		sceneId: canvas.scene.id,
-		shapes: shapes.map(shape => foundry.utils.deepClone(shape)),
-		paths: paths.map(path => path.map(point => ({ ...point }))),
-		color: game.user.color.toString(),
-		durationMs: Math.min(MAX_OVERLAY_DURATION, Math.max(1, durationMs)),
-		pathDelayMs: Math.min(MAX_PATH_DELAY_MS, Math.max(0, pathDelayMs)),
-		pathSpeedPixelsPerSecond,
-		senderId: game.user.id
-	};
-	drawOverlay(data);
-	game.socket?.emit(OVERLAY_CHANNEL, data);
-}
-
-export function displayCollateralPaths(
-	paths,
-	durationMs = DEFAULT_OVERLAY_DURATION,
-	pathDelayMs = 0,
-	pathSpeedPixelsPerSecond = DEFAULT_PATH_SPEED_PIXELS_PER_SECOND
-) {
-	displayArea([], paths, durationMs, pathDelayMs, pathSpeedPixelsPerSecond);
-}
-
-export function displayCollateralArea(
-	shapes,
-	paths,
-	durationMs = DEFAULT_OVERLAY_DURATION,
-	pathDelayMs = 0,
-	pathSpeedPixelsPerSecond = DEFAULT_PATH_SPEED_PIXELS_PER_SECOND
-) {
-	displayArea(shapes, paths, durationMs, pathDelayMs, pathSpeedPixelsPerSecond);
-}
-
 export async function applyBurstFireCollateralDamage(
 	actor,
 	params,
@@ -4863,7 +4474,7 @@ export async function applyBurstFireCollateralDamage(
 			0,
 			(Number(params.vursBurstFireTraceDelayMs) || 0) - elapsedSinceBurstTrace
 		);
-		displayArea(
+		displayCollateralArea(
 			shapes,
 			paths,
 			DEFAULT_OVERLAY_DURATION,
@@ -5595,7 +5206,7 @@ async function applyCollateralDamageHandler(actor, wrapped, args) {
 				0,
 				(Number(params.vursBurstFireTraceDelayMs) || 0) - elapsedSinceBurstTrace
 			);
-			displayArea(
+			displayCollateralArea(
 				shapes,
 				paths,
 				DEFAULT_OVERLAY_DURATION,
@@ -5620,7 +5231,7 @@ function initializeCollateralDamage() {
 	installSecretDamageCardHook();
 	installGroupedDamageUndo();
 	installDamageAutomation();
-	installOverlaySocket();
+	initializeCollateralOverlays();
 }
 
 Hooks.once("init", registerCollateralDamageLocalization);
@@ -5631,9 +5242,3 @@ Hooks.once("pf2e.systemReady", initializeCollateralDamage);
 Hooks.once("sf2e.systemReady", initializeCollateralDamage);
 Hooks.once("ready", initializeCollateralDamage);
 Hooks.once("socketlib.ready", registerDamageRelay);
-Hooks.on("canvasReady", canvas => drawPendingOverlays(canvas.scene?.id));
-Hooks.on("canvasTearDown", () => {
-	clearAllOverlays();
-	for (const { timeout } of pendingOverlays.values()) clearTimeout(timeout);
-	pendingOverlays.clear();
-});

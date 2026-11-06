@@ -2,13 +2,13 @@ import { getEffectiveStrikeMAP } from "./attackSpeed.js";
 import { getDamageModifierBreakdown } from "./lifesteal.js";
 import { createVursPlayCostElement } from "./playCostIcons.js";
 import {
-	displayCollateralArea,
 	getTokenCenter,
 	getTokenDistance,
 	getPlacementGeometries,
-	getTokensInCollateralShape,
-	prepareBurstFireDamage,
-} from "./collateralDamage.js";
+	getTokensInCollateralShape
+} from "./collateralGeometry.js";
+import { displayCollateralArea } from "./collateralOverlays.js";
+import { prepareBurstFireDamage } from "./collateralDamage.js";
 
 const MODULE_ID = "vurs-pf2e";
 const PREPARE_ATTACKS_WRAPPER = Symbol.for(`${MODULE_ID}.burstFirePrepareAttacks`);
