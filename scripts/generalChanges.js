@@ -145,13 +145,45 @@ const VURS_TRANSLATIONS = {
 	"PF2E.AbilityId.wis": "Spi",
 	"PF2E.AbilityId.cha": "Voi"
 };
+const DEFAULT_ABILITY_TRANSLATIONS = Object.freeze({
+	"PF2E.AbilityStr": "Strength",
+	"PF2E.AbilityDex": "Dexterity",
+	"PF2E.AbilityCon": "Constitution",
+	"PF2E.AbilityInt": "Intelligence",
+	"PF2E.AbilityWis": "Wisdom",
+	"PF2E.AbilityCha": "Charisma",
+	"PF2E.AbilityCheck.str": "Strength Check",
+	"PF2E.AbilityCheck.dex": "Dexterity Check",
+	"PF2E.AbilityCheck.con": "Constitution Check",
+	"PF2E.AbilityCheck.int": "Intelligence Check",
+	"PF2E.AbilityCheck.wis": "Wisdom Check",
+	"PF2E.AbilityCheck.cha": "Charisma Check",
+	"PF2E.AbilityId.str": "Str",
+	"PF2E.AbilityId.dex": "Dex",
+	"PF2E.AbilityId.con": "Con",
+	"PF2E.AbilityId.int": "Int",
+	"PF2E.AbilityId.wis": "Wis",
+	"PF2E.AbilityId.cha": "Cha"
+});
 const originalTranslations = new Map();
 const registeredActorWrappers = new Set();
 let actorCreationHookInstalled = false;
 let rollPatchRetryTimer = null;
 
+// The module's en-registered vurs.json pre-overrides these keys with VURS
+// names, so a captured "original" equal to the VURS text is not a real
+// original. Missing keys (for example under the vurs language) fall back to
+// canonical PF2e English values as well.
+function resolveDefaultAbilityTranslation(path) {
+	const captured = originalTranslations.get(path);
+	if (typeof captured === "string" && captured.length > 0 && captured !== VURS_TRANSLATIONS[path]) {
+		return captured;
+	}
+	return DEFAULT_ABILITY_TRANSLATIONS[path] ?? captured;
+}
+
 function localizeDefaultAbility(key) {
-	const original = originalTranslations.get(key);
+	const original = resolveDefaultAbilityTranslation(key);
 	if (typeof original === "string" && original.length > 0) return original;
 	const standardLabels = {
 		"PF2E.AbilityStr": "Strength",
@@ -1913,7 +1945,7 @@ function applySystemMode(mode = getSystemMode()) {
 	if (translations) {
 		for (const [path, vursText] of Object.entries(VURS_TRANSLATIONS)) {
 			if (!originalTranslations.has(path)) originalTranslations.set(path, foundry.utils.getProperty(translations, path));
-			const text = mode === "default" ? originalTranslations.get(path) : vursText;
+			const text = mode === "default" ? resolveDefaultAbilityTranslation(path) : vursText;
 			if (text !== undefined) foundry.utils.setProperty(translations, path, text);
 		}
 	}
