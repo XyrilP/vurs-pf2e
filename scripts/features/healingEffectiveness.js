@@ -93,6 +93,13 @@ function registerHealingEffectivenessRuleElement({ quiet = false } = {}) {
 						percent: localizeRuleElementFormText("Common.Modes.Percent", "Percent")
 					}
 				}),
+				receivedOnly: new fields.BooleanField({
+					required: false,
+					nullable: true,
+					initial: null,
+					label: localizeRuleElementFormText("HealingEffectiveness.ReceivedOnly", "Received Only"),
+					placeholder: "false"
+				}),
 				selector: new fields.StringField({
 					required: true,
 					nullable: false,
@@ -122,15 +129,18 @@ function getHealingEffectiveness(
 	baseHealing,
 	rollOptions,
 	selectors,
-	{ negativeOnly = false, positiveOnly = false } = {}
+	{ negativeOnly = false, positiveOnly = false, received = false } = {}
 ) {
 	const seenSlugs = new Set();
 	const sources = [];
 	for (const rule of Array.isArray(actor?.rules) ? actor.rules : []) {
+		const sourceRule = rule.item?.system?.rules?.[rule.sourceIndex];
+		const receivedOnly = sourceRule?.receivedOnly === true || rule.receivedOnly === true;
 		if (
 			rule.key !== RULE_KEY ||
 			rule.ignored ||
 			(rule.selector && !selectors.has(rule.selector)) ||
+			(!received && receivedOnly) ||
 			!testRuleElementPredicate(rule, rollOptions)
 		) {
 			continue;
@@ -141,7 +151,7 @@ function getHealingEffectiveness(
 		const value = Number(rule.resolveValue(rule.value));
 		const type = rule.type ?? "untyped";
 		if (!Number.isFinite(value) || value === 0 ||
-			(negativeOnly && value > 0) || (positiveOnly && value < 0) ||
+			(!receivedOnly && ((negativeOnly && value > 0) || (positiveOnly && value < 0))) ||
 			!MODIFIER_TYPES.includes(type)) continue;
 
 		const direction = Math.sign(value);
@@ -172,7 +182,6 @@ function getHealingEffectiveness(
 		if (bonus === 0) continue;
 
 		if (slug) seenSlugs.add(slug);
-		const sourceRule = rule.item?.system?.rules?.[rule.sourceIndex];
 		const label = typeof sourceRule?.label === "string" && sourceRule.label.trim()
 			? sourceRule.label.trim()
 			: rule.item?.name ?? rule.label ?? RULE_KEY;
@@ -214,7 +223,7 @@ export function getLifestealHealingEffectiveness(actor, baseHealing, rollOptions
 		receivedBase,
 		options,
 		healingSelectors,
-		{ negativeOnly: true }
+		{ negativeOnly: true, received: true }
 	);
 
 	return {
@@ -506,13 +515,13 @@ async function applyReceivedHealingEffectiveness(actor, wrapped, args) {
 			Math.abs(damage),
 			rollOptions,
 			selectors,
-			{ negativeOnly: true }
+			{ negativeOnly: true, received: true }
 		);
-		if (total < 0) {
+		if (total !== 0) {
 			params.damage = Math.min(0, damage - total);
 			params.breakdown ??= [];
 			params.breakdown.push(...sources.map(source =>
-				`${source.label} ${source.bonus}`
+				`${source.label} ${source.bonus > 0 ? "+" : ""}${source.bonus}`
 			));
 		}
 		return await wrapped(...args);

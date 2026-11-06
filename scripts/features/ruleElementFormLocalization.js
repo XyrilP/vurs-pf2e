@@ -18,7 +18,8 @@ const RULE_ELEMENT_FORM_TRANSLATIONS = {
 		DefinitionPlaceholder: "No condition (always applies)"
 	},
 	HealingEffectiveness: {
-		Threshold: "Healing Effectiveness Threshold"
+		Threshold: "Healing Effectiveness Threshold",
+		ReceivedOnly: "Received Only"
 	},
 	Lifesteal: {
 		Threshold: "Lifesteal Threshold"
