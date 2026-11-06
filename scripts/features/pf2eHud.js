@@ -3,6 +3,7 @@ import { renderVursPlayResourcesHudPanel } from "./playResources.js";
 
 const HUD_MODULE_ID = "pf2e-hud";
 const hudRootsWithBurstFireHandlers = new WeakSet();
+const hudRootsWithScheduledRefresh = new WeakSet();
 
 function getHudActor(app) {
 	return [
@@ -108,8 +109,14 @@ Hooks.on("updateActor", actor => {
 	for (const root of document.querySelectorAll(".pf2e-hud-element[data-vurs-hud-actor-uuid]")) {
 		if (root.dataset.vursHudActorUuid !== actor.uuid) continue;
 		formatHudBurstFireLabel(root, actor);
-		if (root.id === "pf2e-hud-persistent" || root.id === "pf2e-hud-token") {
-			renderVursPlayResourcesHudPanel(root, actor, { refresh: true });
+		if ((root.id === "pf2e-hud-persistent" || root.id === "pf2e-hud-token") &&
+			!hudRootsWithScheduledRefresh.has(root)) {
+			hudRootsWithScheduledRefresh.add(root);
+			requestAnimationFrame(() => {
+				hudRootsWithScheduledRefresh.delete(root);
+				if (!root.isConnected) return;
+				renderVursPlayResourcesHudPanel(root, actor, { refresh: true });
+			});
 		}
 	}
 });

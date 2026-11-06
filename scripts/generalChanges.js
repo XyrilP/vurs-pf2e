@@ -444,6 +444,14 @@ function installMutedPhysicalItemRuleSuppression(physicalItemPrototype) {
 Hooks.on("renderApplicationV2", (app, element, context, options) => {
 	requestAnimationFrame(() => {
 		const root = app?.element ?? element;
+		// pf2e-hud elements contain none of the sheet selectors used below, and
+		// scripts/features/pf2eHud.js handles HUD-specific presentation. Skipping
+		// them avoids running the whole sheet battery on every HUD render.
+		if (
+			root?.matches?.(".pf2e-hud-element") ||
+			root?.closest?.(".pf2e-hud-element") ||
+			root?.querySelector?.(".pf2e-hud-element")
+		) return;
 		const actor = [
 			app?.actor,
 			app?.document?.actor,

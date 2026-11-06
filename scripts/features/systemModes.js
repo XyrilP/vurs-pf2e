@@ -38,19 +38,7 @@ function resolveActor(actor) {
 
 function readActorFlagValue(actor, path) {
   actor = resolveActor(actor);
-  let serializedActor;
-  try { serializedActor = actor?.toObject?.(); } catch { serializedActor = null; }
-  const sources = new Set([
-    actor,
-    actor?._source,
-    actor?.document,
-    actor?.document?._source,
-    actor?.flags,
-    actor?.document?.flags,
-    serializedActor,
-    serializedActor?.document
-  ].filter(Boolean));
-  for (const source of sources) {
+  const readFlag = source => {
     // Read the established VURS namespace first. The package namespace is a
     // read-only fallback for actors saved by earlier module builds.
     const currentFlag = foundry.utils.getProperty(source, `flags.vurs.${path}`) ??
@@ -60,6 +48,31 @@ function readActorFlagValue(actor, path) {
       : foundry.utils.getProperty(source, `flags.${MODULE_ID}.${path}`);
     if (flag === 1 || flag === "1" || flag === true) return 1;
     if (flag === 0 || flag === "0" || flag === false) return 0;
+    return null;
+  };
+  for (const source of new Set([
+    actor,
+    actor?._source,
+    actor?.document,
+    actor?.document?._source,
+    actor?.flags,
+    actor?.document?.flags
+  ].filter(Boolean))) {
+    const value = readFlag(source);
+    if (value !== null) return value;
+  }
+  // Documents expose their persisted flags through _source already, so the
+  // expensive toObject() serialization can only matter for non-document
+  // actor-like inputs. Skipping it keeps repeated mode checks cheap.
+  if (actor?._source) return null;
+  let serializedActor;
+  try { serializedActor = actor?.toObject?.(); } catch { serializedActor = null; }
+  for (const source of new Set([
+    serializedActor,
+    serializedActor?.document
+  ].filter(Boolean))) {
+    const value = readFlag(source);
+    if (value !== null) return value;
   }
   return null;
 }

@@ -229,6 +229,17 @@ export function renderVursPlayResourcesHudPanel(panel, actor, { refresh = false 
 		}
 		return false;
 	}
+	const hasDefaultPlayResources = PLAY_RESOURCE_DEFINITIONS.some(({ key }) =>
+		finiteResourceNumber(getFullVursDefaultMax(actor, key)) > 0
+	);
+	if (!actorUsesVursSystem(actor) && !hasDefaultPlayResources) {
+		section?.remove();
+		if (root) {
+			delete root.dataset.vursHudResourcesActorUuid;
+			delete root.dataset.vursHudResourcesRendered;
+		}
+		return false;
+	}
 	preloadResourceIcons();
 
 	const actorUuid = actor.uuid ?? actor.id;
