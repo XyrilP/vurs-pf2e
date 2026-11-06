@@ -1,4 +1,4 @@
-import { handleBurstFireHudClick } from "./burstFire.js";
+import { getRateOfFire, handleBurstFireHudClick } from "./burstFire.js";
 import { renderVursPlayResourcesHudPanel } from "./playResources.js";
 
 const HUD_MODULE_ID = "pf2e-hud";
@@ -74,7 +74,7 @@ function formatHudBurstFireLabel(root, actor) {
 			actionGlyph.textContent = "2";
 			button.replaceChildren(
 				actionGlyph,
-				document.createTextNode(` AP Burst-Fire (${rateLabel})`)
+				document.createTextNode(` Burst-Fire (${rateLabel})`)
 			);
 			button.setAttribute(
 				"aria-label",

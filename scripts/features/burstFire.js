@@ -9,6 +9,7 @@ import {
 } from "./collateralGeometry.js";
 import { displayCollateralArea } from "./collateralOverlays.js";
 import { prepareBurstFireDamage } from "./collateralDamage.js";
+import { actorUsesDicelessRolls } from "./systemModes.js";
 
 const MODULE_ID = "vurs-pf2e";
 const PREPARE_ATTACKS_WRAPPER = Symbol.for(`${MODULE_ID}.burstFirePrepareAttacks`);
@@ -137,12 +138,12 @@ function updatePreparedBurstFireButton(root, strikeElement, isPrepared, actor) {
 		const variant = strike?.variants?.[variantIndex];
 		const baseLabel = game.i18n.localize("PF2E.WeaponStrikeLabel");
 		const labelRemainder = String(variant?.label ?? "").replace(baseLabel, "").trim();
-		const modifier = variantIndex > 0
-			? labelRemainder.replace(/^MAP\s*/i, "")
-			: labelRemainder.match(/^[+-]?\d+/)?.[0] ?? labelRemainder;
 		const effectiveMAP = variantIndex > 0
 			? getEffectiveStrikeMAP(strike, variantIndex, actor)
 			: 0;
+		const modifier = variantIndex > 0
+			? `-${effectiveMAP}`
+			: labelRemainder.match(/^[+-]?\d+/)?.[0] ?? labelRemainder;
 		const label = game.i18n.localize("VURS.BurstFire.Title");
 		if (variantIndex === 0) {
 			attackButton.textContent = `${label} ${modifier}`.trim();
@@ -326,7 +327,7 @@ function getAutomaticRollEvent(type) {
 	};
 }
 
-function getRateOfFire(actor, strike) {
+export function getRateOfFire(actor, strike) {
 	const mapIndex = Math.min(1, (strike?.variants?.length ?? 0) - 1);
 	const effectiveMAP = mapIndex >= 0
 		? getEffectiveStrikeMAP(strike, mapIndex, actor)
@@ -722,9 +723,12 @@ async function rollBurstFire(actor, strike, startingMAP, options = {}) {
 	const damageApplications = [];
 	let roundsFired = 0;
 	let attackFailed = false;
+	const attackConcurrency = actorUsesDicelessRolls(actor)
+		? 1
+		: BURST_FIRE_ROLL_CONCURRENCY;
 	const attacks = await mapConcurrent(
 		Array.from({ length: shotCount }, (_, shot) => shot),
-		BURST_FIRE_ROLL_CONCURRENCY,
+		attackConcurrency,
 		async shot => {
 			if (roundsFired >= getAmmoCount(weapon)) return { shot, skipped: true };
 			const mapIndex = Math.min(startingMAP + shot, strike.variants.length - 1);
