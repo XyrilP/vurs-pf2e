@@ -1,3 +1,5 @@
+import { actorUsesMainAttribute } from "./systemModes.js";
+
 const MODULE_ID = "vurs-pf2e";
 const MAIN_ATTRIBUTE_FLAG = "flags.vurs.mainAttribute";
 const MAIN_ATTRIBUTE_SLUGS = new Set(["str", "dex", "con", "int", "wis", "cha"]);
@@ -74,7 +76,7 @@ export function addMainAttributeIndicator(element, actor) {
 		indicator.remove();
 	}
 
-	const attribute = getMainAttribute(actor);
+	const attribute = actorUsesMainAttribute(actor) ? getMainAttribute(actor) : null;
 	if (!attribute) return;
 
 	const abbreviation = root.querySelector(

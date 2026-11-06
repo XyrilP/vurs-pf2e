@@ -114,13 +114,28 @@ export function actorUsesVursHpRules(actor) {
 }
 
 export function actorUsesDicelessRolls(actor) {
-  const mode = getActorSystemMode(actor);
-  if (getModeProfile(mode)?.systemWideDiceless) return true;
   if (actorHasDicelessFlag(actor)) return true;
-
-  if (mode !== "default" && mode !== AGNOSTIC_VURS_MODE.id) return false;
+  const mode = getActorSystemMode(actor);
+  if (mode === FULL_VURS_MODE.id) {
+    return game.settings.get(MODULE_ID, "dicelessInVurs") !== false;
+  }
   if (mode === "default") {
     return game.settings.get(MODULE_ID, "dicelessInDefault") === true;
   }
-  return game.settings.get(MODULE_ID, "dicelessInAgnostic") === true;
+  if (mode === AGNOSTIC_VURS_MODE.id) {
+    return game.settings.get(MODULE_ID, "dicelessInAgnostic") === true;
+  }
+  return false;
+}
+
+export function actorUsesMainAttribute(actor) {
+  const mode = getActorSystemMode(actor);
+  if (mode === FULL_VURS_MODE.id) return true;
+  if (mode === AGNOSTIC_VURS_MODE.id) {
+    return game.settings.get(MODULE_ID, "mainAttributeInAgnostic") === true;
+  }
+  if (mode === "default") {
+    return game.settings.get(MODULE_ID, "mainAttributeInDefault") === true;
+  }
+  return false;
 }

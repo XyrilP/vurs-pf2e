@@ -47,6 +47,7 @@ import {
 	actorHasVursSystemFlag,
 	actorUsesAgnosticVurs,
 	actorUsesDicelessRolls,
+	actorUsesMainAttribute,
 	actorUsesVursHpRules,
 	actorUsesVursSystem,
 	getActorSystemMode,
@@ -458,7 +459,7 @@ Hooks.on("renderApplicationV2", (app, element, context, options) => {
 
 		// Do not render Play Resources in the generic ApplicationV2 hook.
 
-		if (getActorSystemMode(actor) === "vurs") addMainAttributeBuilderControl(app, root, actor);
+		if (actorUsesMainAttribute(actor)) addMainAttributeBuilderControl(app, root, actor);
 		addMainAttributeIndicator(root, actor);
 		addNpcRestButton(root, actor);
 		if (!isSupportedVursActor(actor)) return;
@@ -2150,11 +2151,11 @@ function registerVursCharacterPreparationWrappers(actorClass = CONFIG.PF2E?.Acto
 	const wrappers = {
 		prepareBuildData: function (wrapped, ...args) {
 			const result = wrapped(...args);
-			if (getActorSystemMode(this) === "vurs") applyMainAttributeBoost(this);
+			if (actorUsesMainAttribute(this)) applyMainAttributeBoost(this);
 			return result;
 		},
 		prepareStrike: function (wrapped, ...args) {
-			const attribute = getActorSystemMode(this) === "vurs" ? getMainAttribute(this) : null;
+			const attribute = actorUsesMainAttribute(this) ? getMainAttribute(this) : null;
 			const item = args[0];
 			if (!attribute || !item?.system) return wrapped(...args);
 
@@ -2293,7 +2294,7 @@ function registerVursCharacterPreparationWrappers(actorClass = CONFIG.PF2E?.Acto
 					VURS_ABILITY_LABELS.str,
 					true
 				);
-				if (getActorSystemMode(this) === "vurs") registerMainAttributeDamageModifiers(this);
+				if (actorUsesMainAttribute(this)) registerMainAttributeDamageModifiers(this);
 				if (actorUsesAgnosticVurs(this) || (!isFullVursMode() &&
 					(actorHasVursSystemFlag(this) || actorHasAgnosticSystemFlag(this)))) applyActorAbilityDataLabels(this);
 			} else if (isAnyVursMode()) {

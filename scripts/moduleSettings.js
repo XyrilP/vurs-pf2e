@@ -6,12 +6,15 @@ const SETTING_KEYS = Object.freeze({
   enforceDisabledFeaturesInVurs: "enforceDisabledFeaturesInVurs",
   enforceDisabledFeaturesInAgnostic: "enforceDisabledFeaturesInAgnostic",
   dicelessInDefault: "dicelessInDefault",
+  dicelessInVurs: "dicelessInVurs",
   dicelessInAgnostic: "dicelessInAgnostic",
   negativeHpInDefault: "negativeHpInDefault",
   groupSkillsByAttributeInDefault: "groupSkillsByAttributeInDefault",
   colorAttributeModifierFramesInDefault: "colorAttributeModifierFramesInDefault",
   includeVursSkillsInDefault: "includeVursSkillsInDefault",
   addSaveSkillsInDefault: "addSaveSkillsInDefault",
+  mainAttributeInDefault: "mainAttributeInDefault",
+  mainAttributeInAgnostic: "mainAttributeInAgnostic",
   addActionPointsInDefault: "addActionPointsInDefault",
   vursCriticalDamageInDefault: "vursCriticalDamageInDefault",
   manualDamageApplication: "manualDamageApplication",
@@ -57,6 +60,7 @@ const FEATURE_DEFINITIONS = Object.freeze([
     label: "Diceless Rolls",
     hint: "Use a fixed VURS-style check result and optional buildup.",
     defaultSetting: SETTING_KEYS.dicelessInDefault,
+    vursSetting: SETTING_KEYS.dicelessInVurs,
     agnosticSetting: SETTING_KEYS.dicelessInAgnostic
   },
   {
@@ -82,6 +86,13 @@ const FEATURE_DEFINITIONS = Object.freeze([
     label: "Saves and Perception Skills",
     hint: "Add Fortitude, Reflex, Will, and Perception to the Skills tab.",
     defaultSetting: SETTING_KEYS.addSaveSkillsInDefault
+  },
+  {
+    id: "mainAttribute",
+    label: "Main Attribute",
+    hint: "Choose a main attribute used for Strike attacks and damage.",
+    defaultSetting: SETTING_KEYS.mainAttributeInDefault,
+    agnosticSetting: SETTING_KEYS.mainAttributeInAgnostic
   },
   {
     id: "actionResources",
@@ -362,7 +373,8 @@ function registerModuleSettings() {
         scope: "world",
         config: false,
         type: Boolean,
-        default: feature.id === "disabledFeatureEnforcement"
+        default: feature.id === "disabledFeatureEnforcement" ||
+          key === SETTING_KEYS.dicelessInVurs
       });
     }
   }
