@@ -19,7 +19,12 @@ const GM_SELECTED_TOKEN_UUIDS = new Map();
 const LOCAL_FOLLOWER_CONTROL_REQUESTS = new Map();
 const LOCAL_FOLLOWER_CONTROL_RELEASES = new Set();
 const FOLLOWER_CONTROL_RELEASE_TIMERS = new Map();
-let npcLevelDcWrapperRegistered = false;
+// libWrapper permits only one wrapper per module per target, and both this
+// feature and the Negative HP preparation need NPC prepareDerivedData. All
+// post-preparation logic joins this shared handler set; a single dispatcher
+// wrapper registered on first use runs every handler in order.
+const NPC_PREPARE_DERIVED_HANDLERS_KEY = Symbol.for(`${MODULE_ID}.npcPrepareDerivedDataHandlers`);
+const NPC_PREPARE_DERIVED_DISPATCHER_KEY = Symbol.for(`${MODULE_ID}.npcPrepareDerivedDataDispatcher`);
 const DIRECT_SCALING_STAT_PATHS = Object.freeze([
 	"system.attributes.ac.value",
 	"system.saves.fortitude.value",
@@ -1492,14 +1497,51 @@ function applyNpcLevelDcAdjustment(actor) {
 			};
 		}
 	}
-	if (npcLevelDcWrapperRegistered) return;
+	addNpcPrepareDerivedDataHandler(npcLevelDcPrepareDerivedHandler);
+}
+
+function npcLevelDcPrepareDerivedHandler(actor, result) {
+	if (!isNpcActor(actor)) return result;
+	applyNpcConfigurationSkillScaling(actor);
+	const dcAdjustment = getNpcConfigurationDcAdjustment(actor);
+	const Modifier = game.pf2e?.Modifier;
+	if (!dcAdjustment) return result;
+	if (typeof Modifier !== "function") {
+		console.error(`${MODULE_ID} | Could not apply NPC area-fire DC scaling: the PF2e Modifier API is unavailable.`);
+		return result;
+	}
+
+	for (const selector of ["area-fire-dc", "auto-fire-dc"]) {
+		const modifiers = actor.synthetics.modifiers[selector] ??= [];
+		if (modifiers.some(modifier => modifier.vursNpcLevelScaling)) continue;
+		const modifier = () => new Modifier({
+			slug: "vurs-npc-level-dc",
+			label: "Leveled NPC DC",
+			modifier: dcAdjustment,
+			type: "untyped"
+		});
+		modifier.vursNpcLevelScaling = true;
+		modifiers.push(modifier);
+	}
+	return result;
+}
+
+export function addNpcPrepareDerivedDataHandler(handler) {
+	if (typeof handler !== "function") return;
+	const handlers = globalThis[NPC_PREPARE_DERIVED_HANDLERS_KEY] ??= new Set();
+	handlers.add(handler);
+	ensureNpcPrepareDerivedDataDispatcher();
+}
+
+function ensureNpcPrepareDerivedDataDispatcher() {
+	if (globalThis[NPC_PREPARE_DERIVED_DISPATCHER_KEY]) return;
 	const target = "CONFIG.PF2E.Actor.documentClasses.npc.prototype.prepareDerivedData";
 	if (typeof CONFIG.PF2E?.Actor?.documentClasses?.npc?.prototype?.prepareDerivedData !== "function") {
-		console.error(`${MODULE_ID} | Could not install NPC area-fire DC scaling: the NPC preparation method is unavailable.`);
+		console.error(`${MODULE_ID} | Could not install NPC prepareDerivedData handlers: the NPC preparation method is unavailable.`);
 		return;
 	}
 	if (typeof globalThis.libWrapper?.register !== "function") {
-		console.error(`${MODULE_ID} | Could not install NPC area-fire DC scaling: libWrapper is unavailable.`);
+		console.error(`${MODULE_ID} | Could not install NPC prepareDerivedData handlers: libWrapper is unavailable.`);
 		return;
 	}
 	try {
@@ -1507,36 +1549,17 @@ function applyNpcLevelDcAdjustment(actor) {
 			MODULE_ID,
 			target,
 			function (wrapped, ...args) {
-				const result = wrapped(...args);
-				if (!isNpcActor(this)) return result;
-				applyNpcConfigurationSkillScaling(this);
-				const dcAdjustment = getNpcConfigurationDcAdjustment(this);
-				const Modifier = game.pf2e?.Modifier;
-				if (!dcAdjustment) return result;
-				if (typeof Modifier !== "function") {
-					console.error(`${MODULE_ID} | Could not apply NPC area-fire DC scaling: the PF2e Modifier API is unavailable.`);
-					return result;
-				}
-
-				for (const selector of ["area-fire-dc", "auto-fire-dc"]) {
-					const modifiers = this.synthetics.modifiers[selector] ??= [];
-					if (modifiers.some(modifier => modifier.vursNpcLevelScaling)) continue;
-					const modifier = () => new Modifier({
-						slug: "vurs-npc-level-dc",
-						label: "Leveled NPC DC",
-						modifier: dcAdjustment,
-						type: "untyped"
-					});
-					modifier.vursNpcLevelScaling = true;
-					modifiers.push(modifier);
+				let result = wrapped(...args);
+				for (const handler of globalThis[NPC_PREPARE_DERIVED_HANDLERS_KEY] ?? []) {
+					result = handler(this, result, args) ?? result;
 				}
 				return result;
 			},
 			"WRAPPER"
 		);
-		npcLevelDcWrapperRegistered = true;
+		globalThis[NPC_PREPARE_DERIVED_DISPATCHER_KEY] = true;
 	} catch (error) {
-		console.error(`${MODULE_ID} | Failed to register NPC area-fire DC scaling wrapper for ${target}`, error);
+		console.error(`${MODULE_ID} | Failed to register NPC prepareDerivedData dispatcher for ${target}`, error);
 	}
 }
 

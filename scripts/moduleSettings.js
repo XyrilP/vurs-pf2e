@@ -25,6 +25,7 @@ const SETTING_KEYS = Object.freeze({
   automaticNpcSavingThrows: "automaticNpcSavingThrows",
   allowPlayersToControlFollowers: "allowPlayersToControlFollowers",
   colorTokenRingsByPlayer: "colorTokenRingsByPlayer",
+  downedEffectUuid: "downedEffectUuid",
   lastAppliedSystemMode: "lastAppliedSystemMode"
 });
 
@@ -325,6 +326,15 @@ function registerModuleSettings() {
       vurs: "Vionheart Universe Roleplaying System",
       "vurs-agnostic": "VURS (Agnostic)"
     }
+  });
+
+  registerSetting(settings, SETTING_KEYS.downedEffectUuid, {
+    name: "Downed Effect",
+    hint: "Item applied while an actor under Negative HP rules is at 0 HP and removed when healed above 0.",
+    scope: "world",
+    config: false,
+    type: String,
+    default: "Compendium.vurs-pf2e.vurs-effects.Item.4gFFVIejnvRuRpOF"
   });
 
   registerSetting(settings, SETTING_KEYS.lastAppliedSystemMode, {

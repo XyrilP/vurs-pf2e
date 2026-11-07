@@ -14,6 +14,7 @@ import {
 import "./features/pf2eHud.js";
 import {
 	addNpcConfigurationButton,
+	addNpcPrepareDerivedDataHandler,
 	renderNpcRelationshipStatistics
 } from "./features/npcConfiguration.js";
 import {
@@ -294,6 +295,7 @@ Hooks.once("ready", () => {
 	for (const actor of game.actors?.contents ?? []) {
 		syncVursConditionFlags(actor);
 		stripVursDeathConditions(actor);
+		void enforceVursDownedEffect(actor);
 	}
 });
 // VURS Negative HP rules replace PF2e's Dying/Wounded conditions entirely.
@@ -309,9 +311,12 @@ function stripVursDeathConditions(actor) {
 	actor.deleteEmbeddedDocuments("Item", suppressed.map(item => item.id))
 		.catch(error => console.error(`${MODULE_ID} | Failed to remove ${suppressed[0].slug} under VURS HP rules`, error));
 }
-Hooks.on("updateActor", actor => stripVursDeathConditions(actor));
+Hooks.on("updateActor", actor => {
+	stripVursDeathConditions(actor);
+	void enforceVursDownedEffect(actor);
+});
 Hooks.on("createItem", item => {
-	if (!VURS_SUPPRESSED_DEATH_CONDITIONS.has(item?.slug)) return;
+	if (!item?.isOfType?.("condition") || !VURS_SUPPRESSED_DEATH_CONDITIONS.has(item?.slug)) return;
 	const actor = item.parent ?? item.actor;
 	if (!actorUsesVursHpRules(actor)) return;
 	item.delete().catch(error => console.error(`${MODULE_ID} | Failed to suppress ${item.slug} under VURS HP rules`, error));
@@ -324,6 +329,94 @@ Hooks.on("pf2e.restForTheNight", actor => {
 		"flags.vurs.hp.maxReduction": new foundry.data.operators.ForcedDeletion()
 	}).catch(error => console.error(`${MODULE_ID} | Failed to clear HP reduction on rest`, error));
 });
+// A successful Treat Wounds also removes the max-HP reduction. PF2e posts the
+// healing as a separate chat card that inherits the check's treatWoundsMacroFlag
+// and origin link; only successful outcomes produce the "Healing Roll" flavor
+// (critical failure posts a "Damage Roll" instead). Track those cards and match
+// applied healing amounts against their totals in the applyDamage wrapper.
+const VURS_TREAT_WOUNDS_HEAL_TTL = 5 * 60 * 1000;
+const vursTreatWoundsHeals = new Map();
+Hooks.on("createChatMessage", message => {
+	const flags = message?.flags?.pf2e;
+	if (!flags?.treatWoundsMacroFlag || !flags?.origin?.messageId) return;
+	const treatWoundsLabel = game.i18n.localize("PF2E.Actions.TreatWounds.Rolls.TreatWounds");
+	if (!message.flavor?.includes(treatWoundsLabel)) return;
+	const total = Number(message.rolls?.[0]?.total);
+	if (!Number.isFinite(total) || total <= 0) return;
+	const now = Date.now();
+	for (const [id, entry] of vursTreatWoundsHeals) {
+		if (now - entry.createdAt > VURS_TREAT_WOUNDS_HEAL_TTL) vursTreatWoundsHeals.delete(id);
+	}
+	vursTreatWoundsHeals.set(message.id, {
+		total,
+		outcome: flags.context?.outcome ?? null,
+		createdAt: now
+	});
+	if (vursTreatWoundsHeals.size > 50) {
+		const oldest = [...vursTreatWoundsHeals.entries()].sort((a, b) => a[1].createdAt - b[1].createdAt)[0];
+		if (oldest) vursTreatWoundsHeals.delete(oldest[0]);
+	}
+});
+function matchVursTreatWoundsHeal(amount, outcome) {
+	const now = Date.now();
+	for (const [id, entry] of vursTreatWoundsHeals) {
+		if (now - entry.createdAt > VURS_TREAT_WOUNDS_HEAL_TTL) {
+			vursTreatWoundsHeals.delete(id);
+			continue;
+		}
+		if (entry.outcome && outcome && entry.outcome !== outcome) continue;
+		for (const multiplier of [0.5, 1, 2, 3]) {
+			if (Math.abs(amount - entry.total * multiplier) < 0.5) return true;
+		}
+	}
+	return false;
+}
+
+// The configured Downed effect is applied while an actor under Negative HP
+// rules sits at 0 HP and removed once healed above it. Only items this feature
+// applied (flagged flags.vurs.downedEffect) are ever removed, so manually
+// applied copies of the same effect are left alone.
+const VURS_DOWNED_BUSY = new WeakSet();
+const VURS_DOWNED_EFFECT_UUID = "Compendium.vurs-pf2e.vurs-effects.Item.4gFFVIejnvRuRpOF";
+async function enforceVursDownedEffect(actor) {
+	if (!actor?.items || VURS_DOWNED_BUSY.has(actor)) return;
+	try {
+		const uuid = String(game.settings.get(MODULE_ID, "downedEffectUuid") ?? "").trim() || VURS_DOWNED_EFFECT_UUID;
+		const atZeroHp = Number(actor.system?.attributes?.hp?.value) <= 0;
+		const applied = actor.items.filter(item => item.flags?.vurs?.downedEffect === true);
+		if (!actorUsesVursHpRules(actor) || !uuid || !atZeroHp) {
+			if (applied.length) {
+				await actor.deleteEmbeddedDocuments("Item", applied.map(item => item.id));
+			}
+			return;
+		}
+		if (applied.length) return;
+
+		const source = await fromUuid(uuid);
+		if (!source) {
+			console.warn(`${MODULE_ID} | Downed Effect UUID did not resolve: ${uuid}`);
+			return;
+		}
+		// Avoid duplicating an effect the actor already carries under another
+		// application path (same type and name).
+		if (actor.items.some(item => item.type === source.type && item.name === source.name)) return;
+
+		VURS_DOWNED_BUSY.add(actor);
+		try {
+			const data = source.toObject();
+			delete data._id;
+			delete data.folder;
+			delete data.sort;
+			data.flags ??= {};
+			data.flags.vurs = { ...(data.flags.vurs ?? {}), downedEffect: true };
+			await actor.createEmbeddedDocuments("Item", [data]);
+		} finally {
+			VURS_DOWNED_BUSY.delete(actor);
+		}
+	} catch (error) {
+		console.error(`${MODULE_ID} | Failed to enforce Downed effect`, error);
+	}
+}
 Hooks.on("canvasReady", () => {
 	for (const token of canvas.tokens?.placeables ?? []) {
 		if (token.actor) syncVursConditionFlags(token.actor);
@@ -2051,6 +2144,7 @@ function applySystemMode(mode = getSystemMode()) {
 	for (const actor of actors) {
 		installActorVursPreparation(actor, false);
 		stripVursDeathConditions(actor);
+		void enforceVursDownedEffect(actor);
 		// PF2e's reset clears cached prepared state before rebuilding it. Calling
 		// prepareData directly can leave startup-derived sheet data stale until
 		// the next document update (such as changing HP).
@@ -2301,63 +2395,6 @@ function vursSharedHpWrappers() {
 			}
 			return wrapped(changed, options, user, ...args);
 		},
-		applyDamage: async function (wrapped, params, ...args) {
-			const reductionPath = "flags.vurs.hp.maxReduction";
-			const hpRules = actorUsesVursHpRules(this);
-			const previousReduction = hpRules ? getVursMaxHpReduction(this) : 0;
-			const previousHp = hpRules ? Number(this.system?.attributes?.hp?.value) || 0 : 0;
-			const previousMessages = hpRules
-				? new Set(game.messages?.contents?.map(message => message.id) ?? [])
-				: null;
-			const persistedReduction = foundry.utils.getProperty(this, reductionPath) ??
-				foundry.utils.getProperty(this, `_source.${reductionPath}`);
-			// PF2e creates its damage-revert record from numeric values that existed
-			// before damage. Seed zero so the first VURS overflow update is included
-			// in that native undo record as well.
-			if (hpRules && !Number.isFinite(Number(persistedReduction))) {
-				await this.update({ [reductionPath]: 0 }, { render: false });
-			}
-			const result = await wrapped(params, ...args);
-			if (!previousMessages) return result;
-
-			const nextReduction = getVursMaxHpReduction(this);
-			if (nextReduction <= previousReduction) return result;
-
-			// Some PF2e update paths omit custom flag changes from their prepared
-			// actor update and from the damage-taken card's undo record. Keep the
-			// reduction out of PF2e's appliedDamage updates (the module reasserts it
-			// itself) and record the real HP delta so native undo stays accurate.
-			const message = [...(game.messages?.contents ?? [])]
-				.filter(candidate => {
-					if (previousMessages.has(candidate.id) ||
-						foundry.utils.getProperty(candidate, "flags.pf2e.context.type") !== "damage-taken") return false;
-					// PF2e leaves appliedDamage null when no HP was actually changed (for
-					// example, an actor already at 0 HP). Match the recipient card by its
-					// speaker as a fallback so overkill is still reported there.
-					return foundry.utils.getProperty(candidate, "flags.pf2e.appliedDamage.uuid") === this.uuid ||
-						candidate.speaker?.actor === this.id;
-				})
-				.sort((left, right) => right.timestamp - left.timestamp)[0];
-			const appliedDamage = message && foundry.utils.getProperty(message, "flags.pf2e.appliedDamage");
-			if (message && appliedDamage && Array.isArray(appliedDamage.updates)) {
-				const updatedAppliedDamage = foundry.utils.deepClone(appliedDamage);
-				const hpUndoDelta = previousHp - (Number(this.system?.attributes?.hp?.value) || 0);
-				const hpUpdate = updatedAppliedDamage.updates.find(update => update.path === "system.attributes.hp.value");
-				if (hpUpdate && hpUndoDelta === 0) {
-					updatedAppliedDamage.updates = updatedAppliedDamage.updates.filter(update => update !== hpUpdate);
-				} else if (hpUpdate) {
-					hpUpdate.value = hpUndoDelta;
-				}
-				// PF2e's native undo handles HP. Keep this custom reduction out of its
-				// update list so the actor ledger applies the reduction delta once after
-				// PF2e's fire-and-forget HP update finishes.
-				updatedAppliedDamage.updates = updatedAppliedDamage.updates.filter(update =>
-					update.path !== reductionPath
-				);
-				await message.update({ "flags.pf2e.appliedDamage": updatedAppliedDamage });
-			}
-			return result;
-		},
 		calculateHealthDelta: function (wrapped, healthData, ...args) {
 			const result = wrapped(healthData, ...args);
 			if (!actorUsesVursHpRules(this) || !healthData || healthData.delta <= 0 || healthData.hp?.max <= 0) return result;
@@ -2380,12 +2417,162 @@ function vursSharedHpWrappers() {
 			result.updates ??= {};
 			result.updates["flags.vurs.hp.maxReduction"] = adjusted;
 			return result;
+		},
+		undoDamage: async function (wrapped, appliedDamage, ...args) {
+
+			if (this[VURS_UNDO_ACTIVE]) return wrapped(appliedDamage, ...args);
+
+			const snapshot = appliedDamage?.vursNegativeHp;
+			const recordedUpdates = appliedDamage?.updates ?? [];
+			const hpPath = "system.attributes.hp.value";
+			const reductionPath = "flags.vurs.hp.maxReduction";
+			const hpUndo = recordedUpdates.find(update => update.path === hpPath);
+			const reductionUndo = recordedUpdates.find(update => update.path === reductionPath);
+			if (!snapshot && !reductionUndo) return wrapped(appliedDamage, ...args);
+
+			const updates = foundry.utils.deepClone(recordedUpdates);
+			const otherUpdates = updates.filter(update => update.path !== hpPath && update.path !== reductionPath);
+			const currentReduction = getVursMaxHpReduction(this);
+			const targetReduction = snapshot
+				? Number(snapshot.reduction) || 0
+				: currentReduction + (Number(reductionUndo.value) || 0);
+			const currentHp = Number(this.system?.attributes?.hp?.value) || 0;
+			const targetHp = Math.max(0, snapshot
+				? Number(snapshot.hp) || 0
+				: currentHp + (Number(hpUndo?.value) || 0));
+
+			// PF2e's undoDamage starts Actor.update without awaiting it. Capture that
+			// update, inject the saved reduction alongside HP, and await completion so
+			// its asynchronous write cannot overwrite the rollback.
+			const updateDescriptor = Object.getOwnPropertyDescriptor(this, "update");
+			const originalUpdate = this.update;
+			const pendingUpdates = [];
+			this[VURS_UNDO_ACTIVE] = true;
+			this.update = function (...updateArgs) {
+				if (updateArgs[1]?.damageUndo && updateArgs[0] && typeof updateArgs[0] === "object") {
+					updateArgs[0] = { ...updateArgs[0], ...getVursReductionUpdates(targetReduction) };
+				}
+				const pending = originalUpdate.apply(this, updateArgs);
+				pendingUpdates.push(pending);
+				return pending;
+			};
+			let result;
+			try {
+				result = await wrapped({ ...appliedDamage, updates: otherUpdates }, ...args);
+				await Promise.all(pendingUpdates);
+				await this.update({
+					[hpPath]: targetHp,
+					...getVursReductionUpdates(targetReduction)
+				}, { damageUndo: true, damageTaken: currentHp - targetHp, render: true });
+				return result;
+			} finally {
+				if (updateDescriptor) Object.defineProperty(this, "update", updateDescriptor);
+				else delete this.update;
+				delete this[VURS_UNDO_ACTIVE];
+			}
 		}
 	};
 }
 
+// Negative HP damage handling joins the shared applyDamage handler chain
+// (dispatched by the single libWrapper registration in lifesteal.js) instead of
+// registering its own applyDamage wrapper, which libWrapper rejects as a
+// duplicate for the same module and target.
+const VURS_NEGATIVE_HP_DAMAGE_HANDLER = Symbol.for(`${MODULE_ID}.negativeHpDamageHandler`);
+async function vursNegativeHpApplyDamageHandler(actor, wrapped, args) {
+	const params = args[0];
+	const reductionPath = "flags.vurs.hp.maxReduction";
+	const hpRules = actorUsesVursHpRules(actor);
+	const previousReduction = hpRules ? getVursMaxHpReduction(actor) : 0;
+	const previousHp = hpRules ? Number(actor.system?.attributes?.hp?.value) || 0 : 0;
+	const previousMessages = hpRules
+		? new Set(game.messages?.contents?.map(message => message.id) ?? [])
+		: null;
+	const persistedReduction = foundry.utils.getProperty(actor, reductionPath) ??
+		foundry.utils.getProperty(actor, `_source.${reductionPath}`);
+	// PF2e creates its damage-revert record from numeric values that existed
+	// before damage. Seed zero so the first VURS overflow update is included
+	// in that native undo record as well.
+	if (hpRules && !Number.isFinite(Number(persistedReduction))) {
+		await actor.update({ [reductionPath]: 0 }, { render: false });
+	}
+	const result = await wrapped(...args);
+	if (!previousMessages) return result;
+
+	// A successful Treat Wounds removes the max-HP reduction on the
+	// patient, matching the long-rest recovery rule.
+	const appliedAmount = Number(params?.damage);
+	if (appliedAmount < 0 && getVursMaxHpReduction(actor) > 0 &&
+		matchVursTreatWoundsHeal(Math.abs(appliedAmount), params?.outcome)) {
+		await actor.update({
+			"flags.vurs.hp.maxReduction": new foundry.data.operators.ForcedDeletion()
+		}, { render: false });
+	}
+
+	const nextReduction = getVursMaxHpReduction(actor);
+	if (nextReduction <= previousReduction) return result;
+
+	// Some PF2e update paths omit custom flag changes from their prepared
+	// actor update and from the damage-taken card's undo record. Keep the
+	// reduction out of PF2e's appliedDamage updates (the module reasserts it
+	// itself) and record the real HP delta so native undo stays accurate.
+	const message = [...(game.messages?.contents ?? [])]
+		.filter(candidate => {
+			if (previousMessages.has(candidate.id) ||
+				foundry.utils.getProperty(candidate, "flags.pf2e.context.type") !== "damage-taken") return false;
+			// PF2e leaves appliedDamage null when no HP was actually changed (for
+			// example, an actor already at 0 HP). Match the recipient card by its
+			// speaker as a fallback so overkill is still reported there.
+			return foundry.utils.getProperty(candidate, "flags.pf2e.appliedDamage.uuid") === actor.uuid ||
+				candidate.speaker?.actor === actor.id;
+		})
+		.sort((left, right) => right.timestamp - left.timestamp)[0];
+	const appliedDamage = message && foundry.utils.getProperty(message, "flags.pf2e.appliedDamage");
+	if (message && appliedDamage && Array.isArray(appliedDamage.updates)) {
+		const updatedAppliedDamage = foundry.utils.deepClone(appliedDamage);
+		const hpUndoDelta = previousHp - (Number(actor.system?.attributes?.hp?.value) || 0);
+		const hpUpdate = updatedAppliedDamage.updates.find(update => update.path === "system.attributes.hp.value");
+		if (hpUpdate && hpUndoDelta === 0) {
+			updatedAppliedDamage.updates = updatedAppliedDamage.updates.filter(update => update !== hpUpdate);
+		} else if (hpUpdate) {
+			hpUpdate.value = hpUndoDelta;
+		}
+		// PF2e's native undo handles HP. Keep this custom reduction out of its
+		// update list so the actor ledger applies the reduction delta once after
+		// PF2e's fire-and-forget HP update finishes.
+		updatedAppliedDamage.updates = updatedAppliedDamage.updates.filter(update =>
+			update.path !== reductionPath
+		);
+		await message.update({ "flags.pf2e.appliedDamage": updatedAppliedDamage });
+	}
+	return result;
+}
+
+function installVursNegativeHpDamageHandler() {
+	if (globalThis[VURS_NEGATIVE_HP_DAMAGE_HANDLER]) return;
+	const damageHandlers = globalThis[Symbol.for(`${MODULE_ID}.applyDamageHandlers`)] ??= new Set();
+	damageHandlers.add(vursNegativeHpApplyDamageHandler);
+	globalThis[VURS_NEGATIVE_HP_DAMAGE_HANDLER] = true;
+}
+
+// Post-prepareDerivedData handler for NPCs, dispatched by the shared wrapper
+// in npcConfiguration.js alongside its DC-scaling handler.
+function vursNpcPrepareDerivedDataHandler(actor, result) {
+	installActorDamageActionContext(actor);
+	if (actorUsesVursHpRules(actor)) {
+		applyVursHitPoints(
+			actor,
+			getVursMaxHpReduction(actor),
+			VURS_ABILITY_LABELS.str,
+			actorUsesVursSystem(actor)
+		);
+	}
+	return result;
+}
+
 function registerVursCharacterPreparationWrappers(actorClass = CONFIG.PF2E?.Actor?.documentClasses?.character) {
 	if (!actorClass?.prototype) return;
+	installVursNegativeHpDamageHandler();
 	if (typeof globalThis.libWrapper?.register !== "function") return;
 	const wrappers = {
 		prepareBuildData: function (wrapped, ...args) {
@@ -2519,12 +2706,11 @@ function registerVursCharacterPreparationWrappers(actorClass = CONFIG.PF2E?.Acto
 	for (const [method, wrapper] of Object.entries(wrappers)) {
 		registerActorPreparationWrapper(actorClass, method, wrapper);
 	}
-	installVursUndoDamagePatch(actorClass);
-
 }
 
 function registerVursNpcPreparationWrappers(actorClass = CONFIG.PF2E?.Actor?.documentClasses?.npc) {
 	if (!actorClass?.prototype) return;
+	installVursNegativeHpDamageHandler();
 	if (typeof globalThis.libWrapper?.register !== "function") return;
 	const wrappers = {
 		preparePerception: function (wrapped, ...args) {
@@ -2547,12 +2733,16 @@ function registerVursNpcPreparationWrappers(actorClass = CONFIG.PF2E?.Actor?.doc
 	};
 	// NPCs share the Negative HP rules with characters. Apply the persisted
 	// max-HP reduction (and Strength-based HP for VURS profiles) during
-	// whichever preparation stage the NPC class exposes.
+	// whichever preparation stage the NPC class exposes. prepareDerivedData is
+	// shared with npcConfiguration's DC scaling through a single dispatcher
+	// wrapper because libWrapper allows only one wrapper per module per target.
 	const hpPreparationMethod = typeof actorClass.prototype?.prepareDerivedData === "function"
 		? "prepareDerivedData"
 		: typeof actorClass.prototype?.prepareData === "function" ? "prepareData" : null;
-	if (hpPreparationMethod) {
-		wrappers[hpPreparationMethod] = function (wrapped, ...args) {
+	if (hpPreparationMethod === "prepareDerivedData") {
+		addNpcPrepareDerivedDataHandler(vursNpcPrepareDerivedDataHandler);
+	} else if (hpPreparationMethod === "prepareData") {
+		wrappers.prepareData = function (wrapped, ...args) {
 			const result = wrapped(...args);
 			installActorDamageActionContext(this);
 			if (actorUsesVursHpRules(this)) {
@@ -2569,7 +2759,6 @@ function registerVursNpcPreparationWrappers(actorClass = CONFIG.PF2E?.Actor?.doc
 	for (const [method, wrapper] of Object.entries(wrappers)) {
 		registerActorPreparationWrapper(actorClass, method, wrapper);
 	}
-	installVursUndoDamagePatch(actorClass);
 }
 
 function registerActorPreparationWrapper(actorClass, method, wrapper) {
@@ -2650,67 +2839,6 @@ function wrapVursCanActGetter(original) {
 		if (this.hasCondition("paralyzed", "stunned")) return canAct;
 		return true;
 	};
-}
-
-function installVursUndoDamagePatch(actorClass) {
-	const prototype = actorClass?.prototype;
-	if (!prototype || typeof prototype.undoDamage !== "function" ||
-		Object.hasOwn(prototype, "__vursNegativeHpUndoPatch")) return;
-
-	const originalUndoDamage = prototype.undoDamage;
-	prototype.undoDamage = async function (appliedDamage, ...args) {
-		if (this[VURS_UNDO_ACTIVE]) return originalUndoDamage.call(this, appliedDamage, ...args);
-
-		const snapshot = appliedDamage?.vursNegativeHp;
-		const recordedUpdates = appliedDamage?.updates ?? [];
-		const hpPath = "system.attributes.hp.value";
-		const reductionPath = "flags.vurs.hp.maxReduction";
-		const hpUndo = recordedUpdates.find(update => update.path === hpPath);
-		const reductionUndo = recordedUpdates.find(update => update.path === reductionPath);
-		if (!snapshot && !reductionUndo) return originalUndoDamage.call(this, appliedDamage, ...args);
-
-		const updates = foundry.utils.deepClone(recordedUpdates);
-		const otherUpdates = updates.filter(update => update.path !== hpPath && update.path !== reductionPath);
-		const currentReduction = getVursMaxHpReduction(this);
-		const targetReduction = snapshot
-			? Number(snapshot.reduction) || 0
-			: currentReduction + (Number(reductionUndo.value) || 0);
-		const currentHp = Number(this.system?.attributes?.hp?.value) || 0;
-		const targetHp = Math.max(0, snapshot
-			? Number(snapshot.hp) || 0
-			: currentHp + (Number(hpUndo?.value) || 0));
-
-		// PF2e's undoDamage starts Actor.update without awaiting it. Capture that
-		// update, inject the saved reduction alongside HP, and await completion so
-		// its asynchronous write cannot overwrite the rollback.
-		const updateDescriptor = Object.getOwnPropertyDescriptor(this, "update");
-		const originalUpdate = this.update;
-		const pendingUpdates = [];
-		this[VURS_UNDO_ACTIVE] = true;
-		this.update = function (...updateArgs) {
-			if (updateArgs[1]?.damageUndo && updateArgs[0] && typeof updateArgs[0] === "object") {
-				updateArgs[0] = { ...updateArgs[0], ...getVursReductionUpdates(targetReduction) };
-			}
-			const pending = originalUpdate.apply(this, updateArgs);
-			pendingUpdates.push(pending);
-			return pending;
-		};
-		let result;
-		try {
-			result = await originalUndoDamage.call(this, { ...appliedDamage, updates: otherUpdates }, ...args);
-			await Promise.all(pendingUpdates);
-			await this.update({
-				[hpPath]: targetHp,
-				...getVursReductionUpdates(targetReduction)
-			}, { damageUndo: true, damageTaken: currentHp - targetHp, render: true });
-			return result;
-		} finally {
-			if (updateDescriptor) Object.defineProperty(this, "update", updateDescriptor);
-			else delete this.update;
-			delete this[VURS_UNDO_ACTIVE];
-		}
-	};
-	Object.defineProperty(prototype, "__vursNegativeHpUndoPatch", { value: true });
 }
 
 function installVursDamagePatch() {
