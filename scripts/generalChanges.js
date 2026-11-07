@@ -340,8 +340,18 @@ Hooks.on("createItem", item => {
 // rest and the module's NPC rest both emit this hook.
 Hooks.on("pf2e.restForTheNight", actor => {
 	if (!actorUsesVursHpRules(actor)) return;
+	// PF2e restores HP against the still-reduced max before this hook runs, so
+	// clear the reduction first, then top HP back up by the cleared amount now
+	// that the full maximum is available again.
+	const reduction = Math.max(0, Number(getVursStoredMaxHpReduction(actor)) || 0);
 	actor.update({
 		"flags.vurs.hp.maxReduction": new foundry.data.operators.ForcedDeletion()
+	}).then(() => {
+		if (reduction <= 0) return null;
+		const hp = actor.system?.attributes?.hp;
+		const value = Number(hp?.value) || 0;
+		const topUp = Math.min(reduction, Math.max(0, (Number(hp?.max) || 0) - value));
+		return topUp > 0 ? actor.update({ "system.attributes.hp.value": value + topUp }) : null;
 	}).catch(error => console.error(`${MODULE_ID} | Failed to clear HP reduction on rest`, error));
 });
 // A successful Treat Wounds also removes the max-HP reduction. PF2e posts the
@@ -1856,13 +1866,33 @@ function allowNegativeHpEntry(root, actor) {
 	const maximumNegative = Math.max(0, Number.isFinite(effectiveMax) ? effectiveMax : 0);
 	const isCurrentHpInput = target => target instanceof HTMLInputElement &&
 		target.matches('input[name$="attributes.hp.value"], input[data-property$="attributes.hp.value"], input[name$="hp.value"]');
+	// A leading + or - makes the entry a delta applied to current HP; an unsigned
+	// number sets HP absolutely. Only the portion of a delta that pushes HP below
+	// zero becomes a max-HP reduction.
+	const commitHpEntry = rawText => {
+		const text = String(rawText).trim();
+		const entered = Number(text);
+		const baseHp = Number(actor.system?.attributes?.hp?.value) || 0;
+		const maxHp = Math.max(0, Number(actor.system?.attributes?.hp?.max) || 0);
+		if (text.startsWith("+") || text.startsWith("-")) {
+			const newHp = baseHp + Math.trunc(entered);
+			if (newHp < 0) return applyVursNegativeHp(actor, -newHp);
+			return actor.update({ "system.attributes.hp.value": Math.min(newHp, maxHp) });
+		}
+		const clamped = Math.clamp(Number.isFinite(entered) ? Math.trunc(entered) : baseHp, 0, maxHp);
+		return actor.update({ "system.attributes.hp.value": clamped });
+	};
 	if (!root.dataset.vursNegativeHpDelegation) {
 		root.dataset.vursNegativeHpDelegation = "true";
 		// Catch these events during capture at the sheet boundary, before PF2e's
-		// delegated form listeners can persist a negative HP value themselves.
+		// delegated form listeners can persist a raw HP value themselves. We own
+		// the commit and interpret the field as a delta, so block every HP input.
 		root.addEventListener("input", event => {
 			const field = event.target;
-			if (!isCurrentHpInput(field) || (Number(field.value) >= 0 && !field.value.trim().startsWith("-"))) return;
+			if (!isCurrentHpInput(field)) return;
+			field.dataset.vursHpWheel = "";
+			field.dataset.vursHpDelta = "";
+			field.dataset.numValue = String(actor.system?.attributes?.hp?.value ?? 0);
 			event.stopImmediatePropagation();
 		}, true);
 		root.addEventListener("wheel", event => {
@@ -1871,38 +1901,48 @@ function allowNegativeHpEntry(root, actor) {
 			if (!field || document.activeElement !== field || event.deltaY === 0) return;
 			event.preventDefault();
 			event.stopImmediatePropagation();
-			const maximum = Math.max(0, Number(actor.system?.attributes?.hp?.max) || 0);
-			const current = Number(field.value) || 0;
-			field.value = String(Math.clamp(current + (event.deltaY < 0 ? 1 : -1), -maximum, maximum));
+			// Mirror PF2e's data-allow-delta wheel: adjust the committed absolute
+			// HP by +/-1. Flag it so a below-zero result is read as absolute, not
+			// as a typed +/- delta.
+			const baseHp = Number(field.dataset.numValue ?? actor.system?.attributes?.hp?.value) || 0;
+			const next = baseHp + Math.sign(-1 * event.deltaY);
+			field.dataset.numValue = String(next);
+			field.dataset.vursHpWheel = "true";
+			field.value = String(next);
 			field.dataset.vursWheelDirty = "true";
 		}, { capture: true, passive: false });
 		root.addEventListener("change", event => {
 			const field = event.target;
 			if (!isCurrentHpInput(field)) return;
+			const wheelAbsolute = field.dataset.vursHpWheel === "true";
 			field.dataset.vursWheelDirty = "";
-			const entered = Number(field.value);
-			if (!Number.isFinite(entered) || entered >= 0) {
-				if (field.value.trim().startsWith("-")) {
-					event.preventDefault();
-					event.stopImmediatePropagation();
-					field.value = String(actor.system?.attributes?.hp?.value ?? 0);
-				}
-				return;
-			}
+			field.dataset.vursHpWheel = "";
+			field.dataset.vursHpDelta = "";
+			field.dataset.numValue = "";
 			event.preventDefault();
 			event.stopImmediatePropagation();
-			const currentMax = Math.max(0, Number(actor.system?.attributes?.hp?.max) || 0);
-			const overflow = Math.min(currentMax, Math.ceil(-entered));
-			field.value = "0";
-			applyVursNegativeHp(actor, overflow).catch(error => {
-				console.error(`${MODULE_ID} | Failed to apply negative HP`, error);
-				ui.notifications?.error("Could not apply negative HP.");
+			const raw = field.value.trim();
+			const entered = Number(raw);
+			const isDelta = raw.startsWith("+") || raw.startsWith("-");
+			const resetField = () => { field.value = String(actor.system?.attributes?.hp?.value ?? 0); };
+			if (!Number.isFinite(entered)) { resetField(); return; }
+			// Wheel edits are absolute HP and may go below zero into maxReduction.
+			const commit = wheelAbsolute
+				? (Math.trunc(entered) < 0
+					? applyVursNegativeHp(actor, -Math.trunc(entered))
+					: actor.update({ "system.attributes.hp.value": Math.min(Math.max(Math.trunc(entered), 0), Math.max(0, Number(actor.system?.attributes?.hp?.max) || 0)) }))
+				: (isDelta && Math.trunc(entered) === 0 ? Promise.resolve() : commitHpEntry(raw));
+			commit.then(() => {
 				field.value = String(actor.system?.attributes?.hp?.value ?? 0);
+			}).catch(error => {
+				console.error(`${MODULE_ID} | Failed to update current HP`, error);
+				ui.notifications?.error("Could not update current HP.");
+				resetField();
 			});
 		}, true);
 	}
 	if (input) {
-		input.min = String(-maximumNegative);
+		input.min = String(-(maximumNegative + (Number(hp?.value) || 0)));
 		input.step = "1";
 		if (!input.dataset.vursNegativeHp) {
 			input.dataset.vursNegativeHp = "true";
@@ -1945,9 +1985,9 @@ function allowNegativeHpEntry(root, actor) {
 	valueElement.spellcheck = false;
 	valueElement.setAttribute("role", "spinbutton");
 	valueElement.setAttribute("aria-label", "Current HP");
-	valueElement.setAttribute("aria-valuemin", String(-maximumNegative));
+	valueElement.setAttribute("aria-valuemin", String(-(maximumNegative + (Number(hp?.value) || 0))));
 	valueElement.setAttribute("aria-valuemax", String(hp?.max ?? 0));
-	valueElement.title = "Edit current HP; negative values reduce maximum HP";
+	valueElement.title = "Edit current HP; enter a delta such as +5 or -3";
 	let cancelEdit = false;
 	valueElement.addEventListener("focus", () => {
 		cancelEdit = false;
@@ -1958,28 +1998,48 @@ function allowNegativeHpEntry(root, actor) {
 		selection?.removeAllRanges();
 		selection?.addRange(range);
 	});
+	valueElement.addEventListener("input", () => {
+		valueElement.dataset.vursHpWheel = "";
+		valueElement.dataset.vursHpDelta = "";
+		valueElement.dataset.numValue = String(actor.system?.attributes?.hp?.value ?? 0);
+	});
 	valueElement.addEventListener("wheel", event => {
 		if (document.activeElement !== valueElement || event.deltaY === 0) return;
 		event.preventDefault();
-		const current = Number(valueElement.textContent.trim()) || 0;
-		valueElement.textContent = String(Math.clamp(current + (event.deltaY < 0 ? 1 : -1), -maximumNegative, Number(hp?.max ?? 0)));
+		const baseHp = Number(valueElement.dataset.numValue ?? actor.system?.attributes?.hp?.value) || 0;
+		const next = baseHp + Math.sign(-1 * event.deltaY);
+		valueElement.dataset.numValue = String(next);
+		valueElement.dataset.vursHpWheel = "true";
+		valueElement.textContent = String(next);
 	}, { passive: false });
 	valueElement.addEventListener("blur", async () => {
+		const wheelAbsolute = valueElement.dataset.vursHpWheel === "true";
+		valueElement.dataset.vursHpWheel = "";
+		valueElement.dataset.vursHpDelta = "";
+		valueElement.dataset.numValue = "";
+		const resetElement = () => { valueElement.textContent = String(actor.system?.attributes?.hp?.value ?? 0); };
 		if (cancelEdit) {
 			cancelEdit = false;
-			valueElement.textContent = String(actor.system?.attributes?.hp?.value ?? 0);
+			resetElement();
 			return;
 		}
-		const entered = Number(valueElement.textContent.trim());
-		const value = Math.clamp(Number.isFinite(entered) ? Math.trunc(entered) : Number(hp?.value ?? 0), -maximumNegative, Number(hp?.max ?? 0));
-		valueElement.textContent = String(value);
+		const raw = valueElement.textContent.trim();
+		const entered = Number(raw);
+		const isDelta = raw.startsWith("+") || raw.startsWith("-");
+		if (!Number.isFinite(entered)) { resetElement(); return; }
 		try {
-			if (value < 0) await applyVursNegativeHp(actor, -value);
-			else await actor.update({ "system.attributes.hp.value": value });
+			if (wheelAbsolute) {
+				const v = Math.trunc(entered);
+				if (v < 0) await applyVursNegativeHp(actor, -v);
+				else await actor.update({ "system.attributes.hp.value": Math.min(Math.max(v, 0), Math.max(0, Number(actor.system?.attributes?.hp?.max) || 0)) });
+			} else if (!(isDelta && Math.trunc(entered) === 0)) {
+				await commitHpEntry(raw);
+			}
+			valueElement.textContent = String(actor.system?.attributes?.hp?.value ?? 0);
 		} catch (error) {
 			console.error(`${MODULE_ID} | Failed to update current HP`, error);
 			ui.notifications?.error("Could not update current HP.");
-			valueElement.textContent = String(actor.system?.attributes?.hp?.value ?? 0);
+			resetElement();
 		}
 	});
 	valueElement.addEventListener("keydown", event => {

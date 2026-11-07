@@ -29,6 +29,67 @@ function getHudRoot(app, element) {
 		: root.querySelector(".pf2e-hud-element");
 }
 
+// pf2e-hud clamps its number inputs to [data-min, max] with data-min hardcoded
+// to 0, and it captures those bounds when it attaches listeners — so the only
+// reliable way to let HP go negative is to intercept wheel/blur in the capture
+// phase before its handlers run. We clamp the top at hp.max and allow the value
+// below zero so the overflow becomes the VURS max-HP reduction.
+function isHudHpInput(element, actor) {
+	if (!(element instanceof HTMLInputElement) || !element.classList.contains("text-number")) return false;
+	const name = element.getAttribute("name") || "";
+	return foundry.utils.getProperty(actor, name) === actor?.system?.attributes?.hp ||
+		name === "system.attributes.hp" || name === "system.attributes.hp.value";
+}
+
+function hudHpBounds(actor) {
+	const hp = actor?.system?.attributes?.hp;
+	return {
+		min: -(Number(hp?.value) || 0) - (Number(hp?.totalModifier) || Number(hp?.max) || 0),
+		max: Math.max(0, Number(hp?.max) || 0)
+	};
+}
+
+function allowNegativeHudHpInput(root, actor) {
+	if (!actor?.system?.attributes?.hp || root.dataset.vursHudHpWired === actor.uuid) return;
+	root.dataset.vursHudHpWired = actor.uuid;
+	const commit = value => actor.update({ "system.attributes.hp.value": value });
+	// Wheel only edits the displayed absolute value while the field is focused;
+	// blur commits it (matching pf2e-hud). Flag wheel edits so a negative result
+	// is read as absolute HP rather than a typed +/- delta.
+	root.addEventListener("wheel", event => {
+		const field = event.target;
+		if (!isHudHpInput(field, actor) || event.deltaY === 0 || document.activeElement !== field) return;
+		event.preventDefault();
+		event.stopImmediatePropagation();
+		const { min, max } = hudHpBounds(actor);
+		const next = Math.clamp((Number(field.value) || 0) + Math.sign(-1 * event.deltaY), min, max);
+		field.dataset.vursHudWheel = "true";
+		field.value = String(next);
+	}, true);
+	root.addEventListener("input", event => {
+		const field = event.target;
+		if (isHudHpInput(field, actor)) field.dataset.vursHudWheel = "";
+	}, true);
+	root.addEventListener("blur", event => {
+		const field = event.target;
+		if (!isHudHpInput(field, actor)) return;
+		event.preventDefault();
+		event.stopImmediatePropagation();
+		const { min, max } = hudHpBounds(actor);
+		const wheelAbsolute = field.dataset.vursHudWheel === "true";
+		field.dataset.vursHudWheel = "";
+		const raw = (field.value || "").trim();
+		const entered = Number(raw);
+		const current = Number(actor.system?.attributes?.hp?.value) || 0;
+		const reset = () => { field.value = String(current); };
+		if (!Number.isFinite(entered)) { reset(); return; }
+		const signed = !wheelAbsolute && (raw.startsWith("+") || raw.startsWith("-"));
+		const result = Math.clamp(wheelAbsolute || !signed ? Math.trunc(entered) : current + Math.trunc(entered), min, max);
+		field.value = String(result);
+		commit(result).catch(() => reset());
+	}, true);
+}
+
 function onHudClick(event, app, root) {
 	if (!(event.target instanceof Element)) return;
 	const target = event.target.closest('[data-action="strike-attack"]');
@@ -153,6 +214,7 @@ Hooks.on("renderApplicationV2", (app, element) => {
 	if (actor) {
 		root.dataset.vursHudActorUuid = actor.uuid;
 		formatHudBurstFireLabel(root, actor);
+		allowNegativeHudHpInput(root, actor);
 	}
 	if (root.id === "pf2e-hud-persistent" || root.id === "pf2e-hud-token") {
 		renderVursPlayResourcesHudPanel(root, actor);
@@ -167,6 +229,7 @@ Hooks.on("updateActor", actor => {
 	for (const root of document.querySelectorAll(".pf2e-hud-element[data-vurs-hud-actor-uuid]")) {
 		if (root.dataset.vursHudActorUuid !== actor.uuid) continue;
 		formatHudBurstFireLabel(root, actor);
+		allowNegativeHudHpInput(root, actor);
 		if ((root.id === "pf2e-hud-persistent" || root.id === "pf2e-hud-token") &&
 			!hudRootsWithScheduledRefresh.has(root)) {
 			hudRootsWithScheduledRefresh.add(root);
