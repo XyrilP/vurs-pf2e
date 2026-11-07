@@ -1,10 +1,12 @@
 import { getRateOfFire, handleBurstFireHudClick, isAutomaticStrike } from "./burstFire.js";
 import { getAutomaticAreaCollateralTrait } from "./collateralDamage.js";
 import { renderVursPlayResourcesHudPanel } from "./playResources.js";
+import { actorUsesVursHpRules } from "./systemModes.js";
 
 const HUD_MODULE_ID = "pf2e-hud";
 const hudRootsWithBurstFireHandlers = new WeakSet();
 const hudRootsWithScheduledRefresh = new WeakSet();
+const hudActors = new WeakMap();
 
 function getHudActor(app) {
 	return [
@@ -43,36 +45,49 @@ function isHudHpInput(element, actor) {
 
 function hudHpBounds(actor) {
 	const hp = actor?.system?.attributes?.hp;
+	const max = Math.max(0, Number(hp?.max) || 0);
 	return {
-		min: -(Number(hp?.value) || 0) - (Number(hp?.totalModifier) || Number(hp?.max) || 0),
-		max: Math.max(0, Number(hp?.max) || 0)
+		min: -(Number(hp?.value) || 0) - max,
+		max
 	};
 }
 
-function allowNegativeHudHpInput(root, actor) {
-	if (!actor?.system?.attributes?.hp || root.dataset.vursHudHpWired === actor.uuid) return;
-	root.dataset.vursHudHpWired = actor.uuid;
-	const commit = value => actor.update({ "system.attributes.hp.value": value });
+function allowNegativeHudHpInput(root) {
+	if (root.dataset.vursHudHpWired) return;
+	root.dataset.vursHudHpWired = "true";
+	// Resolve the actor at event time so a HUD actor/mode switch can't leave a
+	// stale closure committing to the wrong actor. Non-VURS actors return early
+	// WITHOUT intercepting, so pf2e-hud's native [0, max] handler still runs.
+	const actorFor = () => {
+		const actor = hudActors.get(root);
+		return actorUsesVursHpRules(actor) ? actor : null;
+	};
+	const commit = (actor, value) => actor.update({ "system.attributes.hp.value": value });
 	// Wheel only edits the displayed absolute value while the field is focused;
 	// blur commits it (matching pf2e-hud). Flag wheel edits so a negative result
-	// is read as absolute HP rather than a typed +/- delta.
+	// is read as absolute HP rather than a typed +/- delta. The top is always
+	// clamped to the effective hp.max — it can never scroll past max.
 	root.addEventListener("wheel", event => {
+		const actor = actorFor();
 		const field = event.target;
-		if (!isHudHpInput(field, actor) || event.deltaY === 0 || document.activeElement !== field) return;
+		if (!actor || !isHudHpInput(field, actor) || event.deltaY === 0 ||
+			document.activeElement !== field) return;
 		event.preventDefault();
 		event.stopImmediatePropagation();
 		const { min, max } = hudHpBounds(actor);
-		const next = Math.clamp((Number(field.value) || 0) + Math.sign(-1 * event.deltaY), min, max);
+		const next = Math.min(Math.max((Number(field.value) || 0) + Math.sign(-1 * event.deltaY), min), max);
 		field.dataset.vursHudWheel = "true";
 		field.value = String(next);
 	}, true);
 	root.addEventListener("input", event => {
+		const actor = actorFor();
 		const field = event.target;
-		if (isHudHpInput(field, actor)) field.dataset.vursHudWheel = "";
+		if (actor && isHudHpInput(field, actor)) field.dataset.vursHudWheel = "";
 	}, true);
 	root.addEventListener("blur", event => {
+		const actor = actorFor();
 		const field = event.target;
-		if (!isHudHpInput(field, actor)) return;
+		if (!actor || !isHudHpInput(field, actor)) return;
 		event.preventDefault();
 		event.stopImmediatePropagation();
 		const { min, max } = hudHpBounds(actor);
@@ -84,9 +99,13 @@ function allowNegativeHudHpInput(root, actor) {
 		const reset = () => { field.value = String(current); };
 		if (!Number.isFinite(entered)) { reset(); return; }
 		const signed = !wheelAbsolute && (raw.startsWith("+") || raw.startsWith("-"));
-		const result = Math.clamp(wheelAbsolute || !signed ? Math.trunc(entered) : current + Math.trunc(entered), min, max);
+		const result = Math.min(Math.max(wheelAbsolute || !signed ? Math.trunc(entered) : current + Math.trunc(entered), min), max);
+		// Skip the update entirely when nothing changed — pf2e-hud does the same
+		// (z===g), and an unconditional actor.update triggers a full re-prepare
+		// and every updateActor/render hook, which is the source of the lag.
+		if (result === current) { field.value = String(current); return; }
 		field.value = String(result);
-		commit(result).catch(() => reset());
+		commit(actor, result).catch(() => reset());
 	}, true);
 }
 
@@ -213,8 +232,9 @@ Hooks.on("renderApplicationV2", (app, element) => {
 		?? game.actors?.get(root.dataset.vursHudActorUuid);
 	if (actor) {
 		root.dataset.vursHudActorUuid = actor.uuid;
+		hudActors.set(root, actor);
 		formatHudBurstFireLabel(root, actor);
-		allowNegativeHudHpInput(root, actor);
+		allowNegativeHudHpInput(root);
 	}
 	if (root.id === "pf2e-hud-persistent" || root.id === "pf2e-hud-token") {
 		renderVursPlayResourcesHudPanel(root, actor);
@@ -228,8 +248,9 @@ Hooks.on("renderApplicationV2", (app, element) => {
 Hooks.on("updateActor", actor => {
 	for (const root of document.querySelectorAll(".pf2e-hud-element[data-vurs-hud-actor-uuid]")) {
 		if (root.dataset.vursHudActorUuid !== actor.uuid) continue;
+		hudActors.set(root, actor);
 		formatHudBurstFireLabel(root, actor);
-		allowNegativeHudHpInput(root, actor);
+		allowNegativeHudHpInput(root);
 		if ((root.id === "pf2e-hud-persistent" || root.id === "pf2e-hud-token") &&
 			!hudRootsWithScheduledRefresh.has(root)) {
 			hudRootsWithScheduledRefresh.add(root);

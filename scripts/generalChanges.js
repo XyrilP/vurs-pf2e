@@ -1874,13 +1874,16 @@ function allowNegativeHpEntry(root, actor) {
 		const entered = Number(text);
 		const baseHp = Number(actor.system?.attributes?.hp?.value) || 0;
 		const maxHp = Math.max(0, Number(actor.system?.attributes?.hp?.max) || 0);
+		// Skip the update when the result equals current HP — an unconditional
+		// actor.update forces a full re-prepare and every updateActor hook.
 		if (text.startsWith("+") || text.startsWith("-")) {
 			const newHp = baseHp + Math.trunc(entered);
 			if (newHp < 0) return applyVursNegativeHp(actor, -newHp);
-			return actor.update({ "system.attributes.hp.value": Math.min(newHp, maxHp) });
+			const clamped = Math.min(newHp, maxHp);
+			return clamped === baseHp ? Promise.resolve() : actor.update({ "system.attributes.hp.value": clamped });
 		}
 		const clamped = Math.clamp(Number.isFinite(entered) ? Math.trunc(entered) : baseHp, 0, maxHp);
-		return actor.update({ "system.attributes.hp.value": clamped });
+		return clamped === baseHp ? Promise.resolve() : actor.update({ "system.attributes.hp.value": clamped });
 	};
 	if (!root.dataset.vursNegativeHpDelegation) {
 		root.dataset.vursNegativeHpDelegation = "true";
@@ -1927,10 +1930,14 @@ function allowNegativeHpEntry(root, actor) {
 			const resetField = () => { field.value = String(actor.system?.attributes?.hp?.value ?? 0); };
 			if (!Number.isFinite(entered)) { resetField(); return; }
 			// Wheel edits are absolute HP and may go below zero into maxReduction.
+			const wheelClamped = Math.trunc(entered) < 0 ? null
+				: Math.min(Math.max(Math.trunc(entered), 0), Math.max(0, Number(actor.system?.attributes?.hp?.max) || 0));
 			const commit = wheelAbsolute
 				? (Math.trunc(entered) < 0
 					? applyVursNegativeHp(actor, -Math.trunc(entered))
-					: actor.update({ "system.attributes.hp.value": Math.min(Math.max(Math.trunc(entered), 0), Math.max(0, Number(actor.system?.attributes?.hp?.max) || 0)) }))
+					: (wheelClamped === (Number(actor.system?.attributes?.hp?.value) || 0)
+						? Promise.resolve()
+						: actor.update({ "system.attributes.hp.value": wheelClamped })))
 				: (isDelta && Math.trunc(entered) === 0 ? Promise.resolve() : commitHpEntry(raw));
 			commit.then(() => {
 				field.value = String(actor.system?.attributes?.hp?.value ?? 0);
