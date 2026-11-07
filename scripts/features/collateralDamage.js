@@ -1783,7 +1783,6 @@ function getSuccessfulStrikeOutcome(message) {
 	const context = message.flags?.pf2e?.context;
 	if (message.isDamageRoll || context?.type !== "attack-roll") return null;
 	const options = message.flags?.pf2e?.context?.options ?? [];
-	if (!options.includes("action:strike")) return null;
 
 	const checkOutcome = [...options].reverse().find(option =>
 		typeof option === "string" && option.startsWith("check:outcome:")

@@ -296,6 +296,7 @@ Hooks.once("ready", () => {
 		syncVursConditionFlags(actor);
 		stripVursDeathConditions(actor);
 		void enforceVursDownedEffect(actor);
+		clearVursNpcHpReduction(actor);
 	}
 });
 // VURS Negative HP rules replace PF2e's Dying/Wounded conditions entirely.
@@ -311,9 +312,23 @@ function stripVursDeathConditions(actor) {
 	actor.deleteEmbeddedDocuments("Item", suppressed.map(item => item.id))
 		.catch(error => console.error(`${MODULE_ID} | Failed to remove ${suppressed[0].slug} under VURS HP rules`, error));
 }
+// NPCs no longer use the Negative HP rules, but actors damaged while the rules
+// still applied may carry a stale max-HP reduction flag. Remove it so it cannot
+// resurface if the rules are ever re-enabled for NPCs.
+function clearVursNpcHpReduction(actor) {
+	if (!actor?.isOfType?.("npc")) return;
+	const hasFlag = foundry.utils.getProperty(actor, "flags.vurs.hp.maxReduction") !== undefined ||
+		foundry.utils.getProperty(actor, "_source.flags.vurs.hp.maxReduction") !== undefined;
+	if (!hasFlag) return;
+	actor.update({
+		"flags.vurs.hp.maxReduction": new foundry.data.operators.ForcedDeletion()
+	}, { render: false }).catch(error =>
+		console.error(`${MODULE_ID} | Failed to clear NPC HP reduction`, error));
+}
 Hooks.on("updateActor", actor => {
 	stripVursDeathConditions(actor);
 	void enforceVursDownedEffect(actor);
+	clearVursNpcHpReduction(actor);
 });
 Hooks.on("createItem", item => {
 	if (!item?.isOfType?.("condition") || !VURS_SUPPRESSED_DEATH_CONDITIONS.has(item?.slug)) return;

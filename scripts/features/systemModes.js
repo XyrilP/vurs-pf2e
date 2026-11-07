@@ -121,6 +121,10 @@ export function actorUsesVursSystem(actor) {
 }
 
 export function actorUsesVursHpRules(actor) {
+  // NPC max HP is a fixed value with no level-scaled calculation, so the
+  // Negative HP rules (overflow conversion, max-HP reduction, Downed effect,
+  // dying/wounded suppression) apply to characters only.
+  if (actor?.isOfType?.("npc")) return false;
   const mode = getActorSystemMode(actor);
   if (getModeProfile(mode)?.systemWideNegativeHp) return true;
   return game.settings.get(MODULE_ID, "negativeHpInDefault") === true;
