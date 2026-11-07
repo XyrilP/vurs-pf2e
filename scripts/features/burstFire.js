@@ -8,7 +8,7 @@ import {
 	getTokensInCollateralShape
 } from "./collateralGeometry.js";
 import { displayCollateralArea } from "./collateralOverlays.js";
-import { prepareBurstFireDamage } from "./collateralDamage.js";
+import { prepareBurstFireDamage, getAutomaticAreaCollateralTrait } from "./collateralDamage.js";
 import { actorUsesDicelessRolls } from "./systemModes.js";
 
 const MODULE_ID = "vurs-pf2e";
@@ -95,6 +95,17 @@ function updatePreparedBurstFireButton(root, strikeElement, isPrepared, actor) {
 		if (isPrepared) button.dataset.tooltip = game.i18n.localize("VURS.BurstFire.Prepared");
 		else delete button.dataset.tooltip;
 	}
+	const actionIndex = Number(strikeElement.dataset.actionIndex ?? strikeElement.dataset.index);
+	const actions = actor?.system?.actions ?? [];
+	let strike = actions[actionIndex];
+	const itemId = strikeElement.dataset.itemId;
+	if (itemId && strike?.item?.id !== itemId) {
+		strike = actions.find(action => action.item?.id === itemId) ?? strike;
+	}
+	strikeElement.classList.toggle(
+		"vurs-area-strike-hidden",
+		!isPrepared && Boolean(getAutomaticAreaCollateralTrait(strike?.item))
+	);
 	const isNpcSheet = actor?.type === "npc";
 	const hudStrike = strikeElement.matches(".item.attack[data-index]");
 	const attackGroup = isNpcSheet
@@ -135,7 +146,6 @@ function updatePreparedBurstFireButton(root, strikeElement, isPrepared, actor) {
 			continue;
 		}
 
-		const actionIndex = Number(strikeElement.dataset.actionIndex ?? strikeElement.dataset.index);
 		const strike = actor?.system?.actions?.[actionIndex];
 		const variant = strike?.variants?.[variantIndex];
 		const nativeLabel = typeof variant?.label === "string" ? variant.label.trim() : "";
@@ -1288,7 +1298,7 @@ function markBurstFireAlternateUsage(app, element) {
 		const strike = actor.system?.actions?.[Number(strikeElement.dataset.actionIndex)];
 		const autoFireIndex = strike?.altUsages?.findIndex(usage => usage.type === "auto-fire") ?? -1;
 		const burstFireIndex = strike?.altUsages?.findIndex(usage => usage.type === "burst-fire") ?? -1;
-		if (autoFireIndex < 0 || burstFireIndex < 0) continue;
+		if (burstFireIndex < 0) continue;
 
 		const controlsAlreadyPlaced = strikeElement.querySelector(":scope > section > .vurs-burst-fire-controls");
 		if (controlsAlreadyPlaced) {
@@ -1306,23 +1316,23 @@ function markBurstFireAlternateUsage(app, element) {
 			.querySelector(`[data-alt-usage="${burstFireIndex}"]`)
 			?.closest(".alt-usage");
 		const buttonGroup = strikeElement.querySelector(":scope > section > .button-group.tags");
-		if (!autoFireUsage || !burstFireUsage || !buttonGroup) continue;
+		if (!burstFireUsage || !buttonGroup) continue;
 
-		const autoFireButton = autoFireUsage.querySelector('button[data-action="strike-attack"]');
+		const autoFireButton = autoFireUsage?.querySelector('button[data-action="strike-attack"]') ?? null;
 		const burstFireButton = burstFireUsage.querySelector('button[data-action="strike-attack"]');
 		const damageButton = buttonGroup.querySelector('button[data-action="strike-damage"]');
 		const criticalButton = buttonGroup.querySelector('button[data-action="strike-critical"]');
-		if (!autoFireButton || !burstFireButton || !damageButton || !criticalButton) continue;
+		if (!burstFireButton || !damageButton || !criticalButton) continue;
 
 		burstFireButton.classList.add("vurs-burst-fire-trigger");
 		const controls = document.createElement("div");
 		controls.className = "button-group tags vurs-burst-fire-controls";
 		controls.dataset.tooltipDirection = "UP";
-		for (const button of [autoFireButton, burstFireButton, damageButton, criticalButton]) {
+		for (const button of [autoFireButton, burstFireButton, damageButton, criticalButton].filter(Boolean)) {
 			controls.append(button);
 		}
 		buttonGroup.after(controls);
-		autoFireUsage.remove();
+		autoFireUsage?.remove();
 		burstFireUsage.remove();
 		if (prepared?.itemId === strike.item?.id) {
 			prepared.root = root;
@@ -1401,6 +1411,27 @@ function installBurstFirePrepareAttacks({ quiet = false } = {}) {
 			value: function (...args) {
 				const actions = original.apply(this, args);
 				if (!Array.isArray(actions)) return actions;
+				for (let index = 0; index < actions.length; index++) {
+					const action = actions[index];
+					if (action?.type !== "auto-fire" && action?.type !== "area-fire") continue;
+					if (!getAutomaticAreaCollateralTrait(action.item)) continue;
+					try {
+						const itemTypes = this.itemTypes ?? {};
+						const ammos = [
+							...(itemTypes.ammo ?? []).filter(ammo => !ammo.isStowed),
+							...(itemTypes.weapon ?? []).filter(weapon => weapon.system?.usage?.canBeAmmo)
+						];
+						const strike = this.prepareStrike(action.item, {
+							handsReallyFree: this.handsReallyFree,
+							ammos
+						});
+						strike.altUsages = (action.item.getAltUsages?.() ?? [])
+							.map(usage => this.prepareStrike(usage, { handsReallyFree: this.handsReallyFree }));
+						actions[index] = strike;
+					} catch (error) {
+						console.error(`${MODULE_ID} | Could not restore Strike for ${action.item?.name ?? "area weapon"}`, error);
+					}
+				}
 				for (const strike of actions) {
 					const traits = strike.item?.system?.traits?.value ?? strike.item?.traits?.value ?? [];
 					if (strike.type !== "strike" || !traits.includes(AUTOMATIC_TRAIT)) continue;
@@ -1411,6 +1442,10 @@ function installBurstFirePrepareAttacks({ quiet = false } = {}) {
 						const burstFire = createBurstFireUsage(this, strike, autoFire);
 						const autoFireIndex = strike.altUsages.indexOf(autoFire);
 						strike.altUsages.splice(autoFireIndex >= 0 ? autoFireIndex + 1 : strike.altUsages.length, 0, burstFire);
+						if (getAutomaticAreaCollateralTrait(strike.item)) {
+							strike.altUsages = strike.altUsages.filter(usage =>
+								usage.type !== "auto-fire" && usage.type !== "area-fire");
+						}
 					} catch (error) {
 						console.error(`${MODULE_ID} | Could not add Burst-Fire to ${strike.item?.name ?? "weapon"}; keeping its Strike entry`, error);
 					}

@@ -108,7 +108,9 @@
 					"submachine-gun": "Submachine Gun",
 					"service-rifle": "Service Rifle",
 					"assault-rifle": "Assault Rifle",
-					"battle-rifle": "Battle Rifle"
+					"battle-rifle": "Battle Rifle",
+					"heavy-machine-gun": "Heavy Machine Gun",
+					"minigun": "Minigun"
 				},
 				"weaponTraits": {
 					"acquired": {

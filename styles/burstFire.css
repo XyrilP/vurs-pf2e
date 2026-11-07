@@ -1,3 +1,7 @@
+.vurs-area-strike-hidden [data-action="strike-attack"]:not(.vurs-burst-fire-trigger) {
+	display: none;
+}
+
 .vurs-burst-fire-trigger.vurs-burst-fire-prepared {
 	outline: 2px solid var(--color-warm-2, #c90);
 	outline-offset: 1px;

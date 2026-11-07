@@ -1,4 +1,5 @@
 import { getRateOfFire, handleBurstFireHudClick } from "./burstFire.js";
+import { getAutomaticAreaCollateralTrait } from "./collateralDamage.js";
 import { renderVursPlayResourcesHudPanel } from "./playResources.js";
 
 const HUD_MODULE_ID = "pf2e-hud";
@@ -41,6 +42,12 @@ function formatHudBurstFireLabel(root, actor) {
 	for (const strikeElement of root.querySelectorAll(".item.attack[data-index][data-item-id]")) {
 		const strike = actor.system?.actions?.find(action => action.item?.id === strikeElement.dataset.itemId);
 		if (!strike) continue;
+
+		const isPrepared = Boolean(strikeElement.querySelector(".vurs-burst-fire-armed"));
+		strikeElement.classList.toggle(
+			"vurs-area-strike-hidden",
+			!isPrepared && Boolean(getAutomaticAreaCollateralTrait(strike.item))
+		);
 
 		const autoFireIndex = strike.altUsages?.findIndex(usage => usage.type === "auto-fire") ?? -1;
 		const burstFireIndex = strike.altUsages?.findIndex(usage => usage.type === "burst-fire") ?? -1;

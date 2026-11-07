@@ -64,6 +64,13 @@ const toolbeltDamageRetries = new Map();
 const wrappedRegionLayers = new WeakSet();
 let CollateralDamageRuleElement = null;
 let damageSocket = null;
+const AUTOMATIC_TRAIT = "automatic";
+const AUTOMATIC_AREA_COLLATERAL_TRAITS = Object.freeze({
+	"area-cone": Object.freeze({ type: "burst", distance: "5", placement: "target" }),
+	"area-line": Object.freeze({ type: "line", distance: "@range", placement: "self" })
+});
+const AUTOMATIC_AREA_BURST_TRAIT = /^area-burst-(\d+)$/;
+const PREPARE_RULE_ELEMENTS_WRAPPER = Symbol.for(`${MODULE_ID}.automaticAreaCollateralRules`);
 let secretDamageHookInstalled = false;
 let groupedDamageUndoInstalled = false;
 let damageAutomationInstalled = false;
@@ -381,6 +388,96 @@ function registerCollateralDamageRuleElement({ quiet = false } = {}) {
 	};
 
 	registry.custom[RULE_KEY] = CollateralDamageRuleElement;
+}
+
+export function getAutomaticAreaCollateralTrait(item) {
+	if (!item?.isOfType?.("weapon")) return null;
+	const traits = item.system?.traits?.value ?? [];
+	if (!traits.includes(AUTOMATIC_TRAIT)) return null;
+	return Object.keys(AUTOMATIC_AREA_COLLATERAL_TRAITS)
+		.find(trait => traits.includes(trait)) ??
+		traits.find(trait => AUTOMATIC_AREA_BURST_TRAIT.test(trait)) ??
+		null;
+}
+
+function getAutomaticAreaCollateralShape(trait) {
+	const shape = AUTOMATIC_AREA_COLLATERAL_TRAITS[trait];
+	if (shape) return shape;
+	const burst = AUTOMATIC_AREA_BURST_TRAIT.exec(trait);
+	if (!burst) return null;
+	const distance = Number(burst[1]);
+	return Number.isFinite(distance) && distance > 0
+		? { type: "burst", distance: String(distance), placement: "target" }
+		: null;
+}
+
+export function createAutomaticAreaCollateralRule(item) {
+	const trait = getAutomaticAreaCollateralTrait(item);
+	const shape = trait && getAutomaticAreaCollateralShape(trait);
+	if (!shape || !CollateralDamageRuleElement) return null;
+	try {
+		return new CollateralDamageRuleElement({
+			key: RULE_KEY,
+			slug: "vurs-automatic-area-collateral",
+			selector: "strike-damage",
+			value: 10,
+			type: shape.type,
+			distance: shape.distance,
+			mode: "threshold",
+			affects: "all",
+			affectsSelf: false,
+			placement: shape.placement,
+			requiresEquipped: false,
+			requiresInvestment: false
+		}, { parent: item, suppressWarnings: true });
+	} catch (error) {
+		console.error(`${MODULE_ID} | Could not create automatic area ${RULE_KEY} for ${item.name}`, error);
+		return null;
+	}
+}
+
+function installAutomaticAreaCollateralRules({ quiet = false } = {}) {
+	const actorClasses = new Set([
+		CONFIG.Actor?.documentClass,
+		...(game.actors?.contents ?? []).map(actor => actor.constructor)
+	]);
+	const prototypes = new Set();
+	for (const actorClass of actorClasses) {
+		let prototype = actorClass?.prototype;
+		while (prototype && !Object.prototype.hasOwnProperty.call(prototype, "prepareRuleElements")) {
+			prototype = Object.getPrototypeOf(prototype);
+		}
+		if (typeof prototype?.prepareRuleElements === "function") prototypes.add(prototype);
+	}
+
+	if (prototypes.size === 0) {
+		if (!quiet) console.error(`${MODULE_ID} | Could not add automatic area ${RULE_KEY}: PF2E Actor.prepareRuleElements is unavailable`);
+		return;
+	}
+
+	for (const prototype of prototypes) {
+		if (prototype[PREPARE_RULE_ELEMENTS_WRAPPER]) continue;
+		const original = prototype.prepareRuleElements;
+		Object.defineProperty(prototype, "prepareRuleElements", {
+			configurable: true,
+			writable: true,
+			value: function (...args) {
+				const rules = original.apply(this, args);
+				if (!Array.isArray(rules)) return rules;
+				try {
+					const items = this.items?.contents ?? this.items ?? [];
+					for (const item of items) {
+						const rule = createAutomaticAreaCollateralRule(item);
+						if (rule) rules.push(rule);
+					}
+				} catch (error) {
+					console.error(`${MODULE_ID} | Could not add automatic area ${RULE_KEY}`, error);
+				}
+				return rules;
+			}
+		});
+		Object.defineProperty(prototype, PREPARE_RULE_ELEMENTS_WRAPPER, { value: true });
+	}
 }
 
 function ruleCountsAsAreaDamage(rule) {
@@ -4778,31 +4875,34 @@ function calculateExpectedAppliedDamage(actor, params) {
 	const resistances = actor.attributes?.resistances ?? [];
 	const damageOptions = getDamageRollOptions(damage, params.rollOptions);
 	const bypass = damage.options?.bypass;
-	if (bypass?.immunity?.redirect?.length || bypass?.resistance?.redirect?.length) {
-		throw new Error("Collateral Damage cannot be prepared with redirected immunity or resistance");
-	}
+	const redirects = [
+		...(bypass?.immunity?.redirect ?? []),
+		...(bypass?.resistance?.redirect ?? [])
+	].filter(redirect => redirect?.from && redirect?.to && redirect.from !== redirect.to);
+	const getInstanceType = instance =>
+		redirects.find(redirect => redirect.from === instance.type)?.to ?? instance.type;
+	const getInstanceOptions = instance => {
+		const type = getInstanceType(instance);
+		const description = (instance.formalDescription ?? []).map(option =>
+			option === `damage:type:${instance.type}` && type !== instance.type
+				? `damage:type:${type}`
+				: option
+		);
+		return new Set([...description, ...damageOptions]);
+	};
 	const ignoredResistances = damage.options?.bypass?.resistance?.ignore ?? [];
 	const isCriticalSuccess = params.outcome === "criticalSuccess" ||
 		damage.options?.degreeOfSuccess === 3;
 	let adjustmentTotal = 0;
 	const onceWeaknesses = new Set(weaknesses.filter(weakness =>
-		weakness.applyOnce && instances.some(instance => {
-			const options = new Set([
-				...(instance.formalDescription ?? []),
-				...damageOptions
-			]);
-			return weakness.test(options);
-		})
+		weakness.applyOnce && instances.some(instance => weakness.test(getInstanceOptions(instance)))
 	));
 
 	for (const instance of instances) {
 		const amount = Math.max(Number(instance.total) || 0, 0);
 		if (amount <= 0) continue;
-		const options = new Set([
-			...(instance.formalDescription ?? []),
-			...damageOptions
-		]);
-		if (typeof actor.isAffectedBy === "function" && !actor.isAffectedBy(instance.type)) {
+		const options = getInstanceOptions(instance);
+		if (typeof actor.isAffectedBy === "function" && !actor.isAffectedBy(getInstanceType(instance))) {
 			adjustmentTotal -= amount;
 			continue;
 		}
@@ -5227,6 +5327,7 @@ damageHandlers.add(applyCollateralDamageHandler);
 function initializeCollateralDamage() {
 	registerCollateralDamageLocalization();
 	registerCollateralDamageRuleElement();
+	installAutomaticAreaCollateralRules();
 	registerDamageRelay();
 	installSecretDamageCardHook();
 	installGroupedDamageUndo();
