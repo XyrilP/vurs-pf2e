@@ -2577,7 +2577,7 @@ function vursNpcPrepareDerivedDataHandler(actor, result) {
 	if (actorUsesVursHpRules(actor)) {
 		applyVursHitPoints(
 			actor,
-			getVursMaxHpReduction(actor),
+			getVursStoredMaxHpReduction(actor),
 			VURS_ABILITY_LABELS.str,
 			actorUsesVursSystem(actor)
 		);
@@ -2700,7 +2700,7 @@ function registerVursCharacterPreparationWrappers(actorClass = CONFIG.PF2E?.Acto
 				// persisted max-HP reduction.
 				applyVursHitPoints(
 					this,
-					getVursMaxHpReduction(this),
+					getVursStoredMaxHpReduction(this),
 					VURS_ABILITY_LABELS.str,
 					actorUsesVursSystem(this)
 				);
@@ -2763,7 +2763,7 @@ function registerVursNpcPreparationWrappers(actorClass = CONFIG.PF2E?.Actor?.doc
 			if (actorUsesVursHpRules(this)) {
 				applyVursHitPoints(
 					this,
-					getVursMaxHpReduction(this),
+					getVursStoredMaxHpReduction(this),
 					VURS_ABILITY_LABELS.str,
 					actorUsesVursSystem(this)
 				);
@@ -2998,10 +2998,13 @@ function addSavingThrowDomains(actor, slug) {
 	}
 }
 
-function getVursMaxHpReduction(actor) {
-	// The public flags object can lag behind a document update in some PF2e
-	// preparation flows. Prefer persisted source data so partial damage reverts
-	// immediately expose the restored reduction value to preparation and sheets.
+// The raw stored max-HP reduction without the prepared-totalModifier cap.
+// During prepareDerivedData, hp.totalModifier is still the native
+// Constitution-based value for Str-based actors (the Strength replacement in
+// applyVursHitPoints has not run yet), so capping there would clamp the
+// reduction to the wrong base. applyVursHitPoints floors the result at 0,
+// making the uncapped value equivalent for preparation.
+function getVursStoredMaxHpReduction(actor) {
 	const candidates = [
 		foundry.utils.getProperty(actor, "_source.flags.vurs.hp.maxReduction"),
 		foundry.utils.getProperty(actor, "document._source.flags.vurs.hp.maxReduction"),
@@ -3013,8 +3016,14 @@ function getVursMaxHpReduction(actor) {
 	];
 	const value = candidates.find(candidate => candidate !== undefined);
 	const reduction = Number(value);
-	if (!Number.isFinite(reduction)) return 0;
-	const normalized = Math.trunc(reduction);
+	return Number.isFinite(reduction) ? Math.trunc(reduction) : 0;
+}
+
+function getVursMaxHpReduction(actor) {
+	// The public flags object can lag behind a document update in some PF2e
+	// preparation flows. Prefer persisted source data so partial damage reverts
+	// immediately expose the restored reduction value to preparation and sheets.
+	const normalized = getVursStoredMaxHpReduction(actor);
 	if (normalized <= 0) return normalized;
 	const preparedBaseMax = Number(actor?.system?.attributes?.hp?.totalModifier);
 	return Number.isFinite(preparedBaseMax) ? Math.min(normalized, Math.max(0, preparedBaseMax)) : normalized;

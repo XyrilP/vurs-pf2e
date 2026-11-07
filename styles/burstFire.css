@@ -1,5 +1,13 @@
-.vurs-area-strike-hidden [data-action="strike-attack"]:not(.vurs-burst-fire-trigger) {
+/* Hide the normal Strike buttons for Automatic+Area weapons while Burst-Fire is
+   not armed, but keep the weapon icon visible. The icon (.item-image.variant-strike)
+   also carries data-action="strike-attack", so the selector is narrowed to real
+   buttons/variants and the icon is made non-interactive instead of hidden. */
+.vurs-area-strike-hidden :is(button, .variant.attack)[data-action="strike-attack"]:not(.vurs-burst-fire-trigger) {
 	display: none;
+}
+
+.vurs-area-strike-hidden .item-image.variant-strike[data-action="strike-attack"] {
+	pointer-events: none;
 }
 
 .pf2e-hud-element .variant.attack .vurs-burst-fire-icon {
