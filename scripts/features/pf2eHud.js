@@ -1,4 +1,4 @@
-import { getRateOfFire, handleBurstFireHudClick } from "./burstFire.js";
+import { getRateOfFire, handleBurstFireHudClick, isAutomaticStrike } from "./burstFire.js";
 import { getAutomaticAreaCollateralTrait } from "./collateralDamage.js";
 import { renderVursPlayResourcesHudPanel } from "./playResources.js";
 
@@ -36,6 +36,14 @@ function onHudClick(event, app, root) {
 	const actor = getHudActor(app)
 		?? game.actors?.get(root.dataset.vursHudActorUuid);
 	if (actor) handleBurstFireHudClick(event, actor, target, root);
+}
+
+function createBurstFireHudIcon() {
+	const icon = document.createElement("img");
+	icon.className = "alt-usage-icon auto-fire vurs-burst-fire-icon";
+	icon.src = "systems/pf2e/assets/icons/striking-balls.svg";
+	icon.alt = "";
+	return icon;
 }
 
 function formatHudBurstFireLabel(root, actor) {
@@ -80,6 +88,7 @@ function formatHudBurstFireLabel(root, actor) {
 			const actionGlyph = document.createElement("span");
 			actionGlyph.className = "action-glyph";
 			actionGlyph.textContent = "2";
+			button.classList.add("vurs-burst-fire-trigger");
 			button.replaceChildren(
 				actionGlyph,
 				document.createTextNode(` Burst-Fire (${rateLabel})`)
@@ -88,6 +97,48 @@ function formatHudBurstFireLabel(root, actor) {
 				"aria-label",
 				`2 AP Burst-Fire (${rateLabel}) — ${strike.item.name}`
 			);
+			const category = button.closest(".variants")
+				?.querySelector(":scope > .category");
+			if (category && !category.querySelector("img.vurs-burst-fire-icon")) {
+				category.replaceChildren(createBurstFireHudIcon());
+			}
+		}
+
+		const hasBurstFireUsage = strike.altUsages?.some(usage => usage.type === "burst-fire");
+		if (!hasBurstFireUsage && isAutomaticStrike(strike)) {
+			if (!strikeElement.querySelector(".vurs-burst-fire-trigger[data-vurs-synthetic]")) {
+				const rateOfFire = getRateOfFire(actor, strike) ?? 0;
+				const rateLabel = game.i18n.format("VURS.BurstFire.RateOfFireShort", {
+					shots: rateOfFire
+				});
+				const button = document.createElement("div");
+				button.className = "variant attack vurs-burst-fire-trigger";
+				button.dataset.action = "strike-attack";
+				button.dataset.variantIndex = "0";
+				button.dataset.vursSynthetic = "true";
+				const actionGlyph = document.createElement("span");
+				actionGlyph.className = "action-glyph";
+				actionGlyph.textContent = "2";
+				button.append(
+					actionGlyph,
+					document.createTextNode(` Burst-Fire (${rateLabel})`)
+				);
+				button.setAttribute(
+					"aria-label",
+					`2 AP Burst-Fire (${rateLabel}) — ${strike.item.name}`
+				);
+				const category = document.createElement("span");
+				category.className = "category";
+				category.append(createBurstFireHudIcon());
+				const mainVariants = [...strikeElement.querySelectorAll(":scope > .variants")]
+					.find(group => group.querySelector('[data-action="strike-attack"]:not([data-alt-usage])'));
+				if (mainVariants) {
+					const row = document.createElement("div");
+					row.className = "variants vurs-burst-fire-row";
+					row.append(category, button);
+					mainVariants.after(row);
+				}
+			}
 		}
 	}
 }

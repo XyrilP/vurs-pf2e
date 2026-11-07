@@ -397,11 +397,17 @@ export async function applyDamageApplications(applications, parentParams) {
 		const actorKey = application.actor.uuid ?? application.actor.id;
 		const actorApplications = byActor.get(actorKey) ?? [];
 		const key = getDamageApplicationBatchKey(application);
-		const matchingBatch = actorApplications.find(batch => batch.key === key);
+		const isTransactionRoot = application.damageParams === parentParams;
+		const matchingBatch = isTransactionRoot
+			? null
+			: actorApplications.find(batch => batch.key === key);
 		if (matchingBatch) {
 			matchingBatch.applications.push(application);
 		} else {
-			actorApplications.push({ key, applications: [application] });
+			actorApplications.push({
+				key: isTransactionRoot ? `${key}:root` : key,
+				applications: [application]
+			});
 		}
 		byActor.set(actorKey, actorApplications);
 	}

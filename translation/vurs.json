@@ -54,6 +54,7 @@
                 "AmmoChanged": "Burst-Fire ammunition changed before the projectile could be expended.",
                 "ChatFailed": "Could not create the Burst-Fire chat card.",
                 "DamageFailed": "Could not generate or apply Burst-Fire damage.",
+                "DamageFailedCount": "{count} Burst-Fire damage applications could not be prepared.",
                 "RollFailed": "Burst-Fire stopped because one of its Strikes could not be completed."
             },
             "Notes": {

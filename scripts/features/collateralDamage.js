@@ -391,8 +391,9 @@ function registerCollateralDamageRuleElement({ quiet = false } = {}) {
 }
 
 export function getAutomaticAreaCollateralTrait(item) {
-	if (!item?.isOfType?.("weapon")) return null;
-	const traits = item.system?.traits?.value ?? [];
+	const source = item?.isOfType?.("weapon") ? item : item?.linkedWeapon;
+	if (!source?.isOfType?.("weapon")) return null;
+	const traits = source.system?.traits?.value ?? [];
 	if (!traits.includes(AUTOMATIC_TRAIT)) return null;
 	return Object.keys(AUTOMATIC_AREA_COLLATERAL_TRAITS)
 		.find(trait => traits.includes(trait)) ??
@@ -412,6 +413,7 @@ function getAutomaticAreaCollateralShape(trait) {
 }
 
 export function createAutomaticAreaCollateralRule(item) {
+	if (!item?.isOfType?.("weapon")) return null;
 	const trait = getAutomaticAreaCollateralTrait(item);
 	const shape = trait && getAutomaticAreaCollateralShape(trait);
 	if (!shape || !CollateralDamageRuleElement) return null;
@@ -3867,7 +3869,7 @@ async function applyPendingBurstFireDamage(message) {
 		if (!allRecords.length && !pendingCards.length) {
 			throw new Error("There is no prepared Burst-Fire damage to apply");
 		}
-		const rootRecord = allRecords[0];
+		const rootRecord = allRecords.find(record => !record.isApplied) ?? allRecords[0];
 		if (!rootRecord) throw new Error("Could not find a prepared Burst-Fire damage roll");
 		const applications = await Promise.all([
 			...pendingRecords.map(async record => {
@@ -3892,7 +3894,7 @@ async function applyPendingBurstFireDamage(message) {
 		]);
 		const rootApplication = applications.find(application =>
 			application.recordId === rootRecord.id
-		) ?? await restoreBurstFireDamageRecord(rootRecord);
+		) ?? applications[0] ?? await restoreBurstFireDamageRecord(rootRecord);
 		let applied = false;
 		try {
 			await runDamageTransaction(
@@ -5154,25 +5156,36 @@ export async function prepareBurstFireDamage(message, applications) {
 	const secretRecords = [];
 	const cards = [];
 	const secretCards = [];
+	let failedApplications = 0;
 	for (const application of applications) {
-		const record = createBurstFireDamageRecord(application);
-		(record.hidden ? secretRecords : records).push(record);
-		const amount = typeof application.damageParams.damage === "number"
-			? application.damageParams.damage
-			: application.damageParams.damage.total;
-		const appliedDamage = calculateExpectedAppliedDamage(application.actor, application.damageParams);
-		const { applications: collateralApplications } = await applyCollateralDamage(
-			application.actor,
-			application.damageParams,
-			amount,
-			appliedDamage
-		);
-		for (const collateral of collateralApplications ?? []) {
-			const card = await renderCollateralDamageCard(collateral);
-			card.hidden = Boolean(collateral.secret);
-			card.shieldBlockRequest = Boolean(collateral.damageParams.shieldBlockRequest);
-			(card.hidden ? secretCards : cards).push(card);
+		try {
+			const record = createBurstFireDamageRecord(application);
+			(record.hidden ? secretRecords : records).push(record);
+			const amount = typeof application.damageParams.damage === "number"
+				? application.damageParams.damage
+				: application.damageParams.damage.total;
+			const appliedDamage = calculateExpectedAppliedDamage(application.actor, application.damageParams);
+			const { applications: collateralApplications } = await applyCollateralDamage(
+				application.actor,
+				application.damageParams,
+				amount,
+				appliedDamage
+			);
+			for (const collateral of collateralApplications ?? []) {
+				const card = await renderCollateralDamageCard(collateral);
+				card.hidden = Boolean(collateral.secret);
+				card.shieldBlockRequest = Boolean(collateral.damageParams.shieldBlockRequest);
+				(card.hidden ? secretCards : cards).push(card);
+			}
+		} catch (error) {
+			failedApplications++;
+			console.error(`${MODULE_ID} | Could not prepare one Burst-Fire damage application`, error);
 		}
+	}
+	if (failedApplications) {
+		ui.notifications.warn(game.i18n.format("VURS.BurstFire.Warnings.DamageFailedCount", {
+			count: failedApplications
+		}));
 	}
 	const secretMessageId = await createSecretBurstFireMessage(secretRecords, secretCards);
 	await message.update({

@@ -13,6 +13,7 @@ import { actorUsesDicelessRolls } from "./systemModes.js";
 
 const MODULE_ID = "vurs-pf2e";
 const PREPARE_ATTACKS_WRAPPER = Symbol.for(`${MODULE_ID}.burstFirePrepareAttacks`);
+const PREPARE_DERIVED_DATA_WRAPPER = Symbol.for(`${MODULE_ID}.burstFirePrepareDerivedData`);
 const AUTOMATIC_TRAIT = "automatic";
 const BURST_FIRE_ROLL_CONCURRENCY = 4;
 const DEGREE_OF_SUCCESS = ["criticalFailure", "failure", "success", "criticalSuccess"];
@@ -112,7 +113,8 @@ function updatePreparedBurstFireButton(root, strikeElement, isPrepared, actor) {
 		? strikeElement.querySelector(".button-group > .subsection.attack")
 			?? strikeElement.querySelector(":scope > .button-group .subsection.attack")
 		: hudStrike
-			? strikeElement.querySelector(":scope > .variants")
+			? [...strikeElement.querySelectorAll(":scope > .variants")]
+				.find(group => group.querySelector('[data-action="strike-attack"]:not([data-alt-usage])'))
 			: strikeElement.querySelector(":scope > section > .button-group.tags")
 				?? strikeElement.querySelector(":scope > .button-group");
 	if (!attackGroup) return;
@@ -233,6 +235,16 @@ function displayBurstFireRecoilArea(actor, strike) {
 	if (shapes) displayCollateralArea(shapes, [], 4000);
 }
 
+function resolveSheetStrike(actor, element) {
+	const actions = actor?.system?.actions ?? [];
+	const itemId = element?.dataset?.itemId;
+	if (itemId) {
+		const byItem = actions.find(action => action.item?.id === itemId);
+		if (byItem) return byItem;
+	}
+	return actions[Number(element?.dataset?.actionIndex ?? element?.dataset?.index)];
+}
+
 function getHudStrike(actor, strikeElement) {
 	const actions = actor?.system?.actions ?? [];
 	const itemId = strikeElement.dataset.itemId;
@@ -260,6 +272,17 @@ export function handleBurstFireHudClick(event, actor, target, root) {
 	if (!strikeElement || !root.contains(strikeElement)) return false;
 	const strike = getHudStrike(actor, strikeElement);
 	if (!strike) return false;
+
+	if (target.classList.contains("vurs-burst-fire-trigger") && !target.hasAttribute("data-alt-usage")) {
+		event.preventDefault();
+		event.stopImmediatePropagation();
+		target.setAttribute(
+			"aria-pressed",
+			String(preparedBurstFires.get(actor.uuid ?? actor.id)?.itemId === strike.item.id)
+		);
+		prepareBurstFire(actor, strike, root, strikeElement);
+		return true;
+	}
 
 	const altUsageIndex = target.dataset.altUsage;
 	const altUsage = altUsageIndex === undefined ? null : strike.altUsages?.[Number(altUsageIndex)];
@@ -316,8 +339,7 @@ function handleBurstFireSheetClick(actor, root, event) {
 			'li.strike[data-action-index], li.item.action[data-strike][data-action-index]'
 		);
 	if (!strikeElement) return;
-	const actionIndex = Number(strikeElement.dataset.actionIndex);
-	const strike = actor.system?.actions?.[actionIndex];
+	const strike = resolveSheetStrike(actor, strikeElement);
 	if (!strike) return;
 
 	if (button.classList.contains("vurs-burst-fire-trigger")) {
@@ -775,6 +797,7 @@ async function rollBurstFire(actor, strike, startingMAP, options = {}) {
 	const damageApplications = [];
 	let roundsFired = 0;
 	let attackFailed = false;
+	let missingCheckContextWarned = false;
 	const attackConcurrency = actorUsesDicelessRolls(actor)
 		? 1
 		: BURST_FIRE_ROLL_CONCURRENCY;
@@ -800,13 +823,20 @@ async function rollBurstFire(actor, strike, startingMAP, options = {}) {
 					target: primaryToken,
 					consumeAmmo: false,
 					createMessage: false,
-					callback: (_roll, _outcome, message) => {
+					callback: (roll, _outcome, message) => {
+						const candidate = message ?? roll;
 						checkContext = foundry.utils.getProperty(
-							message,
+							candidate,
 							`flags.${game.system.id}.context`
-						) ?? null;
+						) ?? foundry.utils.getProperty(candidate, "context") ?? null;
 					}
 				});
+				if (attackRoll && !checkContext) {
+					checkContext = foundry.utils.getProperty(
+						attackRoll,
+						`flags.${game.system.id}.context`
+					) ?? foundry.utils.getProperty(attackRoll, "context") ?? null;
+				}
 				if (attackRoll) roundsFired++;
 				return { shot, mapIndex, attackRoll, checkContext };
 			} catch (error) {
@@ -829,7 +859,8 @@ async function rollBurstFire(actor, strike, startingMAP, options = {}) {
 			);
 			continue;
 		}
-		if (!attack.checkContext) {
+		if (!attack.checkContext && !missingCheckContextWarned) {
+			missingCheckContextWarned = true;
 			console.error(`${MODULE_ID} | Burst-Fire Strike did not provide its check context; on-hit damage effects may not resolve for ${weapon.name}`);
 		}
 		const degree = attack.attackRoll.degreeOfSuccess ??
@@ -994,12 +1025,18 @@ function isAutomaticWeapon(item) {
 	return item?.type === "weapon" && traits.includes(AUTOMATIC_TRAIT);
 }
 
-function isAutomaticStrike(strike) {
-	const traits = strike?.item?.system?.traits?.value ?? strike?.item?.traits?.value ?? [];
-	return strike?.type === "strike" && traits.includes(AUTOMATIC_TRAIT);
+function itemTraitSlugs(item) {
+	return item?.system?.traits?.value ?? item?.traits?.value ?? [];
 }
 
-function getBurstFireBaseOverride(item, stat) {
+export function isAutomaticStrike(strike) {
+	if (strike?.type !== "strike") return false;
+	const item = strike?.item;
+	return itemTraitSlugs(item).includes(AUTOMATIC_TRAIT) ||
+		itemTraitSlugs(item?.linkedWeapon).includes(AUTOMATIC_TRAIT);
+}
+
+function readBurstFireBaseOverride(item, stat) {
 	const burstFire = foundry.utils.getProperty(item, `flags.${MODULE_ID}.burstFire`) ?? {};
 	const baseKey = `base${stat[0].toUpperCase()}${stat.slice(1)}`;
 	const legacyKey = stat;
@@ -1009,12 +1046,18 @@ function getBurstFireBaseOverride(item, stat) {
 	return Number.isInteger(value) && value >= 0 ? value : null;
 }
 
+function getBurstFireBaseOverride(item, stat) {
+	return readBurstFireBaseOverride(item, stat) ??
+		(item?.linkedWeapon ? readBurstFireBaseOverride(item.linkedWeapon, stat) : null);
+}
+
 function getBurstFireAdjustment(item, stat) {
-	const value = foundry.utils.getProperty(
-		item,
-		`flags.${MODULE_ID}.burstFire.${stat}Adjustment`
-	);
-	return Number.isInteger(value) ? value : 0;
+	const path = `flags.${MODULE_ID}.burstFire.${stat}Adjustment`;
+	const value = foundry.utils.getProperty(item, path);
+	if (Number.isInteger(value)) return value;
+	const linked = item?.linkedWeapon;
+	const inherited = linked ? foundry.utils.getProperty(linked, path) : undefined;
+	return Number.isInteger(inherited) ? inherited : 0;
 }
 
 function getBaseRateOfFire(item, effectiveMAP = null) {
@@ -1240,7 +1283,7 @@ function markBurstFireAlternateUsage(app, element) {
 		for (const strikeElement of root.querySelectorAll(
 			"li.item.action[data-strike][data-action-index]"
 		)) {
-			const strike = actor.system?.actions?.[Number(strikeElement.dataset.actionIndex)];
+			const strike = resolveSheetStrike(actor, strikeElement);
 			if (!isAutomaticStrike(strike)) continue;
 			const attackSubsection = strikeElement.querySelector(".button-group > .subsection.attack");
 			if (!attackSubsection) continue;
@@ -1295,7 +1338,7 @@ function markBurstFireAlternateUsage(app, element) {
 	}
 
 	for (const strikeElement of root.querySelectorAll("li.strike[data-action-index]")) {
-		const strike = actor.system?.actions?.[Number(strikeElement.dataset.actionIndex)];
+		const strike = resolveSheetStrike(actor, strikeElement);
 		const autoFireIndex = strike?.altUsages?.findIndex(usage => usage.type === "auto-fire") ?? -1;
 		const burstFireIndex = strike?.altUsages?.findIndex(usage => usage.type === "burst-fire") ?? -1;
 		if (burstFireIndex < 0) continue;
@@ -1370,7 +1413,7 @@ function createBurstFireUsage(actor, strike, autoFire) {
 		glyph: "2",
 		actionCost: { type: "action", value: 2 },
 		item: getDisplayItem(strike.item),
-		statistic: strike.statistic ?? base.statistic,
+		statistic: strike.statistic ?? base.statistic ?? strike,
 		modifiers: strike.modifiers ?? base.modifiers ?? [],
 		handsAvailable: strike.handsAvailable ?? base.handsAvailable,
 		altUsages: [],
@@ -1383,18 +1426,44 @@ function createBurstFireUsage(actor, strike, autoFire) {
 	};
 }
 
+function injectBurstFireAltUsages(actions, actor) {
+	for (const strike of actions) {
+		if (!isAutomaticStrike(strike)) continue;
+		try {
+			strike.altUsages ??= [];
+			if (strike.altUsages.some(usage => usage.type === "burst-fire")) continue;
+			const autoFire = strike.altUsages.find(usage => usage.type === "auto-fire");
+			const burstFire = createBurstFireUsage(actor, strike, autoFire);
+			const autoFireIndex = strike.altUsages.indexOf(autoFire);
+			strike.altUsages.splice(autoFireIndex >= 0 ? autoFireIndex + 1 : strike.altUsages.length, 0, burstFire);
+			if (getAutomaticAreaCollateralTrait(strike.item)) {
+				strike.altUsages = strike.altUsages.filter(usage =>
+					usage.type !== "auto-fire" && usage.type !== "area-fire");
+			}
+		} catch (error) {
+			console.error(`${MODULE_ID} | Could not add Burst-Fire to ${strike?.item?.name ?? "weapon"}; keeping its Strike entry`, error);
+		}
+	}
+}
+
 function installBurstFirePrepareAttacks({ quiet = false } = {}) {
 	const actorClasses = new Set([
 		CONFIG.Actor?.documentClass,
 		...(game.actors?.contents ?? []).map(actor => actor.constructor)
 	]);
 	const prototypes = new Set();
+	const derivedDataPrototypes = new Set();
 	for (const actorClass of actorClasses) {
 		let prototype = actorClass?.prototype;
 		while (prototype && !Object.prototype.hasOwnProperty.call(prototype, "prepareAttacks")) {
 			prototype = Object.getPrototypeOf(prototype);
 		}
 		if (typeof prototype?.prepareAttacks === "function") prototypes.add(prototype);
+		prototype = actorClass?.prototype;
+		while (prototype && !Object.prototype.hasOwnProperty.call(prototype, "prepareDerivedData")) {
+			prototype = Object.getPrototypeOf(prototype);
+		}
+		if (typeof prototype?.prepareDerivedData === "function") derivedDataPrototypes.add(prototype);
 	}
 
 	if (prototypes.size === 0) {
@@ -1432,28 +1501,27 @@ function installBurstFirePrepareAttacks({ quiet = false } = {}) {
 						console.error(`${MODULE_ID} | Could not restore Strike for ${action.item?.name ?? "area weapon"}`, error);
 					}
 				}
-				for (const strike of actions) {
-					const traits = strike.item?.system?.traits?.value ?? strike.item?.traits?.value ?? [];
-					if (strike.type !== "strike" || !traits.includes(AUTOMATIC_TRAIT)) continue;
-					try {
-						strike.altUsages ??= [];
-						if (strike.altUsages.some(usage => usage.type === "burst-fire")) continue;
-						const autoFire = strike.altUsages.find(usage => usage.type === "auto-fire");
-						const burstFire = createBurstFireUsage(this, strike, autoFire);
-						const autoFireIndex = strike.altUsages.indexOf(autoFire);
-						strike.altUsages.splice(autoFireIndex >= 0 ? autoFireIndex + 1 : strike.altUsages.length, 0, burstFire);
-						if (getAutomaticAreaCollateralTrait(strike.item)) {
-							strike.altUsages = strike.altUsages.filter(usage =>
-								usage.type !== "auto-fire" && usage.type !== "area-fire");
-						}
-					} catch (error) {
-						console.error(`${MODULE_ID} | Could not add Burst-Fire to ${strike.item?.name ?? "weapon"}; keeping its Strike entry`, error);
-					}
-				}
+				injectBurstFireAltUsages(actions, this);
 				return actions;
 			}
 		});
 		Object.defineProperty(prototype, PREPARE_ATTACKS_WRAPPER, { value: true });
+	}
+
+	for (const prototype of derivedDataPrototypes) {
+		if (prototype[PREPARE_DERIVED_DATA_WRAPPER]) continue;
+		const original = prototype.prepareDerivedData;
+		Object.defineProperty(prototype, "prepareDerivedData", {
+			configurable: true,
+			writable: true,
+			value: function (...args) {
+				const result = original.apply(this, args);
+				const actions = this.system?.actions;
+				if (Array.isArray(actions)) injectBurstFireAltUsages(actions, this);
+				return result;
+			}
+		});
+		Object.defineProperty(prototype, PREPARE_DERIVED_DATA_WRAPPER, { value: true });
 	}
 }
 

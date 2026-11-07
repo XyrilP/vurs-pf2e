@@ -2,6 +2,13 @@
 	display: none;
 }
 
+.pf2e-hud-element .variant.attack .vurs-burst-fire-icon {
+	height: 1em;
+	object-fit: contain;
+	vertical-align: middle;
+	width: 1em;
+}
+
 .vurs-burst-fire-trigger.vurs-burst-fire-prepared {
 	outline: 2px solid var(--color-warm-2, #c90);
 	outline-offset: 1px;
