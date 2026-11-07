@@ -1,3 +1,5 @@
+import { hardResetActorPlayResources } from "./features/playResources.js";
+
 const MODULE_ID = "vurs-pf2e";
 
 const SETTING_KEYS = Object.freeze({
@@ -22,7 +24,8 @@ const SETTING_KEYS = Object.freeze({
   automaticTemplatePlacement: "automaticTemplatePlacement",
   automaticNpcSavingThrows: "automaticNpcSavingThrows",
   allowPlayersToControlFollowers: "allowPlayersToControlFollowers",
-  colorTokenRingsByPlayer: "colorTokenRingsByPlayer"
+  colorTokenRingsByPlayer: "colorTokenRingsByPlayer",
+  lastAppliedSystemMode: "lastAppliedSystemMode"
 });
 
 function requestSettingsRefresh(settingName) {
@@ -204,6 +207,41 @@ class VursFeatureSettings extends foundry.applications.api.HandlebarsApplication
     await Promise.all(updates);
     requestSettingsRefresh("Feature settings");
   }
+
+  _onRender(context, options) {
+    super._onRender?.(context, options);
+    const button = this.element?.querySelector("#vurs-hard-reset-play-resources");
+    button?.addEventListener("click", () => void VursFeatureSettings.#hardResetPlayResources(button));
+  }
+
+  static async #hardResetPlayResources(button) {
+    const confirmed = await Dialog.confirm({
+      title: "Hard Reset all Play Resources?",
+      content: "<p>This deletes all stored Play Resource data for every actor, then regenerates the defaults for the current system mode. Current resource values and outside-source modifications may need to be reapplied.</p>",
+      defaultYes: false
+    });
+    if (!confirmed) return;
+    button.disabled = true;
+    const actors = [...new Set([
+      ...(game.actors?.contents ?? []),
+      game.user?.character
+    ].filter(Boolean))];
+    let failures = 0;
+    for (const actor of actors) {
+      try {
+        await hardResetActorPlayResources(actor);
+      } catch (error) {
+        failures++;
+        console.error(`vurs-pf2e | Failed to hard reset Play resources for ${actor.name}`, error);
+      }
+    }
+    ui.notifications.info(
+      failures
+        ? `Play Resources hard reset finished with ${failures} failure(s).`
+        : "Play Resources hard reset finished for all actors."
+    );
+    button.disabled = false;
+  }
 }
 
 const AUTO_CLICKER_SETTINGS = Object.freeze([
@@ -287,6 +325,15 @@ function registerModuleSettings() {
       vurs: "Vionheart Universe Roleplaying System",
       "vurs-agnostic": "VURS (Agnostic)"
     }
+  });
+
+  registerSetting(settings, SETTING_KEYS.lastAppliedSystemMode, {
+    name: "Last Applied System Mode",
+    hint: "Internal: tracks which system mode actor data was last prepared for.",
+    scope: "world",
+    config: false,
+    type: String,
+    default: ""
   });
 
   registerSetting(settings, SETTING_KEYS.allowPlayersToControlFollowers, {

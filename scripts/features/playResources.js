@@ -908,7 +908,11 @@ function formatSignedModifier(value) {
 
 function getPlayResourceEntries(actor) {
 	const resources = foundry.utils.getProperty(actor, PLAY_RESOURCES_PATH) ?? {};
+	const isDefaultMode = getSystemModeForPlayResource(actor) === "default";
+	const defaultResourcesEnabled = game.settings.get("vurs-pf2e", DEFAULT_ACTION_POINTS_SETTING) === true;
 	return PLAY_RESOURCE_DEFINITIONS.flatMap(definition => {
+		if (isDefaultMode && !(defaultResourcesEnabled &&
+			(definition.key === "actionPoints" || definition.key === "reactions"))) return [];
 		const configuredFormula = getNpcPlayResourceMaxFormula(actor, definition.key);
 		if (definition.key === "reactions" && actorUsesVursSystem(actor) && !actorUsesAgnosticVurs(actor) && !configuredFormula) return [];
 		if (!isNpcPlayResourceVisible(actor, definition.key) && !configuredFormula) return [];
@@ -1036,6 +1040,15 @@ async function resetPlayResources(root, actor, button) {
 	}
 }
 
+export async function hardResetActorPlayResources(actor) {
+	if (!actor || !foundry.utils.getProperty(actor, PLAY_RESOURCES_PATH)) return;
+	await actor.update(
+		{ "flags.vurs.playResources": new foundry.data.operators.ForcedDeletion() },
+		{ render: false, vursPlayResourceOnly: true }
+	);
+	await ensurePlayResourceMaxDefaults(actor);
+}
+
 async function hardResetPlayResources(root, actor, button) {
 	const confirmed = await Dialog.confirm({
 		title: "Hard Reset Play Resources?",
@@ -1053,11 +1066,7 @@ async function hardResetPlayResources(root, actor, button) {
 	button.classList.remove("has-pending-changes");
 	button.disabled = true;
 	try {
-		await actor.update(
-			{ "flags.vurs.-=playResources": null },
-			{ render: false, vursPlayResourceOnly: true }
-		);
-		await ensurePlayResourceMaxDefaults(actor);
+		await hardResetActorPlayResources(actor);
 		renderPlayResourcesAfterChange(root, actor);
 	} catch (error) {
 		console.error(`vurs-pf2e | Failed to hard reset Play resources for ${actor.name}`, error);
@@ -1122,6 +1131,9 @@ function isNpcPlayResourceVisible(actor, resourceKey) {
 	if (!isNpcActor(actor)) return true;
 	if (resourceKey === "actionPoints" && actorUsesAgnosticVurs(actor)) return true;
 	if (resourceKey === "actionPoints" && actorUsesVursSystem(actor) && !actorUsesAgnosticVurs(actor)) return true;
+	if (resourceKey === "actionPoints" &&
+		getSystemModeForPlayResource(actor) === "default" &&
+		game.settings.get("vurs-pf2e", DEFAULT_ACTION_POINTS_SETTING) === true) return true;
 	const associatedSkills = {
 		staminaPoints: "athletics",
 		actionPoints: "mobility",
@@ -1138,7 +1150,9 @@ function isNpcPlayResourceVisible(actor, resourceKey) {
 function getFullVursDefaultMax(actor, resourceKey) {
 	const agnostic = actorUsesAgnosticVurs(actor);
 	const npc = isNpcActor(actor);
-	const configuredFormula = getNpcPlayResourceMaxFormula(actor, resourceKey);
+	const configuredFormula = getSystemModeForPlayResource(actor) === "default"
+		? null
+		: getNpcPlayResourceMaxFormula(actor, resourceKey);
 	if (configuredFormula) {
 		return evaluateNpcPlayResourceMaxFormula(actor, resourceKey, configuredFormula);
 	}
@@ -2069,7 +2083,9 @@ async function updatePlayResourceMaxDefaults(actor) {
 		const defaultMax = getFullVursDefaultMax(actor, definition.key);
 		const hasDefaultMax = defaultMax !== undefined && defaultMax !== null && defaultMax !== "" && Number.isFinite(Number(defaultMax));
 		let effectiveMax = finiteResourceNumber(defaultMax);
-		const configuredFormula = getNpcPlayResourceMaxFormula(actor, definition.key);
+		const configuredFormula = getSystemModeForPlayResource(actor) === "default"
+			? null
+			: getNpcPlayResourceMaxFormula(actor, definition.key);
 		const regenerateAgnosticNpcResource = actorUsesAgnosticVurs(actor)
 			&& isNpcActor(actor)
 			&& finiteResourceNumber(resource.max) === 0
@@ -2148,6 +2164,9 @@ async function updatePlayResourceMaxDefaults(actor) {
 			effectiveMax = Math.max(0, outsideMaximum - maxReduction);
 			if (actorUsesAgnosticVurs(actor) && (missingMaximum || regenerateAgnosticMaximum)) {
 				updates[`${PLAY_RESOURCES_PATH}.actionPoints.max`] = outsideMaximum;
+			} else if (!actorUsesAgnosticVurs(actor) && hasDefaultMax &&
+				finiteResourceNumber(resource.max) !== finiteResourceNumber(defaultMax)) {
+				updates[`${PLAY_RESOURCES_PATH}.actionPoints.max`] = finiteResourceNumber(defaultMax);
 			}
 		} else if (isNpcActor(actor) && definition.key === "tacticPoints" && hasDefaultMax) {
 			const maxReduction = finiteResourceNumber(resource.maxReduction);
