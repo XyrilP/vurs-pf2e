@@ -95,16 +95,18 @@ function updatePreparedBurstFireButton(root, strikeElement, isPrepared, actor) {
 		if (isPrepared) button.dataset.tooltip = game.i18n.localize("VURS.BurstFire.Prepared");
 		else delete button.dataset.tooltip;
 	}
-	if (actor?.type === "npc") return;
-
+	const isNpcSheet = actor?.type === "npc";
 	const hudStrike = strikeElement.matches(".item.attack[data-index]");
-	const attackGroup = hudStrike
-		? strikeElement.querySelector(":scope > .variants")
-		: strikeElement.querySelector(":scope > section > .button-group.tags")
-			?? strikeElement.querySelector(":scope > .button-group");
+	const attackGroup = isNpcSheet
+		? strikeElement.querySelector(".button-group > .subsection.attack")
+			?? strikeElement.querySelector(":scope > .button-group .subsection.attack")
+		: hudStrike
+			? strikeElement.querySelector(":scope > .variants")
+			: strikeElement.querySelector(":scope > section > .button-group.tags")
+				?? strikeElement.querySelector(":scope > .button-group");
 	if (!attackGroup) return;
 	attackGroup.classList.toggle("vurs-burst-fire-armed", isPrepared);
-	for (const attackButton of attackGroup.querySelectorAll('[data-action="strike-attack"]')) {
+	for (const attackButton of attackGroup.querySelectorAll('[data-action="strike-attack"]:not(.vurs-burst-fire-trigger)')) {
 		if (!attackButton.dataset.vursOriginalLabel) {
 			attackButton.dataset.vursOriginalLabel = attackButton.innerHTML;
 			attackButton.dataset.vursOriginalAriaLabelSet = String(attackButton.hasAttribute("aria-label"));
@@ -136,25 +138,65 @@ function updatePreparedBurstFireButton(root, strikeElement, isPrepared, actor) {
 		const actionIndex = Number(strikeElement.dataset.actionIndex ?? strikeElement.dataset.index);
 		const strike = actor?.system?.actions?.[actionIndex];
 		const variant = strike?.variants?.[variantIndex];
-		const baseLabel = game.i18n.localize("PF2E.WeaponStrikeLabel");
-		const labelRemainder = String(variant?.label ?? "").replace(baseLabel, "").trim();
+		const nativeLabel = typeof variant?.label === "string" ? variant.label.trim() : "";
+		const label = game.i18n.localize("VURS.BurstFire.Title");
+		if (hudStrike) {
+			const baseLabel = game.i18n.localize("PF2E.WeaponStrikeLabel");
+			const labelRemainder = String(variant?.label ?? "").replace(baseLabel, "").trim();
+			const effectiveMAP = variantIndex > 0
+				? getEffectiveStrikeMAP(strike, variantIndex, actor)
+				: 0;
+			const modifier = variantIndex > 0
+				? `-${effectiveMAP}`
+				: labelRemainder.match(/^[+-]?\d+/)?.[0] ?? labelRemainder;
+			attackButton.textContent = variantIndex === 0
+				? `${label} ${modifier}`.trim()
+				: `MAP ${modifier}`.trim();
+			attackButton.classList.add("vurs-burst-fire-variant");
+			attackButton.setAttribute(
+				"aria-label",
+				variantIndex === 0 ? `${label} ${modifier}`.trim() : `MAP ${modifier}`
+			);
+			attackButton.title = variantIndex === 0
+				? `${label} at MAP 0`
+				: `${label} at MAP -${effectiveMAP}`;
+			continue;
+		}
+
 		const effectiveMAP = variantIndex > 0
 			? getEffectiveStrikeMAP(strike, variantIndex, actor)
 			: 0;
-		const modifier = variantIndex > 0
-			? `-${effectiveMAP}`
-			: labelRemainder.match(/^[+-]?\d+/)?.[0] ?? labelRemainder;
-		const label = game.i18n.localize("VURS.BurstFire.Title");
-		if (variantIndex === 0) {
-			attackButton.textContent = `${label} ${modifier}`.trim();
+		if (isNpcSheet) {
+			const strikeLabel = game.i18n.localize("PF2E.WeaponStrikeLabel");
+			const npcLabel = nativeLabel.startsWith(strikeLabel)
+				? nativeLabel.slice(strikeLabel.length).trim()
+				: nativeLabel;
+			attackButton.textContent = variantIndex === 0
+				? `${label} ${npcLabel}`.trim()
+				: npcLabel;
+		} else if (variantIndex === 0) {
+			const name = document.createElement("span");
+			name.className = "name";
+			name.textContent = label;
+			const glyph = document.createElement("span");
+			glyph.className = "action-glyph";
+			glyph.textContent = "2";
+			attackButton.replaceChildren(
+				name,
+				document.createTextNode(" "),
+				glyph,
+				document.createTextNode(nativeLabel ? ` ${nativeLabel}` : "")
+			);
 		} else {
-			attackButton.textContent = `MAP ${modifier}`.trim();
+			attackButton.textContent = nativeLabel;
 		}
 		attackButton.classList.add("vurs-burst-fire-variant");
-		const accessibleLabel = variantIndex === 0
-			? `${label} ${modifier}`.trim()
-			: `MAP ${modifier}`;
-		attackButton.setAttribute("aria-label", accessibleLabel);
+		attackButton.setAttribute(
+			"aria-label",
+			isNpcSheet || variantIndex > 0
+				? attackButton.textContent
+				: `${label} 2 ${nativeLabel}`.trim()
+		);
 		attackButton.title = variantIndex === 0
 			? `${label} at MAP 0`
 			: `${label} at MAP -${effectiveMAP}`;
