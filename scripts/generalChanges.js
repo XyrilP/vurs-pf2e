@@ -393,6 +393,16 @@ function matchVursTreatWoundsHeal(amount, outcome) {
 // applied copies of the same effect are left alone.
 const VURS_DOWNED_BUSY = new WeakSet();
 const VURS_DOWNED_EFFECT_UUID = "Compendium.vurs-pf2e.vurs-effects.Item.4gFFVIejnvRuRpOF";
+// Cache the resolved compendium source per UUID so actors sitting at 0 HP do not
+// refetch it on every actor update. Only successful resolutions are cached, so a
+// compendium that loads later can still resolve on a subsequent update.
+const vursDownedSourceCache = new Map();
+async function resolveVursDownedSource(uuid) {
+	if (vursDownedSourceCache.has(uuid)) return vursDownedSourceCache.get(uuid);
+	const source = await fromUuid(uuid);
+	if (source) vursDownedSourceCache.set(uuid, source);
+	return source;
+}
 async function enforceVursDownedEffect(actor) {
 	if (!actor?.items || VURS_DOWNED_BUSY.has(actor)) return;
 	try {
@@ -407,7 +417,7 @@ async function enforceVursDownedEffect(actor) {
 		}
 		if (applied.length) return;
 
-		const source = await fromUuid(uuid);
+		const source = await resolveVursDownedSource(uuid);
 		if (!source) {
 			console.warn(`${MODULE_ID} | Downed Effect UUID did not resolve: ${uuid}`);
 			return;
@@ -764,6 +774,7 @@ async function syncVursConditionFlags(actor) {
 }
 
 const scheduledPlayResourceRefreshes = new WeakMap();
+const scheduledConditionStateRefreshes = new WeakSet();
 
 Hooks.on("updateActor", (actor, changes, options = {}) => {
 	// Play-resource sheets render themselves after Apply. Skipping this local
@@ -778,25 +789,35 @@ Hooks.on("updateActor", (actor, changes, options = {}) => {
 			: app?.element?.[0];
 		if (!root) continue;
 
-		applyDisarmedStrikeState(root, actor);
-		applySilencedState(root, actor);
-		applyDragonblightState(root, actor);
-		applyMutedState(root, actor);
-		applyConfusedState(root, actor);
-		applyFatiguedState(root, actor);
-		applyRootedState(root, actor);
-		applyImmobilizedState(root, actor);
-		applyProneState(root, actor);
-		applyRestrainedState(root, actor);
-		applyActingStatusState(root, actor, "staggered");
-		applyParalyzedState(root, actor);
-		applyActingStatusState(root, actor, "unconscious");
-		applyActingStatusState(root, actor, "cantAct");
-		applyActingStatusState(root, actor, "incapacitated");
-		applyActingStatusState(root, actor, "petrified");
-		applyActingStatusState(root, actor, "stunned");
-		applyBrokenState(root, actor);
-		applyCooldownChargeUpState(root, actor);
+		// Condition-state application scans the sheet DOM for every update. Actor
+		// updates arrive in bursts during combat, so coalesce them into one pass
+		// per frame per sheet; the functions read the latest actor state anyway.
+		if (!scheduledConditionStateRefreshes.has(root)) {
+			scheduledConditionStateRefreshes.add(root);
+			requestAnimationFrame(() => {
+				scheduledConditionStateRefreshes.delete(root);
+				if (!root.isConnected) return;
+				applyDisarmedStrikeState(root, actor);
+				applySilencedState(root, actor);
+				applyDragonblightState(root, actor);
+				applyMutedState(root, actor);
+				applyConfusedState(root, actor);
+				applyFatiguedState(root, actor);
+				applyRootedState(root, actor);
+				applyImmobilizedState(root, actor);
+				applyProneState(root, actor);
+				applyRestrainedState(root, actor);
+				applyActingStatusState(root, actor, "staggered");
+				applyParalyzedState(root, actor);
+				applyActingStatusState(root, actor, "unconscious");
+				applyActingStatusState(root, actor, "cantAct");
+				applyActingStatusState(root, actor, "incapacitated");
+				applyActingStatusState(root, actor, "petrified");
+				applyActingStatusState(root, actor, "stunned");
+				applyBrokenState(root, actor);
+				applyCooldownChargeUpState(root, actor);
+			});
+		}
 
 		if (hasVursPlayResourcesDrawer(root)) {
 			if (scheduledPlayResourceRefreshes.has(root)) continue;
@@ -2500,9 +2521,11 @@ async function vursNegativeHpApplyDamageHandler(actor, wrapped, args) {
 	const hpRules = actorUsesVursHpRules(actor);
 	const previousReduction = hpRules ? getVursMaxHpReduction(actor) : 0;
 	const previousHp = hpRules ? Number(actor.system?.attributes?.hp?.value) || 0 : 0;
-	const previousMessages = hpRules
-		? new Set(game.messages?.contents?.map(message => message.id) ?? [])
-		: null;
+	// Chat messages are append-only and chronological, so a single anchor id is
+	// enough to find the messages created during this damage call without
+	// snapshotting the whole history into a Set on every roll.
+	const messagesBefore = hpRules ? (game.messages?.contents ?? []) : null;
+	const previousLastMessageId = messagesBefore?.[messagesBefore.length - 1]?.id ?? null;
 	const persistedReduction = foundry.utils.getProperty(actor, reductionPath) ??
 		foundry.utils.getProperty(actor, `_source.${reductionPath}`);
 	// PF2e creates its damage-revert record from numeric values that existed
@@ -2512,7 +2535,7 @@ async function vursNegativeHpApplyDamageHandler(actor, wrapped, args) {
 		await actor.update({ [reductionPath]: 0 }, { render: false });
 	}
 	const result = await wrapped(...args);
-	if (!previousMessages) return result;
+	if (!messagesBefore) return result;
 
 	// A successful Treat Wounds removes the max-HP reduction on the
 	// patient, matching the long-rest recovery rule.
@@ -2531,16 +2554,24 @@ async function vursNegativeHpApplyDamageHandler(actor, wrapped, args) {
 	// actor update and from the damage-taken card's undo record. Keep the
 	// reduction out of PF2e's appliedDamage updates (the module reasserts it
 	// itself) and record the real HP delta so native undo stays accurate.
-	const message = [...(game.messages?.contents ?? [])]
-		.filter(candidate => {
-			if (previousMessages.has(candidate.id) ||
-				foundry.utils.getProperty(candidate, "flags.pf2e.context.type") !== "damage-taken") return false;
-			// PF2e leaves appliedDamage null when no HP was actually changed (for
-			// example, an actor already at 0 HP). Match the recipient card by its
-			// speaker as a fallback so overkill is still reported there.
-			return foundry.utils.getProperty(candidate, "flags.pf2e.appliedDamage.uuid") === actor.uuid ||
-				candidate.speaker?.actor === actor.id;
-		})
+	const allMessages = game.messages?.contents ?? [];
+	const newDamageCandidates = [];
+	// Scan backwards from the newest message and stop at the pre-damage anchor.
+	// If the anchor is absent (chat cleared) the loop simply scans everything,
+	// preserving the original full-scan behavior as a fallback.
+	for (let index = allMessages.length - 1; index >= 0; index--) {
+		const candidate = allMessages[index];
+		if (candidate.id === previousLastMessageId) break;
+		if (foundry.utils.getProperty(candidate, "flags.pf2e.context.type") !== "damage-taken") continue;
+		// PF2e leaves appliedDamage null when no HP was actually changed (for
+		// example, an actor already at 0 HP). Match the recipient card by its
+		// speaker as a fallback so overkill is still reported there.
+		if (foundry.utils.getProperty(candidate, "flags.pf2e.appliedDamage.uuid") === actor.uuid ||
+			candidate.speaker?.actor === actor.id) {
+			newDamageCandidates.push(candidate);
+		}
+	}
+	const message = newDamageCandidates
 		.sort((left, right) => right.timestamp - left.timestamp)[0];
 	const appliedDamage = message && foundry.utils.getProperty(message, "flags.pf2e.appliedDamage");
 	if (message && appliedDamage && Array.isArray(appliedDamage.updates)) {
