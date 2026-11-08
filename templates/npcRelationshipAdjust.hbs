@@ -1,0 +1,25 @@
+<section class="standard-form vurs-npc-configuration-content">
+  <p class="hint">Adjust the relationship statistics for {{actorName}}.</p>
+  <div class="npc-config-relationship-grid">
+    {{#each relationshipFields}}
+    <label class="form-group" data-tooltip="{{tooltip}}">
+      <span class="npc-config-relationship-label" style="--npc-config-attribute-color: {{color}}">
+        <i class="fa-solid fa-{{icon}}" aria-hidden="true"></i>{{label}}
+      </span>
+      <input type="number" name="relationshipStatistics.{{key}}" step="1" value="{{value}}">
+    </label>
+    {{/each}}
+  </div>
+  <p class="npc-config-relationship-rank">Relationship Rank: <output data-relationship-rank>{{relationshipRank}}</output> · Level bonus: <output data-relationship-level-adjustment>{{relationshipLevelAdjustment}}</output></p>
+  <label class="form-group vurs-relationship-announce-toggle">
+    <span><input type="checkbox" name="announce"> Announce Adjustment</span>
+  </label>
+  <label class="form-group" data-announce-reason hidden>
+    <span>Reason</span>
+    <textarea name="reason" class="vurs-relationship-reason-input" placeholder="Why is the relationship changing?" rows="4" spellcheck="false"></textarea>
+  </label>
+  <footer class="form-footer">
+    <button type="button" data-close>Cancel</button>
+    <button type="submit"><i class="fas fa-save"></i> Save</button>
+  </footer>
+</section>

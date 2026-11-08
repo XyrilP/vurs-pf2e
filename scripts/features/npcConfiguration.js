@@ -157,7 +157,7 @@ export function evaluateNpcPlayResourceMaxFormula(actor, resourceKey, formula = 
 
 export function openNpcConfiguration(actor, selectedTab = "levels") {
 	if (!isNpcActor(actor)) return;
-	if (!actor.isOwner) {
+	if (!game.user?.isGM || !actor.isOwner) {
 		ui.notifications.warn("You do not have permission to configure this NPC.");
 		return;
 	}
@@ -165,7 +165,7 @@ export function openNpcConfiguration(actor, selectedTab = "levels") {
 }
 
 export function addNpcConfigurationButton(root, actor) {
-	if (!(root instanceof HTMLElement) || !isNpcActor(actor)) return;
+	if (!(root instanceof HTMLElement) || !isNpcActor(actor) || !game.user?.isGM) return;
 	const raritySizeControls = [...root.querySelectorAll(
 		".rarity-size .tags.paizo-style, .npc-body > header .tags.paizo-style"
 	)].find(controls => controls.querySelector("select.tag.rarity") &&
@@ -204,13 +204,25 @@ export function renderNpcRelationshipStatistics(root, actor, app = null) {
 		section.className = "vurs-npc-relationship-statistics";
 		const title = document.createElement("h2");
 		title.textContent = "Relationship Statistics";
+		const header = document.createElement("div");
+		header.className = "vurs-npc-relationship-header";
+		header.append(title);
+		if (game.user?.isGM) {
+			const adjustButton = document.createElement("button");
+			adjustButton.type = "button";
+			adjustButton.className = "vurs-npc-relationship-adjust-button";
+			adjustButton.textContent = "Adjust";
+			adjustButton.title = "Adjust relationship statistics";
+			adjustButton.addEventListener("click", () => openNpcRelationshipAdjust(actor));
+			header.append(adjustButton);
+		}
 		const content = document.createElement("div");
 		content.className = "vurs-npc-relationship-content";
 		content.append(document.createElement("ul"));
 		const rank = document.createElement("p");
 		rank.className = "vurs-npc-relationship-rank";
 		content.append(rank);
-		section.append(title, content);
+		section.append(header, content);
 		const toggle = document.createElement("button");
 		toggle.type = "button";
 		toggle.className = "vurs-npc-relationship-toggle";
@@ -365,13 +377,6 @@ function applyNpcRelationshipDrawerTheme(panel, root) {
 		?? panel.sheetWindow;
 	const sidebar = find(panel.sheetWindow, "form .sidebar") ?? find(root, "form .sidebar");
 	const computedTheme = getComputedStyle(themeSource);
-	for (let index = 0; index < computedTheme.length; index += 1) {
-		const property = computedTheme[index];
-		if (property.startsWith("--")) {
-			panel.wrapper.style.setProperty(property, computedTheme.getPropertyValue(property));
-		}
-	}
-
 	const sidebarStyle = getComputedStyle(sidebar ?? themeSource);
 	const bodyBackgroundColor = computedTheme.getPropertyValue("--bg").trim()
 		|| getComputedStyle(panel.sheetWindow.querySelector(".window-content, .application-content") ?? panel.sheetWindow).backgroundColor;
@@ -386,6 +391,37 @@ function applyNpcRelationshipDrawerTheme(panel, root) {
 	const section = panel.wrapper.querySelector(".vurs-npc-relationship-statistics");
 	const heading = section.querySelector("h2");
 	const toggle = panel.wrapper.querySelector(".vurs-npc-relationship-toggle");
+	const npcHeading = find(themeSource, ".npc-body > header .name");
+	const npcHeadingStyle = getComputedStyle(npcHeading ?? themeSource);
+	const borderColor = computedTheme.getPropertyValue("--faded-border-color").trim()
+		|| computedTheme.getPropertyValue("--color-border-divider").trim();
+
+	// Sheet re-renders are frequent (every actor update), but the drawer theme
+	// only changes when the sheet's computed style does. Compare a sentinel of
+	// every consumed value first — the full pass below copies ~300 custom
+	// properties and forces a style recalc, so it must not run per render.
+	const themeSignature = [
+		bodyBackgroundColor, bodyTextColor,
+		npcBackgroundStyle.backgroundColor, npcBackgroundStyle.backgroundImage,
+		npcBackgroundStyle.backgroundPosition, npcBackgroundStyle.backgroundRepeat,
+		npcBackgroundStyle.backgroundSize, npcBackgroundStyle.backgroundAttachment,
+		sidebarStyle.backgroundColor, sidebarStyle.color, sidebarStyle.fontFamily,
+		sidebarStyle.fontSize, sidebarStyle.fontWeight,
+		npcHeadingStyle.fontFamily, npcHeadingStyle.fontSize, npcHeadingStyle.fontWeight,
+		computedTheme.getPropertyValue("--font-primary"),
+		computedTheme.getPropertyValue("--font-size-12"),
+		borderColor
+	].join("|");
+	if (panel.themeSignature === themeSignature) return;
+	panel.themeSignature = themeSignature;
+
+	for (let index = 0; index < computedTheme.length; index += 1) {
+		const property = computedTheme[index];
+		if (property.startsWith("--")) {
+			panel.wrapper.style.setProperty(property, computedTheme.getPropertyValue(property));
+		}
+	}
+
 	section.style.backgroundColor = npcBackgroundStyle.backgroundColor !== "transparent"
 		&& npcBackgroundStyle.backgroundColor !== "rgba(0, 0, 0, 0)"
 		? npcBackgroundStyle.backgroundColor
@@ -413,15 +449,12 @@ function applyNpcRelationshipDrawerTheme(panel, root) {
 	toggle.style.fontFamily = sidebarStyle.fontFamily;
 	toggle.style.fontSize = sidebarStyle.fontSize;
 	toggle.style.fontWeight = sidebarStyle.fontWeight;
-	const npcHeading = find(themeSource, ".npc-body > header .name");
-	const npcHeadingStyle = getComputedStyle(npcHeading ?? themeSource);
 	toggle.style.fontFamily = npcHeadingStyle.fontFamily;
 	toggle.style.fontSize = `${Math.min(Number.parseFloat(npcHeadingStyle.fontSize) || 16, 16)}px`;
 	toggle.style.fontWeight = npcHeadingStyle.fontWeight;
 	toggle.style.fontVariant = "small-caps";
 	toggle.style.letterSpacing = "0.04em";
-	toggle.style.borderColor = computedTheme.getPropertyValue("--faded-border-color").trim()
-		|| computedTheme.getPropertyValue("--color-border-divider").trim();
+	toggle.style.borderColor = borderColor;
 }
 
 function getNpcSheetBackgroundStyle(sheetWindow, themeSource) {
@@ -2402,7 +2435,7 @@ class NpcConfigurationApplication extends foundry.applications.api.HandlebarsApp
 				formula: configuration.formulas?.[resource.key] ?? "",
 				derivedFormula: getNpcPlayResourceDerivedFormula(this.actor, resource.key)
 			})),
-			editable: this.actor.isOwner
+			editable: this.actor.isOwner && game.user?.isGM === true
 		};
 	}
 
@@ -2434,6 +2467,10 @@ class NpcConfigurationApplication extends foundry.applications.api.HandlebarsApp
 					panel.hidden = panel.dataset.npcConfigPanel !== tabName;
 				});
 			});
+		});
+		form.querySelector("[data-npc-config-adjust-relationship]")?.addEventListener("click", () => {
+			this.close();
+			openNpcRelationshipAdjust(this.actor);
 		});
 		form.querySelector(`[data-npc-config-tab="${this.selectedTab}"]`)?.click();
 		form.querySelector("[data-npc-config-reset-levels]")?.addEventListener("click", () => {
@@ -2514,8 +2551,15 @@ class NpcConfigurationApplication extends foundry.applications.api.HandlebarsApp
 		await this.#save(null, true);
 	}
 
-	async #save(form, synchronizeFollower = false) {
-		if (!this.actor.isOwner) {
+	// Saves only relationship statistics through the full configuration pipeline
+	// — every other field is preserved from currentConfiguration (same as the
+	// follower sync path), so level/item rescaling stays consistent.
+	async adjustRelationshipStatistics(statistics) {
+		return this.#save(null, true, { relationshipStatistics: statistics });
+	}
+
+	async #save(form, synchronizeFollower = false, overrides = null) {
+		if (!game.user?.isGM || !this.actor.isOwner) {
 			if (!synchronizeFollower) ui.notifications.warn("You do not have permission to configure this NPC.");
 			return;
 		}
@@ -2539,11 +2583,14 @@ class NpcConfigurationApplication extends foundry.applications.api.HandlebarsApp
 				return;
 			}
 			const relationshipStatistics = {};
+			const overrideStatistics = overrides?.relationshipStatistics ?? null;
 			for (const { key, label } of NPC_RELATIONSHIP_STATISTICS) {
 				const valueString = String(
-					synchronizeFollower
-						? getRelationshipStatistics(currentConfiguration)[key]
-						: formData.get(`relationshipStatistics.${key}`) ?? ""
+					overrideStatistics
+						? overrideStatistics[key] ?? ""
+						: synchronizeFollower
+							? getRelationshipStatistics(currentConfiguration)[key]
+							: formData.get(`relationshipStatistics.${key}`) ?? ""
 				).trim();
 				const value = Number(valueString);
 				if (!valueString || !Number.isSafeInteger(value)) {
@@ -2620,7 +2667,7 @@ class NpcConfigurationApplication extends foundry.applications.api.HandlebarsApp
 				if (!synchronizeFollower) ui.notifications.warn("The resulting follower target level must be a safe whole number.");
 				return;
 			}
-			if (synchronizeFollower) {
+			if (synchronizeFollower && !overrides) {
 				if (!followerPartyUuid || followerPartyLevel === null || followerTargetLevel === priorFollowerTarget) return;
 			} else if (followerPartyUuid && followerPartyLevel === null) {
 				ui.notifications.warn("No player characters with valid levels are in the assigned Party. The last applied follower level will be preserved.");
@@ -2812,6 +2859,188 @@ class NpcConfigurationApplication extends foundry.applications.api.HandlebarsApp
 		} finally {
 			if (saveButton?.isConnected) saveButton.disabled = false;
 		}
+		return actorUpdateSucceeded === true;
+	}
+}
+
+export function openNpcRelationshipAdjust(actor) {
+	if (!isNpcActor(actor) || !game.user?.isGM) return;
+	new NpcRelationshipAdjustApplication(actor).render({ force: true });
+}
+
+function relationshipDeltaClass(delta) {
+	return delta > 0 ? "is-increase" : delta < 0 ? "is-decrease" : "";
+}
+
+async function announceNpcRelationshipAdjustment(actor, previous, next, reason) {
+	const changes = NPC_RELATIONSHIP_STATISTICS
+		.map(field => ({
+			field,
+			from: readFiniteNumber(previous?.[field.key]) ?? 0,
+			to: readFiniteNumber(next?.[field.key]) ?? 0
+		}))
+		.filter(({ from, to }) => from !== to);
+	const rank = getRelationshipRank(next);
+	const previousRank = getRelationshipRank(previous);
+	const content = document.createElement("div");
+	content.className = "vurs-relationship-announce";
+	const portrait = document.createElement("img");
+	portrait.className = "vurs-relationship-announce-portrait";
+	portrait.src = actor.img;
+	portrait.alt = "";
+	const body = document.createElement("div");
+	body.className = "vurs-relationship-announce-body";
+	const list = document.createElement("ul");
+	for (const { field, from, to } of changes) {
+		const item = document.createElement("li");
+		item.className = "vurs-relationship-announce-stat";
+		const presentation = getAttributePresentation(field.attribute, actor);
+		if (presentation?.color) item.style.setProperty("--npc-config-attribute-color", presentation.color);
+		const label = document.createElement("span");
+		label.className = "vurs-relationship-announce-stat-label";
+		if (presentation?.icon) {
+			const icon = document.createElement("i");
+			icon.className = `fa-solid fa-${presentation.icon}`;
+			icon.setAttribute("aria-hidden", "true");
+			label.append(icon);
+		}
+		label.append(document.createTextNode(field.label));
+		const value = document.createElement("span");
+		value.className = `vurs-relationship-announce-stat-value ${relationshipDeltaClass(to - from)}`;
+		value.textContent = `${from} → ${to}`;
+		item.append(label, value);
+		list.append(item);
+	}
+	body.append(list);
+	if (reason) {
+		const reasonElement = document.createElement("p");
+		reasonElement.className = "vurs-relationship-announce-reason";
+		reasonElement.textContent = reason;
+		body.append(reasonElement);
+	}
+	const summary = document.createElement("p");
+	summary.className = "vurs-relationship-announce-summary";
+	summary.append("Relationship Rank: ");
+	const rankDelta = document.createElement("span");
+	rankDelta.className = `vurs-relationship-announce-delta ${relationshipDeltaClass(rank - previousRank)}`;
+	rankDelta.textContent = `${Number(previousRank.toFixed(2))} → ${Number(rank.toFixed(2))}`;
+	summary.append(rankDelta);
+	body.append(summary);
+	content.append(portrait, body);
+	await ChatMessage.create({
+		speaker: ChatMessage.getSpeaker({ actor }),
+		flavor: "Relationship Adjustment",
+		content: content.outerHTML
+	});
+}
+
+class NpcRelationshipAdjustApplication extends foundry.applications.api.HandlebarsApplicationMixin(
+	foundry.applications.api.ApplicationV2
+) {
+	static DEFAULT_OPTIONS = {
+		id: `${MODULE_ID}-npc-relationship-adjust`,
+		classes: [MODULE_ID, "vurs-npc-configuration", "vurs-npc-relationship-adjust"],
+		tag: "form",
+		position: { width: 480 },
+		window: { title: "Adjust Relationship", resizable: true },
+		form: { submitOnChange: false, closeOnSubmit: false }
+	};
+
+	static PARTS = {
+		form: { template: `modules/${MODULE_ID}/templates/npcRelationshipAdjust.hbs` }
+	};
+
+	constructor(actor) {
+		super({ id: `${MODULE_ID}-npc-relationship-adjust-${actor.id}` });
+		this.actor = actor;
+	}
+
+	async _prepareContext() {
+		const configuration = foundry.utils.getProperty(this.actor, NPC_CONFIGURATION_PATH) ?? {};
+		const statistics = getRelationshipStatistics(configuration);
+		const rank = getRelationshipRank(statistics);
+		return {
+			actorName: this.actor.name,
+			actorUuid: this.actor.uuid,
+			relationshipFields: NPC_RELATIONSHIP_STATISTICS.map(field => ({
+				...field,
+				...getAttributePresentation(field.attribute, this.actor),
+				value: readFiniteNumber(statistics[field.key]) ?? 0
+			})),
+			relationshipRank: rank,
+			relationshipLevelAdjustment: getRelationshipLevelAdjustment(rank)
+		};
+	}
+
+	_onRender(context, options) {
+		super._onRender(context, options);
+		const form = this.element?.matches("form")
+			? this.element
+			: this.element?.querySelector("form");
+		if (!form || form.dataset.vursRelationshipAdjustHandlers) return;
+		form.dataset.vursRelationshipAdjustHandlers = "true";
+		form.addEventListener("submit", event => {
+			event.preventDefault();
+			void this.#save(form);
+		});
+		form.querySelector("[data-close]")?.addEventListener("click", () => this.close());
+		const announce = form.elements.namedItem("announce");
+		const reasonField = form.querySelector("[data-announce-reason]");
+		const reasonInput = form.elements.namedItem("reason");
+		const syncReasonVisibility = () => {
+			const enabled = announce?.checked === true;
+			if (reasonField) reasonField.hidden = !enabled;
+			if (reasonInput) reasonInput.disabled = !enabled;
+		};
+		announce?.addEventListener("change", syncReasonVisibility);
+		syncReasonVisibility();
+		form.addEventListener("input", () => this.#updateSummary(form));
+		form.addEventListener("change", () => this.#updateSummary(form));
+		this.#updateSummary(form);
+	}
+
+	#updateSummary(form) {
+		const statistics = {};
+		for (const { key } of NPC_RELATIONSHIP_STATISTICS) {
+			statistics[key] = Number(form.elements.namedItem(`relationshipStatistics.${key}`)?.value) || 0;
+		}
+		const rank = getRelationshipRank(statistics);
+		const adjustment = getRelationshipLevelAdjustment(rank);
+		const rankOutput = form.querySelector("[data-relationship-rank]");
+		if (rankOutput) rankOutput.textContent = Number(rank.toFixed(2)).toString();
+		form.querySelectorAll("[data-relationship-level-adjustment]").forEach(output => {
+			output.textContent = String(adjustment);
+		});
+	}
+
+	async #save(form) {
+		if (!game.user?.isGM || !isNpcActor(this.actor)) return;
+		const statistics = {};
+		for (const { key, label } of NPC_RELATIONSHIP_STATISTICS) {
+			const value = Number(form.elements.namedItem(`relationshipStatistics.${key}`)?.value);
+			if (!Number.isSafeInteger(value)) {
+				ui.notifications.warn(`${label} must be a whole number.`);
+				return;
+			}
+			statistics[key] = value;
+		}
+		const announce = form.elements.namedItem("announce")?.checked === true;
+		const reason = String(form.elements.namedItem("reason")?.value ?? "").trim();
+		const previous = getRelationshipStatistics(
+			foundry.utils.getProperty(this.actor, NPC_CONFIGURATION_PATH) ?? {}
+		);
+		const saved = await new NpcConfigurationApplication(this.actor)
+			.adjustRelationshipStatistics(statistics);
+		if (saved !== true) return;
+		if (announce) {
+			try {
+				await announceNpcRelationshipAdjustment(this.actor, previous, statistics, reason);
+			} catch (error) {
+				console.error(`${MODULE_ID} | Failed to announce relationship adjustment`, error);
+				ui.notifications.error(`Failed to post the relationship announcement for ${this.actor.name}. See the console for details.`);
+			}
+		}
+		this.close();
 	}
 }
 

@@ -352,6 +352,12 @@ function createBurstFireHudIcon() {
 }
 
 function formatHudBurstFireLabel(root, actor) {
+	// The burst-fire pass below is the expensive part (alt-usage lookups and
+	// nested button queries per strike). Most actors have no burst-fire
+	// usages, so skip it entirely — the area-strike hiding still needs the
+	// outer loop and runs regardless.
+	const hasBurstFireUsage = actor.system?.actions?.some(action =>
+		action?.altUsages?.some(usage => usage?.type === "burst-fire" || usage?.type === "auto-fire"));
 	for (const strikeElement of root.querySelectorAll(".item.attack[data-index][data-item-id]")) {
 		const strike = actor.system?.actions?.find(action => action.item?.id === strikeElement.dataset.itemId);
 		if (!strike) continue;
@@ -361,6 +367,9 @@ function formatHudBurstFireLabel(root, actor) {
 			"vurs-area-strike-hidden",
 			!isPrepared && Boolean(getAutomaticAreaCollateralTrait(strike.item))
 		);
+		// Automatic strikes get a synthetic burst-fire button even without a
+		// burst-fire alt usage, so they must pass the gate too.
+		if (!hasBurstFireUsage && !isAutomaticStrike(strike)) continue;
 
 		const autoFireIndex = strike.altUsages?.findIndex(usage => usage.type === "auto-fire") ?? -1;
 		const burstFireIndex = strike.altUsages?.findIndex(usage => usage.type === "burst-fire") ?? -1;
