@@ -1336,7 +1336,9 @@ function getNpcPlayResourceDerivedFormula(actor, resourceKey) {
 	const skill = resourceSkills[resourceKey];
 	if (!skill) return "No derived maximum";
 	const skillIsVisible = actor.system?.skills?.[skill]?.visible === true;
-	if (!skillIsVisible && !(agnostic && resourceKey === "actionPoints")) {
+	// Hidden skills only block derivation for Agnostic NPCs; Full VURS NPCs
+	// derive maxima from stats regardless of proficiency.
+	if (agnostic && !skillIsVisible && resourceKey !== "actionPoints") {
 		return "No derived maximum while the associated skill is hidden";
 	}
 
@@ -1703,15 +1705,36 @@ function formatScale(value) {
 function scaleDamageFormula(formula, bonusDice, bonusDamage, includeDice) {
 	let scaled = String(formula ?? "").trim();
 	if (!scaled) return scaled;
-	const die = scaled.match(/(\d*)d(\d+)/i);
-	if (includeDice && bonusDice > 0 && die) {
-		scaled += ` + ${bonusDice}d${die[2]}`;
-	} else if (includeDice && bonusDice < 0 && die) {
-		const adjustedDice = Math.max(0, Number(die[1] || 1) + bonusDice);
-		scaled = scaled.replace(die[0], `${adjustedDice}d${die[2]}`);
+	// PF2e parses NPC damage formulas term-by-term but keeps only the first
+	// dice term and first modifier term, so bonuses must be merged into those
+	// terms in place — appended terms would be silently dropped.
+	if (includeDice && bonusDice) {
+		const die = scaled.match(/(\d*)d(\d+)/i);
+		if (die) {
+			const next = Math.max(0, Number(die[1] || 1) + bonusDice);
+			scaled = scaled.replace(die[0], `${next}d${die[2]}`);
+		}
 	}
-	if (bonusDamage > 0) scaled += ` + ${formatScale(bonusDamage)}`;
-	else if (bonusDamage < 0) scaled += ` - ${formatScale(Math.abs(bonusDamage))}`;
+	if (bonusDamage) {
+		const modifierPattern = /([+-])\s*(\d+(?:\.\d+)?)/g;
+		let modifier = null;
+		for (const match of scaled.matchAll(modifierPattern)) {
+			const rest = scaled.slice(match.index + match[0].length);
+			if (/^\s*d/i.test(rest)) continue;
+			modifier = match;
+			break;
+		}
+		if (modifier) {
+			const current = (modifier[1] === "-" ? -1 : 1) * Number(modifier[2]);
+			const next = current + bonusDamage;
+			const sign = next < 0 ? "-" : "+";
+			scaled = `${scaled.slice(0, modifier.index)}${sign} ${formatScale(Math.abs(next))}${scaled.slice(modifier.index + modifier[0].length)}`;
+		} else {
+			const tag = /\[[a-z][a-z-]*\]\s*$/i.exec(scaled);
+			const insertAt = tag ? tag.index : scaled.length;
+			scaled = `${scaled.slice(0, insertAt)} ${bonusDamage > 0 ? "+" : "-"} ${formatScale(Math.abs(bonusDamage))}${scaled.slice(insertAt)}`;
+		}
+	}
 	return scaled;
 }
 
@@ -1884,6 +1907,16 @@ function applyNpcGeneratedDamageAdjustment(formula, adjustment) {
 	return scaled;
 }
 
+// PF2e derives an NPC lore skill's system.skills entry from the embedded lore
+// item's system.mod.value on every prepare (LorePF2e.prepareActorData), so the
+// item — not the actor's skills map — is what must be scaled.
+function getLoreSkillSlug(source = {}) {
+	const raw = source.slug ?? source.name;
+	if (!raw) return null;
+	const slug = String(raw).slugify({ strict: true });
+	return /\blore\b/.test(slug) ? slug : `${slug}-lore`;
+}
+
 function getItemAdjustmentData(itemSource, level, addedLevels, scaling, context = {}) {
 	const adjustments = {};
 	const damageBonusScale = getScalingMultiplier(scaling, "damageBonus", "damage", 1.4);
@@ -2024,6 +2057,20 @@ function getItemAdjustmentData(itemSource, level, addedLevels, scaling, context 
 						getScalingMultiplier(scaling, scaleKey, "spellcasting", 1.35)
 					);
 			}
+		}
+	} else if (itemSource.type === "lore") {
+		if (readFiniteNumber(itemSource.system?.mod?.value) !== null) {
+			const loreSlug = getLoreSkillSlug(itemSource);
+			adjustments["system.mod.value"] = getLevelScalingAdjustment(
+				level,
+				addedLevels,
+				getScalingMultiplier(
+					scaling,
+					loreSlug ? `skill_${loreSlug}` : "skills",
+					"skills",
+					1.4
+				)
+			);
 		}
 	}
 	return adjustments;
@@ -2175,6 +2222,11 @@ function calculateActorAdjustments(originalSystem, effectiveLevel, addedLevels, 
 		}
 	}
 	for (const [slug, skill] of Object.entries(originalSystem.skills ?? {})) {
+		// Lore skill bases are derived from the embedded lore item's
+		// system.mod.value on every prepare, so they scale through the item
+		// adjustment path instead — an actor-level base write would be
+		// overwritten immediately.
+		if (skill?.lore === true || slug.endsWith("-lore")) continue;
 		if (readFiniteNumber(skill?.base) !== null) {
 			const scalingKey = `skill_${slug}`;
 			adjustments[`skills.${slug}.base`] = getLevelScalingAdjustment(
@@ -2778,7 +2830,12 @@ class NpcConfigurationApplication extends foundry.applications.api.HandlebarsApp
 					item.flags?.vurs?.npcConfiguration?.originalData?.system,
 					legacyItemData
 				);
-				const itemSource = { type: item.type, system: originalItemSystem };
+				const itemSource = {
+				type: item.type,
+				system: originalItemSystem,
+				slug: item.slug,
+				name: item.name
+			};
 				const isLinkedWeaponAttack = item.type === "melee" &&
 					Boolean(item.linkedWeapon) &&
 					!isGeneratedNpcWeapon(item.linkedWeapon);
@@ -3393,7 +3450,12 @@ Hooks.on("preCreateItem", (item, data, options = {}) => {
 	const totalLevelBonus = addedLevels + relationshipLevelAdjustment;
 	const effectiveLevel = baseLevel + totalLevelBonus;
 	const adjustments = getItemAdjustmentData(
-		{ type: data.type ?? item.type, system: originalSystem },
+		{
+			type: data.type ?? item.type,
+			system: originalSystem,
+			slug: item.slug,
+			name: item.name ?? data.name
+		},
 		effectiveLevel,
 		totalLevelBonus,
 		configuration.scaling,
@@ -3404,4 +3466,58 @@ Hooks.on("preCreateItem", (item, data, options = {}) => {
 	foundry.utils.setProperty(data, "system", applyItemAdjustments(originalSystem, adjustments));
 	foundry.utils.setProperty(data, "flags.vurs.npcConfiguration.originalData.system", originalSystem);
 	foundry.utils.setProperty(data, "flags.vurs.npcConfiguration.adjustments", adjustments);
+});
+
+const RUNE_PROPERTY_PATH = "system.runes.property";
+const RUNE_PROPERTY_INDEXED = /^system\.runes\.property\.\d+$/;
+
+function isValidRuneSlug(value) {
+	return typeof value === "string" && value.trim().length > 0;
+}
+
+// PF2e's rune-slot UI can persist "" entries in system.runes.property, which
+// crashes strike preparation (the property-rune lookup has no empty-key
+// fallback). Strip empty/non-string slugs before they reach the data model.
+// Handles both the consolidated array form and indexed system.runes.property.N
+// writes.
+function sanitizeNpcRuneProperties(item, container) {
+	const direct = foundry.utils.getProperty(container, RUNE_PROPERTY_PATH);
+	if (Array.isArray(direct) && direct.some(value => !isValidRuneSlug(value))) {
+		foundry.utils.setProperty(
+			container,
+			RUNE_PROPERTY_PATH,
+			direct.filter(isValidRuneSlug)
+		);
+	}
+	const flat = foundry.utils.flattenObject(container);
+	const indexedPaths = Object.keys(flat).filter(path => RUNE_PROPERTY_INDEXED.test(path));
+	if (!indexedPaths.length) return;
+	const base = [...(foundry.utils.getProperty(container, RUNE_PROPERTY_PATH)
+		?? item?._source?.system?.runes?.property
+		?? [])];
+	for (const path of indexedPaths) {
+		base[Number(path.split(".").pop())] = flat[path];
+	}
+	const cleaned = base.filter(isValidRuneSlug);
+	for (const path of indexedPaths) {
+		if (Object.hasOwn(container, path)) {
+			delete container[path];
+			continue;
+		}
+		const parts = path.split(".");
+		let node = container;
+		for (const part of parts.slice(0, -1)) node = node?.[part];
+		if (node && typeof node === "object") delete node[parts.at(-1)];
+	}
+	foundry.utils.setProperty(container, RUNE_PROPERTY_PATH, cleaned);
+}
+
+Hooks.on("preUpdateItem", (item, changes) => {
+	if (!isNpcActor(item.parent)) return;
+	sanitizeNpcRuneProperties(item, changes);
+});
+
+Hooks.on("preCreateItem", (item, data) => {
+	if (!isNpcActor(item.parent)) return;
+	sanitizeNpcRuneProperties(item, data);
 });

@@ -1148,6 +1148,9 @@ function isNpcPlayResourceVisible(actor, resourceKey) {
 	};
 	const skillSlug = associatedSkills[resourceKey];
 	if (!skillSlug) return true;
+	// Full VURS NPCs derive maxima from stats regardless of skill training;
+	// the visibility gate is an Agnostic-mode rule.
+	if (actorUsesVursSystem(actor) && !actorUsesAgnosticVurs(actor)) return true;
 	return actor.system?.skills?.[skillSlug]?.visible === true;
 }
 
@@ -1189,7 +1192,9 @@ function getFullVursDefaultMax(actor, resourceKey) {
 	const usesNpcSkillModifiers = isNpcActor(actor);
 	const skillRank = (slug, ignoreVisibility = false) => {
 		const skill = system?.skills?.[slug];
-		if (isNpcActor(actor) && !ignoreVisibility && skill?.visible !== true) return undefined;
+		// Only Agnostic NPCs require a visible (trained) skill; Full VURS NPCs
+		// derive from the skill modifier regardless of proficiency.
+		if (isNpcActor(actor) && actorUsesAgnosticVurs(actor) && !ignoreVisibility && skill?.visible !== true) return undefined;
 		if (usesNpcSkillModifiers) {
 			return skill ? Math.floor(finiteResourceNumber(skill.mod) / 7) : undefined;
 		}
@@ -2155,8 +2160,8 @@ async function updatePlayResourceMaxDefaults(actor) {
 				&& (
 					finiteResourceNumber(resource.max) === 0 ||
 					(isNpcActor(actor) &&
-						finiteResourceNumber(resource.max) === 3 &&
-						finiteResourceNumber(defaultMax) > 3)
+						finiteResourceNumber(resource.max) <= 3 &&
+						finiteResourceNumber(defaultMax) > finiteResourceNumber(resource.max))
 				)
 				&& finiteResourceNumber(defaultMax) > 0;
 			const maxReduction = resource.maxReduction === undefined || resource.maxReduction === null || resource.maxReduction === ""
