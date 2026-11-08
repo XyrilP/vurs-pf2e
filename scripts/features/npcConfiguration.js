@@ -588,7 +588,7 @@ async function syncFollowerPlayerOwnership(actor) {
 	if (activeControl) return;
 
 	if (controlState && !activeControl) {
-		ownershipUpdates["flags.vurs.-=followerControl"] = null;
+		ownershipUpdates[FOLLOWER_CONTROL_PATH] = new foundry.data.operators.ForcedDeletion();
 	}
 
 	if (grantOwnership) {
@@ -712,7 +712,7 @@ async function handleFollowerControlRequest(tokenUuid, action) {
 				}, { render: false, vursFollowerControlUpdate: true });
 			} else {
 				await actor.update({
-					"flags.vurs.-=followerControl": null
+					[FOLLOWER_CONTROL_PATH]: new foundry.data.operators.ForcedDeletion()
 				}, { render: false, vursFollowerControlUpdate: true });
 				await syncFollowerPlayerOwnership(actor);
 			}
@@ -732,7 +732,7 @@ async function handleFollowerControlRequest(tokenUuid, action) {
 			controlState.tokenUuids.length > 0;
 		if (controlState.userId && !activeController) {
 			await actor.update({
-				"flags.vurs.-=followerControl": null
+				[FOLLOWER_CONTROL_PATH]: new foundry.data.operators.ForcedDeletion()
 			}, { render: false, vursFollowerControlUpdate: true });
 			controlState = {};
 		}
@@ -1264,7 +1264,7 @@ async function releaseFollowerClaimsForUser(userId) {
 		if (foundry.utils.getProperty(actor, `${FOLLOWER_CONTROL_PATH}.userId`) !== userId) continue;
 		try {
 			await queueFollowerActorOperation(actor, async () => {
-				await actor.update({ "flags.vurs.-=followerControl": null }, {
+				await actor.update({ [FOLLOWER_CONTROL_PATH]: new foundry.data.operators.ForcedDeletion() }, {
 					render: false,
 					vursFollowerControlUpdate: true
 				});
@@ -2250,7 +2250,7 @@ function buildLinkedAttackUpdate(item, generatedData) {
 		}
 	}
 	for (const [key] of currentDamageRolls.slice(generatedDamageRolls.length)) {
-		update[`system.damageRolls.-=${key}`] = null;
+		update[`system.damageRolls.${key}`] = new foundry.data.operators.ForcedDeletion();
 	}
 	if (item.flags?.pf2e?.linkedWeapon !== generatedData.flags?.pf2e?.linkedWeapon) {
 		update["flags.pf2e.linkedWeapon"] = generatedData.flags?.pf2e?.linkedWeapon;

@@ -1,4 +1,5 @@
 import { actorUsesAgnosticVurs, actorUsesVursSystem } from "./systemModes.js";
+import { actorHasStaggeredCondition } from "./staggeredTurns.js";
 import { evaluateNpcPlayResourceMaxFormula, getNpcPlayResourceMaxFormula } from "./npcConfiguration.js";
 
 const PLAY_RESOURCES_PATH = "flags.vurs.playResources";
@@ -73,7 +74,10 @@ Hooks.on("preDeleteCombat", combat => {
 Hooks.on("updateCombat", (combat, changes) => {
 	if (!game.user?.isGM || !combat.started || (changes.turn === undefined && changes.round === undefined)) return;
 	const combatant = combat.combatant;
-	if (combatant?.actor) void regenerateActorAtTurnStart(combatant.actor);
+	// Actors starting their turn Staggered do not recover Play Resources.
+	if (combatant?.actor && !actorHasStaggeredCondition(combatant.actor)) {
+		void regenerateActorAtTurnStart(combatant.actor);
+	}
 });
 
 function getPlayResourceRenderSignature(actor) {

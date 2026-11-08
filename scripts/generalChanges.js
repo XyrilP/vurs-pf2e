@@ -13,6 +13,29 @@ import {
 } from "./features/playResources.js";
 import "./features/pf2eHud.js";
 import {
+	getVursBaseMaxHp,
+	getVursMaxHpReduction,
+	getVursStoredMaxHpReduction
+} from "./features/vursHp.js";
+import {
+	areDisabledFeaturesEnforced,
+	getBrokenConditionFlag,
+	getDragonblightDamageSources,
+	getDragonblightDamageTypes,
+	getDragonblightDamageTypesFromValue,
+	hasDragonblightActionTrait,
+	hasDragonblightDamageTraitInValue,
+	hasDragonblightDamageTypeInValue,
+	isAcquisitionGatedItem,
+	isDragonblightStrikeAffected,
+	isDragonblightTrait,
+	itemIgnoresBroken,
+	ruleEnablesBroken,
+	ruleEnablesVursCondition,
+	setConditionButtonDisabled,
+	setConditionDisabled
+} from "./features/disableConditions.js";
+import {
 	addNpcConfigurationButton,
 	addNpcPrepareDerivedDataHandler,
 	renderNpcRelationshipStatistics
@@ -60,41 +83,7 @@ import {
 } from "./features/systemModes.js";
 
 const MODULE_ID = "vurs-pf2e";
-const DRAGONBLIGHT_DAMAGE_TYPES = Object.freeze([
-	"acid",
-	"cold",
-	"electricity",
-	"fire",
-	"sonic",
-	"dragon",
-	"vurs-magic"
-]);
-const DRAGONBLIGHT_ELEMENTAL_TRAITS = Object.freeze([
-	"acid",
-	"cold",
-	"electricity",
-	"fire",
-	"sonic",
-	"air",
-	"earth",
-	"metal",
-	"water",
-	"wood"
-]);
-const DRAGONBLIGHT_MAGICAL_TRAITS = Object.freeze([
-	"magical",
-	"arcane",
-	"divine",
-	"occult",
-	"primal"
-]);
 const DRAGONBLIGHT_DAMAGE_SOURCE_OPTION = "vurs:dragonblight-damage-source";
-let dragonblightDamageTypeCache = null;
-const DISABLED_FEATURE_ENFORCEMENT_SETTINGS = Object.freeze({
-	default: "enforceDisabledFeaturesInDefault",
-	vurs: "enforceDisabledFeaturesInVurs",
-	agnostic: "enforceDisabledFeaturesInAgnostic"
-});
 const VURS_UNDO_ACTIVE = Symbol("vurs-pf2e.undoDamageActive");
 const VURS_IWR_TEST_PATCH = Symbol("vurs-pf2e.iwrTestPatch");
 const VURS_IWR_INSTANCE_TEST_PATCH = Symbol("vurs-pf2e.iwrInstanceTestPatch");
@@ -475,19 +464,6 @@ function isSupportedVursActor(actor) {
 	);
 }
 
-function areDisabledFeaturesEnforced() {
-	const settings = globalThis.game?.settings;
-	const mode = getSystemMode();
-	const key = mode === "vurs"
-		? DISABLED_FEATURE_ENFORCEMENT_SETTINGS.vurs
-		: isAgnosticVursMode(mode)
-			? DISABLED_FEATURE_ENFORCEMENT_SETTINGS.agnostic
-			: DISABLED_FEATURE_ENFORCEMENT_SETTINGS.default;
-	const registration = `${MODULE_ID}.${key}`;
-	if (!settings?.settings?.has?.(registration)) return true;
-	return settings.get(MODULE_ID, key) !== false;
-}
-
 function updateDisabledFeaturesPresentation() {
 	globalThis.document?.body?.classList.toggle("vurs-disabled-features-unenforced", !areDisabledFeaturesEnforced());
 }
@@ -728,7 +704,7 @@ Hooks.on("preUpdateItem", (item, changes) => {
 	if (changes.flags?.vurs) delete changes.flags.vurs.playCost;
 	changes.flags ??= {};
 	changes.flags.vurs ??= {};
-	changes.flags.vurs["-=playCost"] = null;
+	changes.flags.vurs.playCost = new foundry.data.operators.ForcedDeletion();
 });
 Hooks.on("renderApplication", (app, html) => {
 	if (app?.actor || app?.document?.documentName === "Actor" || app?.object?.documentName === "Actor") return;
@@ -1071,19 +1047,6 @@ function applyDragonblightState(root, actor) {
 	}
 }
 
-function isDragonblightStrikeAffected(item, action, damageTypes) {
-	const mainDamageSources = [
-		foundry.utils.getProperty(item, "system.damage"),
-		action?.damage,
-		action?.damageRoll,
-		{ damageType: action?.damageType }
-	];
-	return mainDamageSources.some(source =>
-		hasDragonblightDamageTypeInValue(source, damageTypes) ||
-		hasDragonblightDamageTraitInValue(source)
-	);
-}
-
 function isDragonblightAffected(item, action, element, damageTypes) {
 	const itemTraits = foundry.utils.getProperty(item, "system.traits.value");
 	const actionTraits = action?.traits?.value ?? action?.traits;
@@ -1096,80 +1059,6 @@ function isDragonblightAffected(item, action, element, damageTypes) {
 		damageTypes
 	);
 	return hasAffectedTrait || hasAffectedDamage;
-}
-
-function getDragonblightDamageSources(system, action) {
-	return [
-		system?.damage,
-		system?.damageRolls,
-		system?.damageType,
-		system?.rules,
-		action?.damage,
-		{ damageType: action?.damageType }
-	];
-}
-
-function hasDragonblightActionTrait(traits) {
-	if (!Array.isArray(traits) && !(traits instanceof Set)) return false;
-	for (const trait of traits) {
-		const slug = typeof trait === "string" ? trait : trait?.slug;
-		if (DRAGONBLIGHT_ELEMENTAL_TRAITS.includes(slug) ||
-			DRAGONBLIGHT_MAGICAL_TRAITS.includes(slug)) {
-			return true;
-		}
-	}
-	return false;
-}
-
-function getDragonblightDamageTypes() {
-	const systemConfig = CONFIG[game.system.id.toUpperCase()] ?? CONFIG.PF2E;
-	if (dragonblightDamageTypeCache && dragonblightDamageTypeCache.systemConfig === systemConfig) {
-		return dragonblightDamageTypeCache.types;
-	}
-
-	const configuredTypes = systemConfig?.damageTypes;
-	const types = new Set(configuredTypes
-		? DRAGONBLIGHT_DAMAGE_TYPES.filter(type => Object.hasOwn(configuredTypes, type))
-		: DRAGONBLIGHT_DAMAGE_TYPES);
-	dragonblightDamageTypeCache = { systemConfig, types };
-	return types;
-}
-
-function hasDragonblightDamageTypeInValue(value, damageTypes) {
-	if (Array.isArray(value)) {
-		return value.some(entry => hasDragonblightDamageTypeInValue(entry, damageTypes));
-	}
-	if (!value || typeof value !== "object") return false;
-
-	return Object.entries(value).some(([key, entry]) =>
-		(["damageType", "damage-type"].includes(key) &&
-			typeof entry === "string" &&
-			(damageTypes.has(entry) || isDragonblightTrait(entry))) ||
-		(entry && typeof entry === "object" &&
-			hasDragonblightDamageTypeInValue(entry, damageTypes))
-	);
-}
-
-function getDragonblightDamageTypesFromValue(value, damageTypes, result = new Set()) {
-	if (typeof value === "string") return result;
-	if (Array.isArray(value)) {
-		for (const entry of value) getDragonblightDamageTypesFromValue(entry, damageTypes, result);
-		return result;
-	}
-	if (!value || typeof value !== "object") return result;
-
-	for (const [key, entry] of Object.entries(value)) {
-		if (
-			["damageType", "damage-type"].includes(key) &&
-			typeof entry === "string" &&
-			damageTypes.has(entry)
-		) {
-			result.add(entry);
-		} else if (entry && typeof entry === "object") {
-			getDragonblightDamageTypesFromValue(entry, damageTypes, result);
-		}
-	}
-	return result;
 }
 
 function applyMutedState(root, actor) {
@@ -1245,19 +1134,6 @@ function applyMutedState(root, actor) {
 			setConditionDisabled(button, "muted", disableItems);
 			setConditionDisabled(button, "cursed", isCursed);
 		}
-	}
-}
-
-function setConditionButtonDisabled(button, isDisabled) {
-	isDisabled = isDisabled && areDisabledFeaturesEnforced();
-	if (isDisabled) {
-		if (!Object.hasOwn(button.dataset, "vursOriginalDisabled")) {
-			button.dataset.vursOriginalDisabled = String(button.disabled);
-		}
-		button.disabled = true;
-	} else if (Object.hasOwn(button.dataset, "vursOriginalDisabled")) {
-		button.disabled = button.dataset.vursOriginalDisabled === "true";
-		delete button.dataset.vursOriginalDisabled;
 	}
 }
 
@@ -1388,9 +1264,8 @@ function applyParalyzedState(root, actor) {
 }
 
 function applyActingStatusState(root, actor, condition) {
-	const isActive = [1, "1", true].includes(
-		foundry.utils.getProperty(actor, `flags.vurs.conditions.is${condition[0].toUpperCase()}${condition.slice(1)}`)
-	);
+	const flagValue = foundry.utils.getProperty(actor, `flags.vurs.conditions.is${condition[0].toUpperCase()}${condition.slice(1)}`);
+	const isActive = [1, "1", true].includes(flagValue) || (typeof flagValue === "number" && flagValue > 0);
 	applyMovementConditionToSpeed(root, actor, condition, isActive);
 
 	if (actor.isOfType?.("character") || actor.type === "character") {
@@ -1498,24 +1373,6 @@ function refreshCooldownChargeUpState(actor) {
 		const root = app?.element instanceof HTMLElement ? app.element : app?.element?.[0];
 		if (root) applyCooldownChargeUpState(root, actor);
 	}
-}
-
-function itemIgnoresBroken(item) {
-	const otherTags = [
-		foundry.utils.getProperty(item, "_source.system.traits.otherTags"),
-		foundry.utils.getProperty(item, "system.traits.otherTags")
-	].filter(Array.isArray).flat();
-	return otherTags.some(tag =>
-		typeof tag === "string" &&
-		tag.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "") === "immunity-to-broken"
-	);
-}
-
-function getBrokenConditionFlag(actor) {
-	const sourceFlag = foundry.utils.getProperty(actor, "_source.flags.vurs.conditions.isBroken");
-	if ([1, "1", true].includes(sourceFlag)) return sourceFlag;
-	if (actor?.rules?.some(rule => ruleEnablesBroken(rule, actor))) return 1;
-	return sourceFlag ?? foundry.utils.getProperty(actor, "flags.vurs.conditions.isBroken");
 }
 
 function getActionAndSpellItems(root, actor) {
@@ -1635,60 +1492,6 @@ function installMutedItemRuleSuppression() {
 		};
 		Object.defineProperty(prototype, VURS_MUTED_ITEM_RULE_PATCH, { value: true });
 	}
-}
-
-function isAcquisitionGatedItem(item) {
-	const visited = new Set();
-	let current = item;
-
-	while (current && !visited.has(current.id)) {
-		visited.add(current.id);
-		if (
-			current.isOfType?.("feat") &&
-			current.system.prerequisites?.value?.some(prerequisite =>
-				/\b(?:trained|expert|master|legendary)\s+in\s+acquisition\b/i.test(prerequisite.value ?? "")
-			)
-		) {
-			return true;
-		}
-
-		current = current.actor?.items?.get(current.flags?.pf2e?.grantedBy?.id) ?? null;
-	}
-
-	return false;
-}
-
-function ruleEnablesBroken(rule, actor) {
-	return ruleEnablesVursCondition(rule, actor, "isBroken");
-}
-
-function ruleEnablesVursCondition(rule, actor, condition) {
-	if (
-		rule.key !== "ActiveEffectLike" ||
-		rule.path !== `flags.vurs.conditions.${condition}` ||
-		!["applyAEs", "beforeDerived"].includes(rule.phase) ||
-		!["override", "add", "upgrade"].includes(rule.mode) ||
-		![1, "1", true].includes(rule.value) ||
-		rule.ignored ||
-		typeof rule.test !== "function"
-	) {
-		return false;
-	}
-
-	return rule.test(new Set(actor.getRollOptions(rule.testDomains)));
-}
-
-function setConditionDisabled(element, condition, isDisabled, disableInteraction = true) {
-	if (!element) return;
-	element.dataset[`vurs${condition[0].toUpperCase()}${condition.slice(1)}`] = String(isDisabled);
-	const activeConditions = ["Cursed", "Muted", "Disarmed", "Silenced", "Dragonblight", "Confused", "Fatigued", "Rooted", "Immobilized", "Incapacitated", "Paralyzed", "Petrified", "Prone", "Restrained", "Staggered", "Stunned", "Unconscious", "CantAct", "Broken", "Cooldown", "ChargeUp"]
-		.filter(name => element.dataset[`vurs${name}`] === "true")
-		.map(name => name === "CantAct" ? "Can't Act" : name === "ChargeUp" ? "Charge Up" : name);
-	element.dataset.vursConditionLabel = activeConditions.join(" · ");
-	const disabled = areDisabledFeaturesEnforced() && disableInteraction && activeConditions.length > 0;
-	element.inert = disabled;
-	if (disabled) element.setAttribute("aria-disabled", "true");
-	else element.removeAttribute("aria-disabled");
 }
 
 function replaceVursPlayCostTokensOnActorSheet(root, actor) {
@@ -2362,8 +2165,11 @@ function refreshCanvasActors() {
 	}
 	// Derived VURS HP is applied during actor preparation. That preparation
 	// does not emit an actor update, so token bars can retain their pre-VURS
-	// maximum until each active token is explicitly refreshed.
-	for (const token of tokens) token.refresh?.();
+	// maximum until each active token is explicitly refreshed. Only the bars
+	// need it — a full token.refresh() also propagates refreshSize, which can
+	// race the async turn-marker texture load during encounters and crash
+	// Token._refreshSize on this.turnMarker.mesh.
+	for (const token of tokens) token.renderFlags?.set?.({ refreshBars: true });
 }
 
 function installActorPreparationSupport(reprepare = true) {
@@ -2413,7 +2219,7 @@ function installVursPlayCostRefreshPatch() {
 		const playCost = normalizeVursPlayCost(foundry.utils.getProperty(sourceItem, "flags.vurs.playCost"));
 		const update = playCost
 			? { "flags.vurs.playCost": playCost }
-			: { "flags.vurs.-=playCost": null };
+			: { "flags.vurs.playCost": new foundry.data.operators.ForcedDeletion() };
 
 		if (options.update === false) this.updateSource(update);
 		else {
@@ -3096,48 +2902,8 @@ function addSavingThrowDomains(actor, slug) {
 	}
 }
 
-// The raw stored max-HP reduction without the prepared-totalModifier cap.
-// During prepareDerivedData, hp.totalModifier is still the native
-// Constitution-based value for Str-based actors (the Strength replacement in
-// applyVursHitPoints has not run yet), so capping there would clamp the
-// reduction to the wrong base. applyVursHitPoints floors the result at 0,
-// making the uncapped value equivalent for preparation.
-function getVursStoredMaxHpReduction(actor) {
-	const candidates = [
-		foundry.utils.getProperty(actor, "_source.flags.vurs.hp.maxReduction"),
-		foundry.utils.getProperty(actor, "document._source.flags.vurs.hp.maxReduction"),
-		foundry.utils.getProperty(actor, "flags.vurs.hp.maxReduction"),
-		// Read earlier module-scoped values during the one-time migration.
-		foundry.utils.getProperty(actor, `_source.flags.${MODULE_ID}.hp.maxReduction`),
-		foundry.utils.getProperty(actor, `flags.${MODULE_ID}.hp.maxReduction`),
-		foundry.utils.getProperty(actor, `flags.${MODULE_ID}.hpReduction`)
-	];
-	const value = candidates.find(candidate => candidate !== undefined);
-	const reduction = Number(value);
-	return Number.isFinite(reduction) ? Math.trunc(reduction) : 0;
-}
-
-function getVursMaxHpReduction(actor) {
-	// The public flags object can lag behind a document update in some PF2e
-	// preparation flows. Prefer persisted source data so partial damage reverts
-	// immediately expose the restored reduction value to preparation and sheets.
-	const normalized = getVursStoredMaxHpReduction(actor);
-	if (normalized <= 0) return normalized;
-	const preparedBaseMax = Number(actor?.system?.attributes?.hp?.totalModifier);
-	return Number.isFinite(preparedBaseMax) ? Math.min(normalized, Math.max(0, preparedBaseMax)) : normalized;
-}
-
 function getVursReductionUpdates(value) {
 	return { "flags.vurs.hp.maxReduction": value };
-}
-
-function getVursBaseMaxHp(actor) {
-	const hp = actor?.system?.attributes?.hp;
-	const preparedMaximum = Number(hp?.totalModifier);
-	if (Number.isFinite(preparedMaximum)) return Math.max(0, preparedMaximum);
-	const maximum = Number(hp?.max);
-	const adjustment = getVursMaxHpReduction(actor);
-	return Math.max(0, (Number.isFinite(maximum) ? maximum : 0) + adjustment);
 }
 
 function applyActorAbilityDataLabels(actor) {
@@ -3263,14 +3029,14 @@ async function migrateLegacyVursActorFlags() {
 		if (scopeContainsOnlyLegacyValues) {
 			// No other actor features use this module scope, so remove the stale
 			// scope itself after copying its values into flags.vurs.
-			updates[`flags.-=${MODULE_ID}`] = null;
+			updates[`flags.${MODULE_ID}`] = new foundry.data.operators.ForcedDeletion();
 		} else {
 			// Preserve any unrelated module data and delete only migrated fields.
 			for (const key of legacyTopLevelKeys) {
-				if (Object.hasOwn(legacyFlags, key)) updates[`flags.${MODULE_ID}.-=${key}`] = null;
+				if (Object.hasOwn(legacyFlags, key)) updates[`flags.${MODULE_ID}.${key}`] = new foundry.data.operators.ForcedDeletion();
 			}
 			if (legacyHp && Object.hasOwn(legacyHp, "maxReduction")) {
-				updates[`flags.${MODULE_ID}.hp.-=maxReduction`] = null;
+				updates[`flags.${MODULE_ID}.hp.maxReduction`] = new foundry.data.operators.ForcedDeletion();
 			}
 		}
 		try {
@@ -3532,33 +3298,6 @@ function hasDragonblightDamageTraitInOptions(options) {
 			isDragonblightTrait(option.slice(prefix.length))
 		)
 	);
-}
-
-function hasDragonblightDamageTraitInValue(value) {
-	if (Array.isArray(value) || value instanceof Set) {
-		return [...value].some(entry =>
-			(typeof entry === "string" && isDragonblightTrait(entry)) ||
-			(entry && typeof entry === "object" && hasDragonblightDamageTraitInValue(entry))
-		);
-	}
-	if (!value || typeof value !== "object") return false;
-	if (typeof value.slug === "string" && isDragonblightTrait(value.slug)) return true;
-
-	return Object.entries(value).some(([key, entry]) => {
-		if (["trait", "damageType", "damage-type"].includes(key) && typeof entry === "string") {
-			return isDragonblightTrait(entry);
-		}
-		if (key === "traits") {
-			return hasDragonblightDamageTraitInValue(entry);
-		}
-		return entry && typeof entry === "object" &&
-			hasDragonblightDamageTraitInValue(entry);
-	});
-}
-
-function isDragonblightTrait(trait) {
-	return DRAGONBLIGHT_ELEMENTAL_TRAITS.includes(trait) ||
-		DRAGONBLIGHT_MAGICAL_TRAITS.includes(trait);
 }
 
 function installSpecialDamageSelectorPatch() {

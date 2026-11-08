@@ -2,6 +2,8 @@ import { getRateOfFire, handleBurstFireHudClick, isAutomaticStrike } from "./bur
 import { getAutomaticAreaCollateralTrait } from "./collateralDamage.js";
 import { renderVursPlayResourcesHudPanel } from "./playResources.js";
 import { actorUsesVursHpRules } from "./systemModes.js";
+import { getVursBaseMaxHp, getVursMaxHpReduction } from "./vursHp.js";
+import { applyVursHudDisableStates } from "./pf2eHudDisables.js";
 
 const HUD_MODULE_ID = "pf2e-hud";
 const hudRootsWithBurstFireHandlers = new WeakSet();
@@ -14,7 +16,12 @@ function getHudActor(app) {
 		app?.document?.actor,
 		app?.document,
 		app?.object,
-		app?.options?.actor
+		app?.options?.actor,
+		// The actions/spells/feats sidebar is a child ApplicationV2 of the HUD;
+		// its actor lives on the parent app.
+		app?.parent?.actor,
+		app?.parent?.document?.actor,
+		app?.parent?.object
 	].find(actor =>
 		actor?.isOfType?.("character") ||
 		actor?.isOfType?.("npc") ||
@@ -29,6 +36,73 @@ function getHudRoot(app, element) {
 	return root.matches(".pf2e-hud-element")
 		? root
 		: root.querySelector(".pf2e-hud-element");
+}
+
+const hudActorUuidCache = new Map();
+const hudElementApps = new WeakMap();
+
+function actorFromHudUuid(uuid) {
+	if (hudActorUuidCache.has(uuid)) return hudActorUuidCache.get(uuid);
+	const actor = game.actors?.find(candidate => candidate.uuid === uuid) ?? null;
+	if (actor) hudActorUuidCache.set(uuid, actor);
+	return actor;
+}
+
+// Resolve the actor behind any .pf2e-hud-element (main HUDs, sidebar, popups).
+// Falls back to the owning ApplicationV2 instance so elements that never went
+// through our render hook (e.g. a sidebar opened before this module loaded)
+// still resolve via app.parent.actor.
+function resolveHudActor(root) {
+	let actor = hudActors.get(root);
+	if (actor) return actor;
+	const uuid = root?.dataset?.vursHudActorUuid;
+	if (uuid) actor = actorFromHudUuid(uuid);
+	if (!actor) {
+		let app;
+		if (hudElementApps.has(root)) {
+			app = hudElementApps.get(root);
+		} else {
+			for (const candidate of foundry.applications?.instances?.values?.() ?? []) {
+				if (candidate?.element === root || candidate?.element?.contains?.(root)) {
+					app = candidate;
+					break;
+				}
+			}
+			hudElementApps.set(root, app ?? null);
+		}
+		actor = app ? getHudActor(app) : null;
+	}
+	if (actor) {
+		hudActors.set(root, actor);
+		if (root.dataset) root.dataset.vursHudActorUuid = actor.uuid;
+	}
+	return actor;
+}
+
+const hudRootsWithDisableObservers = new WeakSet();
+
+// pf2e-hud swaps sidebar/panel innerHTML without a full renderApplicationV2
+// (sidebar switching, filtering), which would wipe injected state — mirror the
+// sheet's own MutationObserver re-application for those cases.
+function observeHudDisableStates(root) {
+	if (hudRootsWithDisableObservers.has(root)) return;
+	hudRootsWithDisableObservers.add(root);
+	let scheduled = false;
+	const observer = new MutationObserver(() => {
+		if (scheduled) return;
+		scheduled = true;
+		requestAnimationFrame(() => {
+			scheduled = false;
+			if (!root.isConnected) {
+				observer.disconnect();
+				hudRootsWithDisableObservers.delete(root);
+				return;
+			}
+			const actor = resolveHudActor(root);
+			if (actor) applyVursHudDisableStates(root, actor);
+		});
+	});
+	observer.observe(root, { childList: true, subtree: true });
 }
 
 // pf2e-hud clamps its number inputs to [data-min, max] with data-min hardcoded
@@ -107,6 +181,138 @@ function allowNegativeHudHpInput(root) {
 		field.value = String(result);
 		commit(actor, result).catch(() => reset());
 	}, true);
+}
+
+const formatHudMaxAdjustment = adjustment =>
+	adjustment > 0 ? `-${adjustment}` : adjustment < 0 ? `+${Math.abs(adjustment)}` : "";
+
+// Mirrors the actor sheet's addVursMaxHpReductionControl, but targets pf2e-hud's
+// HP section directly: [data-section="hp"] .numbers .max shows the effective
+// hp.max. Scoped to the HP section so stamina (hp.sp) and temp-HP are untouched.
+function addVursHudMaxHpControl(root, actor, retries = 4) {
+	if (!actorUsesVursHpRules(actor) || !actor?.system?.attributes?.hp) return;
+	const section = root.querySelector('[data-section="hp"]');
+	const maxElement = section?.querySelector(".numbers .max") ?? null;
+	if (!section?.isConnected || !maxElement) {
+		if (retries > 0 && root.isConnected) {
+			requestAnimationFrame(() => addVursHudMaxHpControl(root, actor, retries - 1));
+		}
+		return;
+	}
+	if (section.querySelector(".vurs-max-hp-edit")) return;
+	const hp = actor.system.attributes.hp;
+	if (!Number.isFinite(hp?.max)) return;
+
+	const displayedMax = String(hp.max);
+	const currentAdjustment = getVursMaxHpReduction(actor);
+	const valueEditor = document.createElement("span");
+	valueEditor.className = "vurs-max-hp-edit";
+	valueEditor.contentEditable = "true";
+	valueEditor.spellcheck = false;
+	valueEditor.setAttribute("role", "spinbutton");
+	valueEditor.setAttribute("aria-label", "Maximum HP");
+	valueEditor.setAttribute("aria-valuemin", "0");
+	valueEditor.setAttribute("aria-valuenow", displayedMax);
+	valueEditor.title = "Edit maximum HP; use the scroll wheel to adjust it";
+	valueEditor.style.cssText = "cursor:text;outline:none;display:inline-block;min-width:1ch;";
+	valueEditor.textContent = displayedMax;
+	maxElement.style.position ||= "relative";
+	maxElement.replaceChildren(valueEditor);
+	const indicator = document.createElement("span");
+	indicator.className = "vurs-max-hp-reduction-indicator";
+	indicator.setAttribute("aria-label", `Maximum HP adjustment: ${formatHudMaxAdjustment(currentAdjustment) || "none"}`);
+	indicator.textContent = formatHudMaxAdjustment(currentAdjustment);
+	indicator.style.cssText = "position:absolute;top:auto;left:auto;right:-0.35em;bottom:-0.55em;display:block;width:2.2em;padding:0;color:inherit;background:transparent;border:0;border-radius:0;font:inherit;font-size:0.55em;line-height:1.3;text-align:right;white-space:nowrap;z-index:1;pointer-events:none;";
+	maxElement.append(indicator);
+
+	const updateEditIndicator = value => {
+		const effectiveMax = Number(actor.system?.attributes?.hp?.max);
+		const baseMax = getVursBaseMaxHp(actor);
+		const desiredMax = Math.max(0, Number.isFinite(value) ? Math.trunc(value) : effectiveMax || Number(hp.max));
+		const adjustment = baseMax - desiredMax;
+		indicator.textContent = formatHudMaxAdjustment(adjustment);
+		indicator.setAttribute("aria-label", `Maximum HP adjustment: ${formatHudMaxAdjustment(adjustment) || "none"}`);
+		indicator.style.color = adjustment > 0 ? "#ff3b3b" : "inherit";
+		indicator.style.webkitTextStroke = adjustment > 0 ? "0.6px #1a0d0d" : "0";
+		indicator.style.textShadow = adjustment > 0
+			? "-1px -1px 0 #1a0d0d, 1px -1px 0 #1a0d0d, -1px 1px 0 #1a0d0d, 1px 1px 0 #1a0d0d"
+			: "none";
+	};
+	updateEditIndicator(Number(hp.max));
+
+	const showMaximum = () => {
+		const effectiveMax = Number(actor.system?.attributes?.hp?.max);
+		if (Number.isFinite(effectiveMax)) {
+			valueEditor.textContent = String(effectiveMax);
+			valueEditor.setAttribute("aria-valuenow", String(effectiveMax));
+		}
+		updateEditIndicator(effectiveMax);
+	};
+	let cancelEdit = false;
+	valueEditor.addEventListener("focus", () => {
+		cancelEdit = false;
+		const effectiveMax = Number(actor.system?.attributes?.hp?.max);
+		valueEditor.textContent = String(Number.isFinite(effectiveMax) ? effectiveMax : hp.max);
+		const selection = window.getSelection();
+		const range = document.createRange();
+		range.selectNodeContents(valueEditor);
+		selection?.removeAllRanges();
+		selection?.addRange(range);
+		updateEditIndicator(Number(valueEditor.textContent));
+	});
+	valueEditor.addEventListener("input", () => updateEditIndicator(Number(valueEditor.textContent.trim())));
+	valueEditor.addEventListener("wheel", event => {
+		if (document.activeElement !== valueEditor || event.deltaY === 0) return;
+		event.preventDefault();
+		event.stopImmediatePropagation();
+		// The editor always contains the absolute maximum HP. Scrolling changes
+		// that absolute value by one; typing a number sets it directly. The small
+		// indicator shows the resulting signed adjustment.
+		const current = Number(valueEditor.textContent.trim()) || 0;
+		const next = Math.max(0, current + (event.deltaY < 0 ? 1 : -1));
+		valueEditor.textContent = String(next);
+		valueEditor.setAttribute("aria-valuenow", String(next));
+		updateEditIndicator(next);
+		const selection = window.getSelection();
+		const range = document.createRange();
+		range.selectNodeContents(valueEditor);
+		selection?.removeAllRanges();
+		selection?.addRange(range);
+	}, { passive: false });
+	const saveMaximum = async () => {
+		if (cancelEdit) {
+			cancelEdit = false;
+			showMaximum();
+			return;
+		}
+		const effectiveMax = Number(actor.system?.attributes?.hp?.max);
+		const baseMax = getVursBaseMaxHp(actor);
+		const enteredMaximum = Number(valueEditor.textContent.trim());
+		const desiredMax = Math.max(0, Number.isFinite(enteredMaximum) ? Math.trunc(enteredMaximum) : effectiveMax || Number(hp.max));
+		const adjustment = baseMax - desiredMax;
+		valueEditor.textContent = String(desiredMax);
+		valueEditor.setAttribute("aria-valuenow", String(desiredMax));
+		updateEditIndicator(desiredMax);
+		try {
+			await actor.update({ "flags.vurs.hp.maxReduction": adjustment });
+		} catch (error) {
+			console.error(`${HUD_MODULE_ID} | Failed to update VURS maximum HP`, error);
+			ui.notifications?.error("Could not update maximum HP.");
+			showMaximum();
+		}
+	};
+	valueEditor.addEventListener("blur", saveMaximum);
+	valueEditor.addEventListener("keydown", event => {
+		if (event.key === "Enter") {
+			event.preventDefault();
+			valueEditor.blur();
+		} else if (event.key === "Escape") {
+			event.preventDefault();
+			cancelEdit = true;
+			showMaximum();
+			valueEditor.blur();
+		}
+	});
 }
 
 function onHudClick(event, app, root) {
@@ -228,13 +434,15 @@ Hooks.on("renderApplicationV2", (app, element) => {
 	const root = getHudRoot(app, element);
 	if (!root) return;
 
-	const actor = getHudActor(app)
-		?? game.actors?.get(root.dataset.vursHudActorUuid);
+	const actor = resolveHudActor(root);
 	if (actor) {
-		root.dataset.vursHudActorUuid = actor.uuid;
-		hudActors.set(root, actor);
 		formatHudBurstFireLabel(root, actor);
 		allowNegativeHudHpInput(root);
+		requestAnimationFrame(() => {
+			addVursHudMaxHpControl(root, actor);
+			applyVursHudDisableStates(root, actor);
+		});
+		observeHudDisableStates(root);
 	}
 	if (root.id === "pf2e-hud-persistent" || root.id === "pf2e-hud-token") {
 		renderVursPlayResourcesHudPanel(root, actor);
@@ -246,18 +454,23 @@ Hooks.on("renderApplicationV2", (app, element) => {
 });
 
 Hooks.on("updateActor", actor => {
-	for (const root of document.querySelectorAll(".pf2e-hud-element[data-vurs-hud-actor-uuid]")) {
-		if (root.dataset.vursHudActorUuid !== actor.uuid) continue;
-		hudActors.set(root, actor);
-		formatHudBurstFireLabel(root, actor);
+	for (const root of document.querySelectorAll(".pf2e-hud-element")) {
+		const hudActor = resolveHudActor(root);
+		if (hudActor?.uuid !== actor.uuid) continue;
+		formatHudBurstFireLabel(root, hudActor);
 		allowNegativeHudHpInput(root);
+		requestAnimationFrame(() => {
+			addVursHudMaxHpControl(root, hudActor);
+			applyVursHudDisableStates(root, hudActor);
+		});
+		observeHudDisableStates(root);
 		if ((root.id === "pf2e-hud-persistent" || root.id === "pf2e-hud-token") &&
 			!hudRootsWithScheduledRefresh.has(root)) {
 			hudRootsWithScheduledRefresh.add(root);
 			requestAnimationFrame(() => {
 				hudRootsWithScheduledRefresh.delete(root);
 				if (!root.isConnected) return;
-				renderVursPlayResourcesHudPanel(root, actor, { refresh: true });
+				renderVursPlayResourcesHudPanel(root, hudActor, { refresh: true });
 			});
 		}
 	}

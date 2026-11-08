@@ -26,6 +26,9 @@ const SETTING_KEYS = Object.freeze({
   allowPlayersToControlFollowers: "allowPlayersToControlFollowers",
   colorTokenRingsByPlayer: "colorTokenRingsByPlayer",
   downedEffectUuid: "downedEffectUuid",
+  staggeredTurnDelayInDefault: "staggeredTurnDelayInDefault",
+  staggeredTurnDelayInVurs: "staggeredTurnDelayInVurs",
+  staggeredTurnDelayInAgnostic: "staggeredTurnDelayInAgnostic",
   lastAppliedSystemMode: "lastAppliedSystemMode"
 });
 
@@ -109,6 +112,14 @@ const FEATURE_DEFINITIONS = Object.freeze([
     label: "VURS Critical Damage",
     hint: "Add maximum damage to critical-hit damage rolls.",
     defaultSetting: SETTING_KEYS.vursCriticalDamageInDefault
+  },
+  {
+    id: "staggeredTurnDelay",
+    label: "Staggered Turn Delay",
+    hint: "Move a Staggered actor's turn down the turn order by the Staggered value during encounters.",
+    defaultSetting: SETTING_KEYS.staggeredTurnDelayInDefault,
+    vursSetting: SETTING_KEYS.staggeredTurnDelayInVurs,
+    agnosticSetting: SETTING_KEYS.staggeredTurnDelayInAgnostic
   }
 ]);
 
@@ -431,6 +442,7 @@ function registerModuleSettings() {
         config: false,
         type: Boolean,
         default: feature.id === "disabledFeatureEnforcement" ||
+          feature.id === "staggeredTurnDelay" ||
           key === SETTING_KEYS.dicelessInVurs
       });
     }

@@ -322,7 +322,7 @@ export function addMainAttributeBuilderControl(app, root, actor) {
 		try {
 			const update = nextAttribute
 				? { [MAIN_ATTRIBUTE_FLAG]: nextAttribute }
-				: { "flags.vurs.-=mainAttribute": null };
+				: { "flags.vurs.mainAttribute": new foundry.data.operators.ForcedDeletion() };
 			await actor.update(update, { render: false });
 			refreshMainAttributeIndicators(actor);
 			rerenderMainAttributeActorSheet(actor);
