@@ -8,7 +8,10 @@ import { applyVursHudDisableStates } from "./pf2eHudDisables.js";
 const HUD_MODULE_ID = "pf2e-hud";
 const hudRootsWithBurstFireHandlers = new WeakSet();
 const hudRootsWithScheduledRefresh = new WeakSet();
-const hudActors = new WeakMap();
+const hudRootsWithScheduledHudRefresh = new WeakSet();
+// Each injected max-HP editor's indicator updater, so actor updates can refresh
+// the reduction badge without rebuilding the control.
+const hudMaxHpIndicatorUpdaters = new WeakMap();
 
 function getHudActor(app) {
 	return [
@@ -38,44 +41,28 @@ function getHudRoot(app, element) {
 		: root.querySelector(".pf2e-hud-element");
 }
 
-const hudActorUuidCache = new Map();
 const hudElementApps = new WeakMap();
 
-function actorFromHudUuid(uuid) {
-	if (hudActorUuidCache.has(uuid)) return hudActorUuidCache.get(uuid);
-	const actor = game.actors?.find(candidate => candidate.uuid === uuid) ?? null;
-	if (actor) hudActorUuidCache.set(uuid, actor);
-	return actor;
-}
-
 // Resolve the actor behind any .pf2e-hud-element (main HUDs, sidebar, popups).
-// Falls back to the owning ApplicationV2 instance so elements that never went
-// through our render hook (e.g. a sidebar opened before this module loaded)
-// still resolve via app.parent.actor.
+// The owning ApplicationV2 is cached per element, but the actor itself is
+// re-derived on every call — pf2e-hud can reuse a window element for a
+// different actor, so caching the actor goes stale. getHudActor is a cheap
+// property scan, so freshness costs almost nothing.
 function resolveHudActor(root) {
-	let actor = hudActors.get(root);
-	if (actor) return actor;
-	const uuid = root?.dataset?.vursHudActorUuid;
-	if (uuid) actor = actorFromHudUuid(uuid);
-	if (!actor) {
-		let app;
-		if (hudElementApps.has(root)) {
-			app = hudElementApps.get(root);
-		} else {
-			for (const candidate of foundry.applications?.instances?.values?.() ?? []) {
-				if (candidate?.element === root || candidate?.element?.contains?.(root)) {
-					app = candidate;
-					break;
-				}
+	let app = hudElementApps.get(root);
+	if (app === undefined) {
+		for (const candidate of foundry.applications?.instances?.values?.() ?? []) {
+			if (candidate?.element === root || candidate?.element?.contains?.(root)) {
+				app = candidate;
+				break;
 			}
-			hudElementApps.set(root, app ?? null);
 		}
-		actor = app ? getHudActor(app) : null;
+		// Only cache successful lookups — a null result may just mean the app
+		// hasn't registered in instances yet, and caching it would fail forever.
+		if (app) hudElementApps.set(root, app);
 	}
-	if (actor) {
-		hudActors.set(root, actor);
-		if (root.dataset) root.dataset.vursHudActorUuid = actor.uuid;
-	}
+	const actor = app ? getHudActor(app) : null;
+	if (actor && root?.dataset) root.dataset.vursHudActorUuid = actor.uuid;
 	return actor;
 }
 
@@ -99,7 +86,11 @@ function observeHudDisableStates(root) {
 				return;
 			}
 			const actor = resolveHudActor(root);
-			if (actor) applyVursHudDisableStates(root, actor);
+			if (actor) {
+				applyVursHudDisableStates(root, actor);
+				formatHudBurstFireLabel(root, actor);
+				addVursHudMaxHpControl(root, actor);
+			}
 		});
 	});
 	observer.observe(root, { childList: true, subtree: true });
@@ -133,7 +124,7 @@ function allowNegativeHudHpInput(root) {
 	// stale closure committing to the wrong actor. Non-VURS actors return early
 	// WITHOUT intercepting, so pf2e-hud's native [0, max] handler still runs.
 	const actorFor = () => {
-		const actor = hudActors.get(root);
+		const actor = resolveHudActor(root);
 		return actorUsesVursHpRules(actor) ? actor : null;
 	};
 	const commit = (actor, value) => actor.update({ "system.attributes.hp.value": value });
@@ -199,7 +190,23 @@ function addVursHudMaxHpControl(root, actor, retries = 4) {
 		}
 		return;
 	}
-	if (section.querySelector(".vurs-max-hp-edit")) return;
+	const existingEditor = section.querySelector(".vurs-max-hp-edit");
+	if (existingEditor) {
+		// pf2e-hud patches HP values without re-rendering, so the injected
+		// editor survives actor updates — refresh it instead of keeping the
+		// stale text/badge captured at injection time. Skip while focused so an
+		// in-progress edit is never clobbered.
+		if (document.activeElement !== existingEditor) {
+			const liveMax = Number(actor.system?.attributes?.hp?.max);
+			if (Number.isFinite(liveMax)) {
+				const text = String(liveMax);
+				if (existingEditor.textContent !== text) existingEditor.textContent = text;
+				existingEditor.setAttribute("aria-valuenow", text);
+				hudMaxHpIndicatorUpdaters.get(existingEditor)?.(liveMax, actor);
+			}
+		}
+		return;
+	}
 	const hp = actor.system.attributes.hp;
 	if (!Number.isFinite(hp?.max)) return;
 
@@ -216,29 +223,42 @@ function addVursHudMaxHpControl(root, actor, retries = 4) {
 	valueEditor.title = "Edit maximum HP; use the scroll wheel to adjust it";
 	valueEditor.style.cssText = "cursor:text;outline:none;display:inline-block;min-width:1ch;";
 	valueEditor.textContent = displayedMax;
-	maxElement.style.position ||= "relative";
-	maxElement.replaceChildren(valueEditor);
 	const indicator = document.createElement("span");
 	indicator.className = "vurs-max-hp-reduction-indicator";
 	indicator.setAttribute("aria-label", `Maximum HP adjustment: ${formatHudMaxAdjustment(currentAdjustment) || "none"}`);
 	indicator.textContent = formatHudMaxAdjustment(currentAdjustment);
-	indicator.style.cssText = "position:absolute;top:auto;left:auto;right:-0.35em;bottom:-0.55em;display:block;width:2.2em;padding:0;color:inherit;background:transparent;border:0;border-radius:0;font:inherit;font-size:0.55em;line-height:1.3;text-align:right;white-space:nowrap;z-index:1;pointer-events:none;";
-	maxElement.append(indicator);
+	// Absolute tag on the wrapper's bottom-right corner — the wrapper shrink-
+	// wraps the digits, so the badge tracks the number rather than the wide
+	// .max grid cell.
+	indicator.style.cssText = "position:absolute;top:auto;left:auto;right:-1em;bottom:-1em;display:block;padding:0 0.1em;color:#fff;line-height:1.4;white-space:nowrap;pointer-events:none;";
+	// The wrapper is the badge's positioned ancestor and stays a SIBLING of the
+	// contentEditable editor — textContent writes on the editor must never
+	// reach the badge.
+	const maxHpWrapper = document.createElement("span");
+	maxHpWrapper.style.cssText = "display:inline-block;position:relative;";
+	maxHpWrapper.append(valueEditor, indicator);
+	maxElement.replaceChildren(maxHpWrapper);
+	const editorFontSize = parseFloat(getComputedStyle(valueEditor).fontSize);
+	if (Number.isFinite(editorFontSize)) {
+		indicator.style.fontSize = `${Math.max(8, editorFontSize - 3)}px`;
+	}
 
-	const updateEditIndicator = value => {
-		const effectiveMax = Number(actor.system?.attributes?.hp?.max);
-		const baseMax = getVursBaseMaxHp(actor);
+	const updateEditIndicator = (value, forActor = actor) => {
+		const effectiveMax = Number(forActor.system?.attributes?.hp?.max);
+		const baseMax = getVursBaseMaxHp(forActor);
 		const desiredMax = Math.max(0, Number.isFinite(value) ? Math.trunc(value) : effectiveMax || Number(hp.max));
 		const adjustment = baseMax - desiredMax;
-		indicator.textContent = formatHudMaxAdjustment(adjustment);
-		indicator.setAttribute("aria-label", `Maximum HP adjustment: ${formatHudMaxAdjustment(adjustment) || "none"}`);
-		indicator.style.color = adjustment > 0 ? "#ff3b3b" : "inherit";
-		indicator.style.webkitTextStroke = adjustment > 0 ? "0.6px #1a0d0d" : "0";
-		indicator.style.textShadow = adjustment > 0
-			? "-1px -1px 0 #1a0d0d, 1px -1px 0 #1a0d0d, -1px 1px 0 #1a0d0d, 1px 1px 0 #1a0d0d"
-			: "none";
+		const adjustmentText = formatHudMaxAdjustment(adjustment);
+		if (indicator.textContent !== adjustmentText) indicator.textContent = adjustmentText;
+		indicator.setAttribute("aria-label", `Maximum HP adjustment: ${adjustmentText || "none"}`);
+		// The badge has its own dark background, so it needs light text — the
+		// sheet's dark-red-on-light styling doesn't apply here.
+		indicator.style.color = adjustment > 0 ? "#ff8a8a" : "#ffffff";
+		indicator.style.webkitTextStroke = "0";
+		indicator.style.textShadow = "none";
 	};
 	updateEditIndicator(Number(hp.max));
+	hudMaxHpIndicatorUpdaters.set(valueEditor, updateEditIndicator);
 
 	const showMaximum = () => {
 		const effectiveMax = Number(actor.system?.attributes?.hp?.max);
@@ -319,8 +339,7 @@ function onHudClick(event, app, root) {
 	if (!(event.target instanceof Element)) return;
 	const target = event.target.closest('[data-action="strike-attack"]');
 	if (!target || !root.contains(target)) return;
-	const actor = getHudActor(app)
-		?? game.actors?.get(root.dataset.vursHudActorUuid);
+	const actor = getHudActor(app) ?? resolveHudActor(root);
 	if (actor) handleBurstFireHudClick(event, actor, target, root);
 }
 
@@ -356,7 +375,7 @@ function formatHudBurstFireLabel(root, actor) {
 			const burstFireCategory = burstFireButton
 				?.closest(".variants")
 				?.querySelector(":scope > .category");
-			if (autoFireCategory && burstFireCategory) {
+			if (autoFireCategory && burstFireCategory && !burstFireCategory.isEqualNode(autoFireCategory)) {
 				burstFireCategory.replaceWith(autoFireCategory.cloneNode(true));
 			}
 		}
@@ -371,18 +390,21 @@ function formatHudBurstFireLabel(root, actor) {
 			const rateLabel = game.i18n.format("VURS.BurstFire.RateOfFireShort", {
 				shots: rateOfFire
 			});
+			const ariaLabel = `2 AP Burst-Fire (${rateLabel}) — ${strike.item.name}`;
+			// Skip the rewrite when this button is already formatted — the pass
+			// runs on every actor update and replaceChildren would otherwise
+			// destroy transient pf2e-hud UI state each time.
+			if (button.dataset.vursBurstFireLabel === ariaLabel && button.querySelector(".action-glyph")) continue;
 			const actionGlyph = document.createElement("span");
 			actionGlyph.className = "action-glyph";
 			actionGlyph.textContent = "2";
 			button.classList.add("vurs-burst-fire-trigger");
+			button.dataset.vursBurstFireLabel = ariaLabel;
 			button.replaceChildren(
 				actionGlyph,
 				document.createTextNode(` Burst-Fire (${rateLabel})`)
 			);
-			button.setAttribute(
-				"aria-label",
-				`2 AP Burst-Fire (${rateLabel}) — ${strike.item.name}`
-			);
+			button.setAttribute("aria-label", ariaLabel);
 			const category = button.closest(".variants")
 				?.querySelector(":scope > .category");
 			if (category && !category.querySelector("img.vurs-burst-fire-icon")) {
@@ -454,16 +476,25 @@ Hooks.on("renderApplicationV2", (app, element) => {
 });
 
 Hooks.on("updateActor", actor => {
+	if (!game.modules.get(HUD_MODULE_ID)?.active) return;
 	for (const root of document.querySelectorAll(".pf2e-hud-element")) {
 		const hudActor = resolveHudActor(root);
 		if (hudActor?.uuid !== actor.uuid) continue;
-		formatHudBurstFireLabel(root, hudActor);
-		allowNegativeHudHpInput(root);
-		requestAnimationFrame(() => {
-			addVursHudMaxHpControl(root, hudActor);
-			applyVursHudDisableStates(root, hudActor);
-		});
 		observeHudDisableStates(root);
+		// Coalesce the heavy DOM work (burst-fire formatting, HP input wiring,
+		// max-HP control, disable states) into one rAF per root — actor updates
+		// are frequent during combat and this used to run synchronously.
+		if (!hudRootsWithScheduledHudRefresh.has(root)) {
+			hudRootsWithScheduledHudRefresh.add(root);
+			requestAnimationFrame(() => {
+				hudRootsWithScheduledHudRefresh.delete(root);
+				if (!root.isConnected) return;
+				formatHudBurstFireLabel(root, hudActor);
+				allowNegativeHudHpInput(root);
+				addVursHudMaxHpControl(root, hudActor);
+				applyVursHudDisableStates(root, hudActor);
+			});
+		}
 		if ((root.id === "pf2e-hud-persistent" || root.id === "pf2e-hud-token") &&
 			!hudRootsWithScheduledRefresh.has(root)) {
 			hudRootsWithScheduledRefresh.add(root);

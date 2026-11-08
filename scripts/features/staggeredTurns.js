@@ -82,15 +82,9 @@ function getStaggeredFlags(actor) {
 
 async function applyStaggeredReposition(actor, count, applyRound = null, resolvedCombatant = null, endedOwnTurn = false) {
 	const combat = game.combat;
-	if (!combat?.started || count < 1) {
-		debugStaggered("reposition aborted: combat not started or bad count", null, { actor: actor.name, count });
-		return;
-	}
+	if (!combat?.started || count < 1) return;
 	const combatant = resolvedCombatant ?? getActorCombatant(combat, actor);
-	if (!combatant) {
-		debugStaggered("reposition aborted: no combatant for actor", null, { actor: actor.name });
-		return;
-	}
+	if (!combatant) return;
 
 	// combat.turns is a plain Array of Combatant documents sorted by initiative,
 	// but it is only rebuilt by setupTurns() — refresh it first so the index
@@ -99,10 +93,7 @@ async function applyStaggeredReposition(actor, count, applyRound = null, resolve
 	const turns = combat.turns ?? [];
 	const length = turns.length;
 	const index = turns.indexOf(combatant);
-	if (index < 0 || length < 2) {
-		debugStaggered("reposition aborted: combatant missing from turns", null, { actor: actor.name, index, length });
-		return;
-	}
+	if (index < 0 || length < 2) return;
 	// Snapshot the pointer while indices are still consistent — used below to
 	// tell whether this combatant already acted this round.
 	const turnIndexAtApply = combat.turn;
@@ -122,65 +113,45 @@ async function applyStaggeredReposition(actor, count, applyRound = null, resolve
 	const rest = turns.filter(turn => turn.id !== combatant.id);
 	const above = rest[targetIndex - 1];
 	const below = rest[targetIndex];
-	debugStaggered(`reposition: index=${index} count=${count} targetIndex=${targetIndex} wrapped=${wrapped}`, null, {
-		actor: actor.name,
-		order: turns.map((turn, i) => `${i}:${turn.name}(${turn.initiative})`).join(" "),
-		above: above ? `${above.name}(${above.initiative})` : null,
-		below: below ? `${below.name}(${below.initiative})` : null
-	});
 
-	// Changing initiative re-sorts combat.turns and can shift the turn index
-	// off the active combatant — capture it first and re-pin afterwards,
-	// mirroring PF2e's setMultipleInitiatives.
+	// PF2e breaks initiative ties through flags.pf2e.overridePriority, keyed by
+	// the initiative value (EncounterPF2e._sortCombatants) — the same mechanism
+	// the combat tracker's drag reorder uses. Slot the combatant into the anchor
+	// initiative's tie group instead of inventing fractional initiatives.
 	const currentCombatantId = combat.combatant?.id;
-	const priorityOf = candidate =>
-		candidate.overridePriority?.(candidate.initiative) ??
-		candidate.actor?.initiative?.tiebreakPriority ?? 3;
+	const numeric = value => typeof value === "number" && Number.isFinite(value);
 
-	if (above && below && typeof above.initiative === "number" && typeof below.initiative === "number" &&
-		above.initiative === below.initiative) {
-		// Tied initiatives: PF2e resolves order via flags.pf2e.overridePriority
-		// (then actor tiebreakPriority, then id). Slot the actor between the two
-		// combatants' effective priorities without changing its initiative.
-		const initiative = above.initiative;
-		const pa = priorityOf(above);
-		const pb = priorityOf(below);
-		if (pa > pb) {
-			console.warn(`${MODULE_ID} | Staggered turn delay skipped for ${actor.name}: tied initiatives out of order`);
-			return;
-		}
-		const existing = { ...(combatant.flags?.pf2e?.overridePriority ?? {}) };
-		if (pa === pb) {
-			// Identical effective priority (e.g. no rolled tiebreaks): nudge the
-			// lower neighbor up so the actor can sit strictly between them.
-			const belowFlags = { ...(below.flags?.pf2e?.overridePriority ?? {}), [initiative]: pa + 0.5 };
-			await below.update({ flags: { pf2e: { overridePriority: belowFlags } } });
-			existing[initiative] = pa + 0.25;
-		} else {
-			existing[initiative] = (pa + pb) / 2;
-		}
-		await combatant.update({
-			initiative,
-			flags: { pf2e: { overridePriority: existing } }
-		});
-	} else {
-		let newInitiative;
-		if (above && below && typeof above.initiative === "number" && typeof below.initiative === "number") {
-			if (above.initiative > below.initiative) {
-				newInitiative = (above.initiative + below.initiative) / 2;
-			} else {
-				console.warn(`${MODULE_ID} | Staggered turn delay skipped for ${actor.name}: tied initiatives`);
-				return;
-			}
-		} else if (above && typeof above.initiative === "number") {
-			newInitiative = above.initiative - 1;
-		} else if (below && typeof below.initiative === "number") {
-			newInitiative = below.initiative + 1;
-		} else {
-			return;
-		}
-		await combatant.update({ initiative: newInitiative });
+	const belowInit = below && numeric(below.initiative) ? below.initiative : null;
+	const aboveInit = above && numeric(above.initiative) ? above.initiative : null;
+	let anchor = null;
+	if (belowInit !== null) {
+		anchor = belowInit;
+	} else if (aboveInit !== null) {
+		// Last place: share the lowest initiative, sorted after its group.
+		anchor = aboveInit;
 	}
+	if (anchor === null) return;
+
+	// Every combatant sharing the anchor initiative forms a contiguous tie
+	// group. Partition it at the insertion point so the staggered combatant
+	// lands at exactly targetIndex — inside the group for ties, before it for
+	// distinct neighbors, last for bottom slots — then renumber the group's
+	// priorities 0..n-1 in that order, mirroring the tracker's drag reorder.
+	const before = [];
+	const after = [];
+	rest.forEach((turn, i) => {
+		if (numeric(turn.initiative) && turn.initiative === anchor) {
+			(i < targetIndex ? before : after).push(turn);
+		}
+	});
+	const ordered = [...before, combatant, ...after];
+	// Changing initiative re-sorts combat.turns and can shift the turn index
+	// off the active combatant — re-pin it below, mirroring setMultipleInitiatives.
+	await combat.updateEmbeddedDocuments("Combatant", ordered.map((turn, rank) => ({
+		_id: turn.id,
+		...(turn.id === combatant.id ? { initiative: anchor } : {}),
+		flags: { pf2e: { overridePriority: { [anchor]: rank } } }
+	})));
 	// combat.turn is an index into the sorted turns array — after the resort the
 	// same index can point at a different combatant. Force a synchronous
 	// re-sort before locating the current combatant, otherwise a stale
@@ -196,11 +167,6 @@ async function applyStaggeredReposition(actor, count, applyRound = null, resolve
 		}
 	}
 	combat.setupTurns?.();
-	debugStaggered(`reposition result (actor initiative now ${combatant.initiative})`, null, {
-		actor: actor.name,
-		order: (combat.turns ?? []).map((turn, i) => `${i}:${turn.name}(${turn.initiative})`).join(" "),
-		turnIndex: combat.turn
-	});
 
 	const staggeredItem = findStaggeredConditionItem(actor);
 	const updates = {
@@ -216,7 +182,6 @@ async function applyStaggeredReposition(actor, count, applyRound = null, resolve
 	if (wrapped || (alreadyActed && !endedOwnTurn)) {
 		updates[`flags.vurs.staggered.${UNTIL_ROUND_FLAG}`] = combat.round + 1;
 	}
-	debugStaggered(`flags write: untilRound=${updates[`flags.vurs.staggered.${UNTIL_ROUND_FLAG}`] ?? "none"} alreadyActed=${alreadyActed} turnIndexAtApply=${turnIndexAtApply}`, null, { actor: actor.name });
 	await actor.update(updates);
 
 	// The reposition consumes the stagger — the badge shows 0 while the
@@ -233,32 +198,16 @@ async function applyStaggeredReposition(actor, count, applyRound = null, resolve
 	}
 }
 
-function debugStaggered(reason, item, extra = {}) {
-	console.log(`${MODULE_ID} | Staggered turn delay: ${reason}`, {
-		item: item ? { id: item.id, name: item.name, type: item.type, slug: item.system?.slug, badge: item.system?.badge, value: item.system?.value } : null,
-		...extra
-	});
-}
-
 async function handleStaggeredItem(item) {
 	if (!isStaggeredItem(item)) return;
 	const actor = item.actor ?? item.parent;
 	if (!actor || actor.documentName !== "Actor") return;
-	if (!staggeredTurnDelayEnabled(actor)) {
-		debugStaggered("feature disabled for actor mode", item, { actor: actor.name });
-		return;
-	}
+	if (!staggeredTurnDelayEnabled(actor)) return;
 	const staggered = getStaggeredCondition(actor);
-	if (!staggered) {
-		debugStaggered("no positive stagger value found", item, { actor: actor.name });
-		return;
-	}
+	if (!staggered) return;
 	const combat = game.combat;
 	const staggeredCombatant = getActorCombatant(combat, actor);
-	if (!combat?.started || !staggeredCombatant) {
-		debugStaggered("actor not in a started combat", item, { actor: actor.name, combatStarted: !!combat?.started });
-		return;
-	}
+	if (!combat?.started || !staggeredCombatant) return;
 
 	const flags = getStaggeredFlags(actor);
 	// `applied` only counts toward the item instance it was recorded for — a
@@ -266,10 +215,7 @@ async function handleStaggeredItem(item) {
 	// hasn't run yet.
 	const applied = flags.itemId && flags.itemId === staggered.item.id ? flags.applied : 0;
 	const delta = staggered.value - applied;
-	if (delta <= 0) {
-		debugStaggered(`no delta to apply (value ${staggered.value}, applied ${applied})`, item, { actor: actor.name });
-		return;
-	}
+	if (delta <= 0) return;
 
 	// Staggered during their own turn ends the turn before the order moves.
 	// Compare combatants, not actors — multiple tokens can share an actor.
@@ -298,7 +244,6 @@ async function handleStaggeredItem(item) {
 	// combat.turn pointing at the wrong combatant.
 	await new Promise(resolve => setTimeout(resolve, 0));
 	await applyStaggeredReposition(actor, delta, applyRound, staggeredCombatant, endOwnTurn);
-	debugStaggered(`reposition applied (value ${staggered.value}, delta ${delta})`, item, { actor: actor.name, endedOwnTurn: endOwnTurn });
 }
 
 // createItem and updateItem can both fire for one application, and the async
@@ -374,7 +319,6 @@ Hooks.on("updateCombat", (combat, changes) => {
 	if (!combat?.started || (changes?.turn === undefined && changes?.round === undefined)) return;
 	const actor = combat.combatant?.actor;
 	if (!actor) return;
-	debugStaggered(`turn advanced: turn=${combat.turn} round=${combat.round} combatant=${combat.combatant?.name} actor=${actor.name}`, null, {});
 	const staggeredItem = findStaggeredConditionItem(actor);
 	if (!staggeredItem) return;
 
@@ -382,25 +326,16 @@ Hooks.on("updateCombat", (combat, changes) => {
 	// value from an earlier Staggered must not skip a later round's turn.
 	const flags = getStaggeredFlags(actor);
 	const untilRound = flags.itemId && flags.itemId === staggeredItem.id ? flags.untilRound : 0;
-	debugStaggered(`turn start check: untilRound=${untilRound} round=${combat.round} turn=${combat.turn}`, null, { actor: actor.name });
 	if (untilRound > combat.round) {
 		// Wrapped/already-acted stagger: the actor sits out the rest of this round.
 		// Defer nextTurn() — calling it synchronously inside updateCombat nests a
 		// combat.update inside the turn-change update currently being processed,
 		// which can lose the skip.
-		debugStaggered(`skipping staggered turn for ${actor.name}`, null, { untilRound, round: combat.round, turn: combat.turn });
-		const before = combat.turn;
 		setTimeout(() => {
 			const stillCurrent = combat.combatant?.actor;
 			const stillStaggered = stillCurrent && findStaggeredConditionItem(stillCurrent);
-			if (!combat.started || !stillStaggered) {
-				debugStaggered(`skip aborted: current=${stillCurrent?.name ?? "none"} staggeredItem=${!!stillStaggered}`, null, {});
-				return;
-			}
-			Promise.resolve(combat.nextTurn())
-				.then(() => debugStaggered(`skip complete: turn ${before} -> ${combat.turn} current=${combat.combatant?.actor?.name ?? "?"}`, null, {
-					order: (combat.turns ?? []).map((turn, i) => `${i}:${turn.name}`).join(" ")
-				}))
+			if (!combat.started || !stillStaggered) return;
+			void Promise.resolve(combat.nextTurn())
 				.catch(error =>
 					console.error(`${MODULE_ID} | Failed to skip Staggered turn`, error)
 				);
@@ -408,7 +343,6 @@ Hooks.on("updateCombat", (combat, changes) => {
 		return;
 	}
 
-	debugStaggered(`delayed turn reached for ${actor.name}: removing Staggered`, null, { untilRound, round: combat.round, turn: combat.turn });
 	void actor.deleteEmbeddedDocuments("Item", [staggeredItem.id])
 		.then(() => actor.update({
 			"flags.vurs.staggered": new foundry.data.operators.ForcedDeletion()

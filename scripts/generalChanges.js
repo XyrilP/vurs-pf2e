@@ -282,6 +282,11 @@ Hooks.once("ready", () => {
 Hooks.on("canvasReady", refreshCanvasActors);
 Hooks.once("ready", () => {
 	for (const actor of game.actors?.contents ?? []) {
+		// Seed the Downed candidates so effects applied before this session are
+		// still cleaned up without scanning every actor on each update.
+		if (getActorEffectItems(actor).some(item => item.flags?.vurs?.downedEffect === true)) {
+			vursDownedCandidates.add(actor);
+		}
 		syncVursConditionFlags(actor);
 		stripVursDeathConditions(actor);
 		void enforceVursDownedEffect(actor);
@@ -294,9 +299,10 @@ Hooks.once("ready", () => {
 const VURS_SUPPRESSED_DEATH_CONDITIONS = new Set(["dying", "wounded"]);
 function stripVursDeathConditions(actor) {
 	if (!actorUsesVursHpRules(actor)) return;
-	const suppressed = actor?.items?.filter(item =>
-		item.isOfType?.("condition") && VURS_SUPPRESSED_DEATH_CONDITIONS.has(item.slug)
-	) ?? [];
+	// Only condition-type items can match — itemTypes.condition is a tiny
+	// subset, avoiding a full collection scan on every actor update.
+	const conditions = actor?.itemTypes?.condition ?? actor?.items?.filter(item => item.isOfType?.("condition")) ?? [];
+	const suppressed = conditions.filter(item => VURS_SUPPRESSED_DEATH_CONDITIONS.has(item.slug));
 	if (!suppressed.length) return;
 	actor.deleteEmbeddedDocuments("Item", suppressed.map(item => item.id))
 		.catch(error => console.error(`${MODULE_ID} | Failed to remove ${suppressed[0].slug} under VURS HP rules`, error));
@@ -391,6 +397,9 @@ function matchVursTreatWoundsHeal(amount, outcome) {
 // applied (flagged flags.vurs.downedEffect) are ever removed, so manually
 // applied copies of the same effect are left alone.
 const VURS_DOWNED_BUSY = new WeakSet();
+// Actors that may carry an applied Downed effect. Lets the per-updateActor
+// check skip the item scan entirely for the vast majority of updates.
+const vursDownedCandidates = new WeakSet();
 const VURS_DOWNED_EFFECT_UUID = "Compendium.vurs-pf2e.vurs-effects.Item.4gFFVIejnvRuRpOF";
 // Cache the resolved compendium source per UUID so actors sitting at 0 HP do not
 // refetch it on every actor update. Only successful resolutions are cached, so a
@@ -402,19 +411,34 @@ async function resolveVursDownedSource(uuid) {
 	if (source) vursDownedSourceCache.set(uuid, source);
 	return source;
 }
+// The Downed source is an "effect" — restricting the scan to effect-type items
+// avoids a full collection scan on every actor update.
+function getActorEffectItems(actor) {
+	return actor?.itemTypes?.effect ?? actor?.items?.filter(item => item.type === "effect") ?? [];
+}
 async function enforceVursDownedEffect(actor) {
 	if (!actor?.items || VURS_DOWNED_BUSY.has(actor)) return;
+	const usesVursHp = actorUsesVursHpRules(actor);
+	const tracked = vursDownedCandidates.has(actor);
+	const atZeroHp = Number(actor.system?.attributes?.hp?.value) <= 0;
+	// Fast path: an untracked actor can't carry the effect, so the only work
+	// left is applying it — which requires VURS HP rules and 0 HP.
+	if (!tracked && !(usesVursHp && atZeroHp)) return;
 	try {
 		const uuid = String(game.settings.get(MODULE_ID, "downedEffectUuid") ?? "").trim() || VURS_DOWNED_EFFECT_UUID;
-		const atZeroHp = Number(actor.system?.attributes?.hp?.value) <= 0;
-		const applied = actor.items.filter(item => item.flags?.vurs?.downedEffect === true);
-		if (!actorUsesVursHpRules(actor) || !uuid || !atZeroHp) {
+		const effectItems = getActorEffectItems(actor);
+		const applied = effectItems.filter(item => item.flags?.vurs?.downedEffect === true);
+		if (!usesVursHp || !uuid || !atZeroHp) {
 			if (applied.length) {
 				await actor.deleteEmbeddedDocuments("Item", applied.map(item => item.id));
 			}
+			vursDownedCandidates.delete(actor);
 			return;
 		}
-		if (applied.length) return;
+		if (applied.length) {
+			vursDownedCandidates.add(actor);
+			return;
+		}
 
 		const source = await resolveVursDownedSource(uuid);
 		if (!source) {
@@ -423,7 +447,7 @@ async function enforceVursDownedEffect(actor) {
 		}
 		// Avoid duplicating an effect the actor already carries under another
 		// application path (same type and name).
-		if (actor.items.some(item => item.type === source.type && item.name === source.name)) return;
+		if (effectItems.some(item => item.type === source.type && item.name === source.name)) return;
 
 		VURS_DOWNED_BUSY.add(actor);
 		try {
@@ -434,6 +458,7 @@ async function enforceVursDownedEffect(actor) {
 			data.flags ??= {};
 			data.flags.vurs = { ...(data.flags.vurs ?? {}), downedEffect: true };
 			await actor.createEmbeddedDocuments("Item", [data]);
+			vursDownedCandidates.add(actor);
 		} finally {
 			VURS_DOWNED_BUSY.delete(actor);
 		}
@@ -451,7 +476,13 @@ for (const hook of ["createItem", "updateItem", "deleteItem"]) {
 	Hooks.on(hook, refreshCooldownChargeUpStateFromItem);
 }
 Hooks.on("updateItem", refreshBrokenStateFromItem);
-Hooks.on("updateCombat", refreshCooldownChargeUpStateForOpenSheets);
+Hooks.on("updateCombat", (combat, changes) => {
+	// Cooldowns only tick on turn/round changes; lifecycle is covered by the
+	// createCombat/deleteCombat hooks. This avoids rescanning every actor and
+	// token on unrelated combat updates.
+	if (changes?.turn === undefined && changes?.round === undefined) return;
+	refreshCooldownChargeUpStateForOpenSheets();
+});
 Hooks.on("createCombat", refreshCooldownChargeUpStateForOpenSheets);
 Hooks.on("deleteCombat", refreshCooldownChargeUpStateForOpenSheets);
 // Register this before the first ApplicationV2 render. The builder may be
@@ -1352,10 +1383,17 @@ function getDisableableActionItems(root, actor) {
 	});
 }
 
+// Item writes arrive in bursts (condition ticks, flag updates); each one used
+// to rescan every open sheet. Coalesce to one refresh per actor per frame.
+const scheduledCooldownRefreshes = new WeakSet();
 function refreshCooldownChargeUpStateFromItem(item) {
 	const actor = item?.actor ?? item?.parent;
-	if (!isSupportedVursActor(actor)) return;
-	refreshCooldownChargeUpState(actor);
+	if (!isSupportedVursActor(actor) || scheduledCooldownRefreshes.has(actor)) return;
+	scheduledCooldownRefreshes.add(actor);
+	requestAnimationFrame(() => {
+		scheduledCooldownRefreshes.delete(actor);
+		refreshCooldownChargeUpState(actor);
+	});
 }
 
 function refreshCooldownChargeUpStateForOpenSheets() {
@@ -1938,7 +1976,7 @@ function addVursMaxHpReductionControl(root, actor, retries = 4) {
 		const adjustment = baseMax - desiredMax;
 		indicator.textContent = formatAdjustment(adjustment);
 		indicator.setAttribute("aria-label", `Maximum HP adjustment: ${formatAdjustment(adjustment) || "none"}`);
-		indicator.style.color = adjustment > 0 ? "#ff3b3b" : "inherit";
+		indicator.style.color = adjustment > 0 ? "#ff8a8a" : "inherit";
 		indicator.style.webkitTextStroke = adjustment > 0 ? "0.6px #1a0d0d" : "0";
 		indicator.style.textShadow = adjustment > 0
 			? "-1px -1px 0 #1a0d0d, 1px -1px 0 #1a0d0d, -1px 1px 0 #1a0d0d, 1px 1px 0 #1a0d0d"
