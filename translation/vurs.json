@@ -135,6 +135,20 @@
                     "Self": "Self"
                 }
             }
+        },
+        "Skills": {
+            "Power": "Power",
+            "Dexterity": "Dexterity",
+            "Mobility": "Mobility",
+            "Acquisition": "Acquisition",
+            "Strategy": "Strategy",
+            "Coolness": "Coolness",
+            "Romance": "Romance",
+            "Soul": "Soul",
+            "Fortitude": "Fortitude",
+            "Reflex": "Reflex",
+            "Will": "Will",
+            "Perception": "Perception"
         }
     },
     "PF2E": {
@@ -1622,15 +1636,15 @@
             "CreatureXPAndRole": {
                 "CreatureLevel": "Creature Level",
                 "CreatureLevels": {
-                    "-1": "Any standard creature",
-                    "-2": "Any lackey or standard creature",
-                    "-3": "Low- or moderate-threat lackey",
-                    "-4": "Low-threat lackey",
                     "0": "Any standard creature or low-threat boss",
                     "1": "Low- or moderate-threat boss",
                     "2": "Moderate- or severe-threat boss",
                     "3": "Severe- or extreme-threat boss",
-                    "4": "Extreme-threat solo boss"
+                    "4": "Extreme-threat solo boss",
+                    "-1": "Any standard creature",
+                    "-2": "Any lackey or standard creature",
+                    "-3": "Low- or moderate-threat lackey",
+                    "-4": "Low-threat lackey"
                 },
                 "CreatureXPAndRole": "Creature XP and Role",
                 "SuggestedRole": "Suggested Role"
@@ -3760,9 +3774,9 @@
             "IdentifyMagicNotMatchingTraditionModifier": {
                 "Choices": {
                     "0": "0",
-                    "10": "+10",
                     "2": "+2",
-                    "5": "+5"
+                    "5": "+5",
+                    "10": "+10"
                 },
                 "Hint": "Modifier to add to Identify Magic Skill DCs if the skill does not match the item's magic tradition",
                 "Name": "Identify Magic Skill Modifier"

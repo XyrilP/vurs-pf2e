@@ -4,7 +4,14 @@ import {
 	installDicelessPatches
 } from "./features/diceless.js";
 import { installVursCriticalDamage } from "./features/vursCriticalDamage.js";
-import { appendVursPlayCostIcons, createVursPlayCostElement } from "./features/playCostIcons.js";
+import { appendVursPlayCostIcons } from "./features/playCostIcons.js";
+import {
+	normalizeVursPlayCost,
+	replaceVursPlayCostToken,
+	replaceVursPlayCostTokensOnActorSheet,
+	replaceVursPlayResourceTokens,
+	resolveVursPlayCostRolls
+} from "./features/vursTextTokens.js";
 import {
 	hardResetActorPlayResources,
 	hasVursPlayResourcesDrawer,
@@ -29,11 +36,16 @@ import {
 	isAcquisitionGatedItem,
 	isDragonblightStrikeAffected,
 	isDragonblightTrait,
+	itemHasBreakerTrait,
 	itemIgnoresBroken,
 	ruleEnablesBroken,
 	ruleEnablesVursCondition,
+	beginVursConditionPass,
+	getVursConditionPassGeneration,
 	setConditionButtonDisabled,
-	setConditionDisabled
+	setConditionDisabled,
+	setConditionDisabledWithBreakerExemption,
+	updateVursBreakerGlow
 } from "./features/disableConditions.js";
 import {
 	addNpcConfigurationButton,
@@ -101,14 +113,6 @@ const VURS_MUTED_INVESTED_PATCH = Symbol("vurs-pf2e.mutedInvestedPatch");
 const VURS_ORIGINAL_EQUIPPED_GETTER = Symbol("vurs-pf2e.originalEquippedGetter");
 let specialDamageDomainHookInstalled = false;
 
-function normalizeVursPlayCost(value) {
-	if (typeof value !== "string" && typeof value !== "number") return "";
-	return String(value)
-		.split(";")
-		.map(entry => entry.trim())
-		.filter(Boolean)
-		.join("; ");
-}
 const VURS_ABILITY_LABELS = {
 	str: "Strength",
 	dex: "Agility",
@@ -793,11 +797,12 @@ async function syncVursConditionFlags(actor) {
 const scheduledPlayResourceRefreshes = new WeakMap();
 const scheduledConditionStateRefreshes = new WeakSet();
 
-Hooks.on("updateActor", (actor, changes, options = {}) => {
-	// Play-resource sheets render themselves after Apply. Skipping this local
-	// persistence notification avoids a duplicate full sheet refresh; remote
-	// clients still receive the update without this module-specific option.
-	if (options.vursPlayResourceOnly) return;
+Hooks.on("updateActor", (actor, changes, options = {}, userId) => {
+	// Play-resource sheets render themselves after Apply on the initiating
+	// client. Foundry forwards custom update options to every client, so only
+	// skip the refresh for the user who made the change; remote clients still
+	// need it to pick up the new values.
+	if (options.vursPlayResourceOnly && userId === game.user.id) return;
 	if (!isSupportedVursActor(actor)) return;
 
 	for (const app of Object.values(actor.apps ?? {})) {
@@ -814,6 +819,7 @@ Hooks.on("updateActor", (actor, changes, options = {}) => {
 			requestAnimationFrame(() => {
 				scheduledConditionStateRefreshes.delete(root);
 				if (!root.isConnected) return;
+				beginVursConditionPass();
 				applyDisarmedStrikeState(root, actor);
 				applySilencedState(root, actor);
 				applyDragonblightState(root, actor);
@@ -833,6 +839,7 @@ Hooks.on("updateActor", (actor, changes, options = {}) => {
 				applyActingStatusState(root, actor, "stunned");
 				applyBrokenState(root, actor);
 				applyCooldownChargeUpState(root, actor);
+				updateVursBreakerGlow(root, actor, VURS_BREAKER_GLOW_SHEET_SELECTOR);
 			});
 		}
 
@@ -890,6 +897,10 @@ function applyNegativeHpSheetState(root, actor) {
 		element.remove();
 	}
 }
+// Only usable entries glow on sheets — actions, feats, spells and strikes —
+// not the whole item (inventory rows etc.).
+const VURS_BREAKER_GLOW_SHEET_SELECTOR = ".actions-list > .item[data-item-id], .feats-list [data-item-id], .spell-list > .spell[data-item-id], [data-strike][data-action-index]";
+
 function applyActorSheetPresentation(app, element) {
 	const root = element instanceof HTMLElement ? element : element?.[0];
 	const actor = [
@@ -899,6 +910,7 @@ function applyActorSheetPresentation(app, element) {
 		app?.object
 	].find(candidate => candidate?.documentName === "Actor" || candidate?.type === "npc");
 	if (!root || !actor) return;
+	beginVursConditionPass();
 	addNpcRestButton(root, actor);
 	if (!isSupportedVursActor(actor)) return;
 	applyNegativeHpSheetState(root, actor);
@@ -924,6 +936,7 @@ function applyActorSheetPresentation(app, element) {
 	applyActingStatusState(root, actor, "stunned");
 	applyBrokenState(root, actor);
 	applyCooldownChargeUpState(root, actor);
+	updateVursBreakerGlow(root, actor, VURS_BREAKER_GLOW_SHEET_SELECTOR);
 	replaceVursPlayResourceTokens(root, actor);
 	replaceVursPlayCostTokensOnActorSheet(root, actor);
 	if (!root.dataset.vursPlayResourceTokenObserver) {
@@ -940,6 +953,7 @@ function applyActorSheetPresentation(app, element) {
 					delete root.dataset.vursPlayResourceTokenObserver;
 					return;
 				}
+				beginVursConditionPass();
 				applySilencedState(root, actor);
 				applyDragonblightState(root, actor);
 				applyMutedState(root, actor);
@@ -958,6 +972,7 @@ function applyActorSheetPresentation(app, element) {
 				applyActingStatusState(root, actor, "stunned");
 				applyBrokenState(root, actor);
 				applyCooldownChargeUpState(root, actor);
+				updateVursBreakerGlow(root, actor, VURS_BREAKER_GLOW_SHEET_SELECTOR);
 				applyNegativeHpSheetState(root, actor);
 				replaceVursPlayResourceTokens(root, actor);
 				replaceVursPlayCostTokensOnActorSheet(root, actor);
@@ -980,6 +995,11 @@ function applyActorSheetPresentation(app, element) {
 	groupVursSkillsByAttribute(root, actor, localizeDefaultAbility);
 }
 
+const STRIKE_ROW_SELECTOR = "[data-strike][data-action-index]";
+const ACTION_ROW_SELECTOR = ".actions-list > .item[data-item-id]";
+const SPELL_ROW_SELECTOR = ".spell-list > .spell[data-item-id]";
+const ITEM_ROW_SELECTOR = `${ACTION_ROW_SELECTOR}, ${SPELL_ROW_SELECTOR}, ${STRIKE_ROW_SELECTOR}`;
+
 function applyDisarmedStrikeState(root, actor) {
 	const isDisarmed = [1, "1", true].includes(
 		foundry.utils.getProperty(actor, "flags.vurs.conditions.isDisarmed")
@@ -997,8 +1017,8 @@ function applyDisarmedStrikeState(root, actor) {
 	}
 
 	if (!section) return;
-	setConditionDisabled(section, "disarmed", isDisarmed || isCursed);
-	setConditionDisabled(section, "cursed", isCursed);
+	setConditionDisabledWithBreakerExemption(section, "disarmed", isDisarmed || isCursed, actor, STRIKE_ROW_SELECTOR);
+	setConditionDisabledWithBreakerExemption(section, "cursed", isCursed, actor, STRIKE_ROW_SELECTOR);
 }
 
 function applySilencedState(root, actor) {
@@ -1011,8 +1031,14 @@ function applySilencedState(root, actor) {
 	const spellcastingTab = root.querySelector(
 		'.tab.spellcasting[data-tab="spellcasting"], .tab.spells[data-tab="spells"]'
 	);
-	setConditionDisabled(spellcastingTab, "silenced", isSilenced || isCursed);
-	setConditionDisabled(spellcastingTab, "cursed", isCursed);
+	setConditionDisabledWithBreakerExemption(
+		spellcastingTab,
+		"silenced",
+		isSilenced || isCursed,
+		actor,
+		SPELL_ROW_SELECTOR
+	);
+	setConditionDisabledWithBreakerExemption(spellcastingTab, "cursed", isCursed, actor, SPELL_ROW_SELECTOR);
 
 	const actionSelector = actor.isOfType?.("character") || actor.type === "character"
 		? '.tab.actions[data-tab="actions"] .actions-list > .item[data-item-id]'
@@ -1021,8 +1047,9 @@ function applySilencedState(root, actor) {
 		const item = actor.items?.get(element.dataset.itemId);
 		const slug = item?.slug ?? foundry.utils.getProperty(item, "system.slug");
 		const isBasicAction = typeof slug === "string" && game.pf2e?.actions?.has(slug) === true;
-		setConditionDisabled(element, "silenced", isSilenced && !isBasicAction);
-		setConditionDisabled(element, "cursed", isCursed && !isBasicAction);
+		const isBreaker = itemHasBreakerTrait(item);
+		setConditionDisabled(element, "silenced", isSilenced && !isBasicAction && !isBreaker);
+		setConditionDisabled(element, "cursed", isCursed && !isBasicAction && !isBreaker);
 	}
 }
 
@@ -1038,10 +1065,12 @@ function applyDragonblightState(root, actor) {
 	}
 
 	const damageTypes = getDragonblightDamageTypes();
-	setConditionDisabled(
+	setConditionDisabledWithBreakerExemption(
 		root.querySelector('.tab.spellcasting[data-tab="spellcasting"], .tab.spells[data-tab="spells"]'),
 		"dragonblight",
-		true
+		true,
+		actor,
+		SPELL_ROW_SELECTOR
 	);
 	const selector = [
 		".actions-list > .item:not([data-strike])",
@@ -1060,7 +1089,7 @@ function applyDragonblightState(root, actor) {
 		setConditionDisabled(
 			element,
 			"dragonblight",
-			isDragonblightAffected(item, action, element, damageTypes)
+			isDragonblightAffected(item, action, element, damageTypes) && !itemHasBreakerTrait(item)
 		);
 	}
 
@@ -1073,7 +1102,7 @@ function applyDragonblightState(root, actor) {
 		setConditionDisabled(
 			strike,
 			"dragonblight",
-			isDragonblightStrikeAffected(item, action, damageTypes)
+			isDragonblightStrikeAffected(item, action, damageTypes) && !itemHasBreakerTrait(item)
 		);
 	}
 }
@@ -1118,8 +1147,8 @@ function applyMutedState(root, actor) {
 		} else {
 			setConditionDisabled(header, "muted", disableItems, false);
 			setConditionDisabled(header, "cursed", isCursed, false);
-			setConditionDisabled(itemList, "muted", disableItems);
-			setConditionDisabled(itemList, "cursed", isCursed);
+			setConditionDisabledWithBreakerExemption(itemList, "muted", disableItems, actor, "li[data-item-id]");
+			setConditionDisabledWithBreakerExemption(itemList, "cursed", isCursed, actor, "li[data-item-id]");
 		}
 	}
 	for (const element of root.querySelectorAll(
@@ -1127,8 +1156,9 @@ function applyMutedState(root, actor) {
 	)) {
 		const item = actor.items?.get(element.dataset.itemId);
 		const isAcquisitionGated = isAcquisitionGatedItem(item);
-		setConditionDisabled(element, "muted", disableItems && isAcquisitionGated);
-		setConditionDisabled(element, "cursed", isCursed && isAcquisitionGated);
+		const isBreaker = itemHasBreakerTrait(item);
+		setConditionDisabled(element, "muted", disableItems && isAcquisitionGated && !isBreaker);
+		setConditionDisabled(element, "cursed", isCursed && isAcquisitionGated && !isBreaker);
 	}
 
 	for (const element of root.querySelectorAll(".actions-list > .item[data-item-id]")) {
@@ -1137,8 +1167,9 @@ function applyMutedState(root, actor) {
 		if (slug !== "raise-a-shield") continue;
 
 		element.dataset.vursRaiseShieldAction = "true";
-		setConditionDisabled(element, "muted", disableItems);
-		setConditionDisabled(element, "cursed", isCursed);
+		const isBreaker = itemHasBreakerTrait(item);
+		setConditionDisabled(element, "muted", disableItems && !isBreaker);
+		setConditionDisabled(element, "cursed", isCursed && !isBreaker);
 	}
 
 	for (const strike of root.querySelectorAll(".strikes-list > [data-strike][data-action-index]")) {
@@ -1152,10 +1183,11 @@ function applyMutedState(root, actor) {
 			const isParry = auxiliaryAction?.action === "parry";
 			if (!isShieldRaise && !isParry) continue;
 
+			const isBreaker = itemHasBreakerTrait(item);
 			button.dataset.vursMutedAuxiliary = "true";
-			setConditionButtonDisabled(button, disableItems);
-			setConditionDisabled(button, "muted", disableItems);
-			setConditionDisabled(button, "cursed", isCursed);
+			setConditionButtonDisabled(button, disableItems && !isBreaker);
+			setConditionDisabled(button, "muted", disableItems && !isBreaker);
+			setConditionDisabled(button, "cursed", isCursed && !isBreaker);
 		}
 	}
 
@@ -1175,10 +1207,7 @@ function applyFatiguedState(root, actor) {
 	for (const panel of root.querySelectorAll(
 		'.tab.actions .actions-panel[data-tab="exploration"], .tab.actions .actions-panel[data-tab="downtime"]'
 	)) {
-		setConditionDisabled(panel, "fatigued", isFatigued);
-		for (const element of panel.querySelectorAll(".actions-list > .item[data-item-id]")) {
-			setConditionDisabled(element, "fatigued", isFatigued);
-		}
+		setConditionDisabledWithBreakerExemption(panel, "fatigued", isFatigued, actor, ACTION_ROW_SELECTOR);
 	}
 
 	for (const element of root.querySelectorAll(
@@ -1189,7 +1218,7 @@ function applyFatiguedState(root, actor) {
 		setConditionDisabled(
 			element,
 			"fatigued",
-			isFatigued && Array.isArray(traits) && traits.includes("exploration")
+			isFatigued && Array.isArray(traits) && traits.includes("exploration") && !traits.includes("breaker")
 		);
 	}
 
@@ -1199,7 +1228,7 @@ function applyFatiguedState(root, actor) {
 		setConditionDisabled(
 			element,
 			"fatigued",
-			isFatigued && Array.isArray(traits) && traits.includes("exploration")
+			isFatigued && Array.isArray(traits) && traits.includes("exploration") && !traits.includes("breaker")
 		);
 	}
 }
@@ -1220,7 +1249,7 @@ function applyConfusedState(root, actor) {
 		const isDelayOrReady = ["delay", "ready"].includes(slug);
 		const hasReaction = item?.actionCost?.type === "reaction" ||
 			(Array.isArray(traits) && traits.includes("reaction"));
-		setConditionDisabled(element, "confused", isConfused && (isDelayOrReady || hasReaction));
+		setConditionDisabled(element, "confused", isConfused && (isDelayOrReady || hasReaction) && !itemHasBreakerTrait(item));
 	}
 }
 
@@ -1231,7 +1260,7 @@ function applyRootedState(root, actor) {
 	applyMovementConditionToSpeed(root, actor, "rooted", isRooted);
 	for (const { element, traits } of getActionAndSpellItems(root, actor)) {
 		const hasMovementTrait = traits.some(trait => ["move", "traversal", "teleportation"].includes(trait));
-		setConditionDisabled(element, "rooted", isRooted && hasMovementTrait);
+		setConditionDisabled(element, "rooted", isRooted && hasMovementTrait && !traits.includes("breaker"));
 	}
 }
 
@@ -1241,7 +1270,7 @@ function applyImmobilizedState(root, actor) {
 	);
 	applyMovementConditionToSpeed(root, actor, "immobilized", isImmobilized);
 	for (const { element, traits } of getActionAndSpellItems(root, actor)) {
-		setConditionDisabled(element, "immobilized", isImmobilized && traits.includes("move"));
+		setConditionDisabled(element, "immobilized", isImmobilized && traits.includes("move") && !traits.includes("breaker"));
 	}
 }
 
@@ -1252,7 +1281,7 @@ function applyProneState(root, actor) {
 	applyMovementConditionToSpeed(root, actor, "prone", isProne);
 	for (const { element, traits, slug } of getActionAndSpellItems(root, actor)) {
 		const isException = ["crawl", "stand"].includes(slug);
-		setConditionDisabled(element, "prone", isProne && !isException && traits.includes("move"));
+		setConditionDisabled(element, "prone", isProne && !isException && traits.includes("move") && !traits.includes("breaker"));
 	}
 }
 
@@ -1266,14 +1295,15 @@ function applyRestrainedState(root, actor) {
 		const isRestricted = !isException && traits.some(trait =>
 			trait === "attack" || trait === "manipulate"
 		);
-		setConditionDisabled(element, "restrained", isRestrained && isRestricted);
+		setConditionDisabled(element, "restrained", isRestrained && isRestricted && !traits.includes("breaker"));
 	}
 
 	if (actor.isOfType?.("character") || actor.type === "character") {
 		const strikeSection = root.querySelector(".strikes-list");
-		setConditionDisabled(strikeSection, "restrained", isRestrained);
+		setConditionDisabledWithBreakerExemption(strikeSection, "restrained", isRestrained, actor, STRIKE_ROW_SELECTOR);
 	} else {
-		setConditionDisabled(root.querySelector(".attacks.section-container"), "restrained", isRestrained);
+		const attacksSection = root.querySelector(".attacks.section-container");
+		setConditionDisabledWithBreakerExemption(attacksSection, "restrained", isRestrained, actor, ITEM_ROW_SELECTOR);
 	}
 }
 
@@ -1283,15 +1313,15 @@ function applyParalyzedState(root, actor) {
 	);
 	applyMovementConditionToSpeed(root, actor, "paralyzed", isParalyzed);
 
-	for (const { element, slug } of getActionAndSpellItems(root, actor)) {
-		setConditionDisabled(element, "paralyzed", isParalyzed && slug !== "recall-knowledge");
+	for (const { element, traits, slug } of getActionAndSpellItems(root, actor)) {
+		setConditionDisabled(element, "paralyzed", isParalyzed && slug !== "recall-knowledge" && !traits.includes("breaker"));
 	}
 
 	const isCharacter = actor.isOfType?.("character") || actor.type === "character";
 	const strikeSection = isCharacter
 		? root.querySelector(".strikes-list")
 		: root.querySelector(".attacks.section-container");
-	setConditionDisabled(strikeSection, "paralyzed", isParalyzed);
+	setConditionDisabledWithBreakerExemption(strikeSection, "paralyzed", isParalyzed, actor, ITEM_ROW_SELECTOR);
 }
 
 function applyActingStatusState(root, actor, condition) {
@@ -1300,14 +1330,44 @@ function applyActingStatusState(root, actor, condition) {
 	applyMovementConditionToSpeed(root, actor, condition, isActive);
 
 	if (actor.isOfType?.("character") || actor.type === "character") {
-		setConditionDisabled(root.querySelector('.tab.actions[data-tab="actions"]'), condition, isActive);
-		setConditionDisabled(root.querySelector('.tab.spellcasting[data-tab="spellcasting"]'), condition, isActive);
+		setConditionDisabledWithBreakerExemption(
+			root.querySelector('.tab.actions[data-tab="actions"]'),
+			condition,
+			isActive,
+			actor,
+			ITEM_ROW_SELECTOR
+		);
+		setConditionDisabledWithBreakerExemption(
+			root.querySelector('.tab.spellcasting[data-tab="spellcasting"]'),
+			condition,
+			isActive,
+			actor,
+			SPELL_ROW_SELECTOR
+		);
 		return;
 	}
 
-	setConditionDisabled(root.querySelector(".attacks.section-container"), condition, isActive);
-	setConditionDisabled(root.querySelector(".actions.section-container"), condition, isActive);
-	setConditionDisabled(root.querySelector('.tab.spells[data-tab="spells"]'), condition, isActive);
+	setConditionDisabledWithBreakerExemption(
+		root.querySelector(".attacks.section-container"),
+		condition,
+		isActive,
+		actor,
+		STRIKE_ROW_SELECTOR
+	);
+	setConditionDisabledWithBreakerExemption(
+		root.querySelector(".actions.section-container"),
+		condition,
+		isActive,
+		actor,
+		ITEM_ROW_SELECTOR
+	);
+	setConditionDisabledWithBreakerExemption(
+		root.querySelector('.tab.spells[data-tab="spells"]'),
+		condition,
+		isActive,
+		actor,
+		SPELL_ROW_SELECTOR
+	);
 }
 
 function applyMovementConditionToSpeed(root, actor, condition, isDisabled) {
@@ -1335,7 +1395,7 @@ function applyBrokenState(root, actor) {
 		const hasReactionTrait = Array.isArray(traits) && traits.includes("reaction");
 		const isReaction = item.actionCost?.type === "reaction" || hasReactionTrait;
 		const isPassive = !item.actionCost;
-		setConditionDisabled(element, "broken", isBroken && (
+		setConditionDisabled(element, "broken", isBroken && !itemHasBreakerTrait(item) && (
 			isReaction || (isPassive && !itemIgnoresBroken(item))
 		));
 	}
@@ -1364,7 +1424,21 @@ function applyCooldownChargeUpState(root, actor) {
 	}
 }
 
+// Both builders rescan the same rows for every condition pass; cache per
+// (root, actor, pass generation) so each refresh resolves items once.
+const disableableActionItemsCache = new WeakMap();
+const actionAndSpellItemsCache = new WeakMap();
+
 function getDisableableActionItems(root, actor) {
+	const gen = getVursConditionPassGeneration();
+	const cached = disableableActionItemsCache.get(root);
+	if (cached && cached.gen === gen && cached.actor === actor) return cached.value;
+	const value = computeDisableableActionItems(root, actor);
+	disableableActionItemsCache.set(root, { gen, actor, value });
+	return value;
+}
+
+function computeDisableableActionItems(root, actor) {
 	const itemSelector = actor.isOfType?.("character") || actor.type === "character"
 		? [
 			'.tab.actions[data-tab="actions"] .actions-list > .item[data-item-id]',
@@ -1414,6 +1488,15 @@ function refreshCooldownChargeUpState(actor) {
 }
 
 function getActionAndSpellItems(root, actor) {
+	const gen = getVursConditionPassGeneration();
+	const cached = actionAndSpellItemsCache.get(root);
+	if (cached && cached.gen === gen && cached.actor === actor) return cached.value;
+	const value = computeActionAndSpellItems(root, actor);
+	actionAndSpellItemsCache.set(root, { gen, actor, value });
+	return value;
+}
+
+function computeActionAndSpellItems(root, actor) {
 	const itemSelector = actor.isOfType?.("character") || actor.type === "character"
 		? [
 			'.tab.actions[data-tab="actions"] .actions-list > .item[data-item-id]',
@@ -1480,7 +1563,7 @@ function installDragonblightRuleSuppression() {
 				if (!item || (typeof item !== "object" && typeof item !== "function")) return true;
 				if (item.isOfType?.("weapon", "melee")) return true;
 				if (!affectedItems.has(item)) {
-					affectedItems.set(item, isDragonblightAffected(item, null, null, damageTypes));
+					affectedItems.set(item, isDragonblightAffected(item, null, null, damageTypes) && !itemHasBreakerTrait(item));
 				}
 				return !affectedItems.get(item);
 			});
@@ -1509,7 +1592,7 @@ function installMutedItemRuleSuppression() {
 
 			const isMutedItemRule = rule => {
 				const item = rule.item;
-				return (
+				return !itemHasBreakerTrait(item) && (
 					(item?.isOfType?.("physical") &&
 						!["weapon", "shield", "armor"].some(itemType => item.isOfType(itemType))) ||
 					isAcquisitionGatedItem(item)
@@ -1531,16 +1614,6 @@ function installMutedItemRuleSuppression() {
 		Object.defineProperty(prototype, VURS_MUTED_ITEM_RULE_PATCH, { value: true });
 	}
 }
-
-function replaceVursPlayCostTokensOnActorSheet(root, actor) {
-	for (const itemElement of root.querySelectorAll(".item[data-item-id], [data-item-id]")) {
-		const item = actor?.items?.get(itemElement.dataset.itemId);
-		const playCost = normalizeVursPlayCost(foundry.utils.getProperty(item, "flags.vurs.playCost"));
-		if (!playCost) continue;
-		replaceVursPlayCostToken(itemElement, playCost);
-	}
-}
-
 
 function addVursAbilityCostField(app, element) {
 	const item = app?.item ?? app?.object;
@@ -1613,90 +1686,6 @@ function addVursAbilityCostField(app, element) {
 		const input = group.querySelector("input[name='flags.vurs.playCost']");
 		if (input) input.value = currentPlayCost;
 	}
-}
-
-function replaceVursPlayCostToken(description, playCost) {
-	const walker = document.createTreeWalker(description, NodeFilter.SHOW_TEXT);
-	const nodes = [];
-	while (walker.nextNode()) nodes.push(walker.currentNode);
-	for (const node of nodes) {
-		if (!node.nodeValue.includes("VURS.PlayCost")) continue;
-		const tokens = [...node.nodeValue.matchAll(/VURS\.PlayCost(Top|Bottom)?/g)];
-		const fragment = document.createDocumentFragment();
-		let offset = 0;
-		for (const token of tokens) {
-			fragment.append(document.createTextNode(node.nodeValue.slice(offset, token.index)));
-			fragment.append(createVursPlayCostElement(playCost, token[1]?.toLowerCase() ?? "inline"));
-			offset = token.index + token[0].length;
-		}
-		fragment.append(document.createTextNode(node.nodeValue.slice(offset)));
-		node.replaceWith(fragment);
-	}
-}
-
-function replaceVursPlayResourceTokens(description, actor) {
-	const walker = document.createTreeWalker(description, NodeFilter.SHOW_TEXT);
-	const nodes = [];
-	while (walker.nextNode()) nodes.push(walker.currentNode);
-	const aliases = { One: 1, Two: 2, Three: 3, Longer: 4 };
-	const resources = {
-		AP: "AP", SP: "SP", TP: "TP", BP: "BP", MP: "MP", KP: "KP", SR: "SR",
-		actionPoints: "AP", staminaPoints: "SP", tacticPoints: "TP", budgetPoints: "BP",
-		magicPoints: "MP", karmaPoints: "KP", styleRank: "SR", reactions: "REACTION", free: "FREE"
-	};
-	for (const node of nodes) {
-		const resolvedText = node.nodeValue
-			.replace(/VURS\.PlayResource\.\[\[(.+?)\]\](AP|SP|TP|BP|MP|KP|SR)/gi,
-				(match, formula, resource) => `VURS.PlayResource.${resolveVursPlayCostRolls(`[[${formula}]]`, actor)}${resource}`)
-			.replace(/\b(\d+)\s+or more\s+(AP|SP|TP|BP|MP|KP|SR|RP|actions?|reactions?)\b/gi, "$1+ $2");
-		if (resolvedText !== node.nodeValue) node.nodeValue = resolvedText;
-		const matches = [...node.nodeValue.matchAll(/VURS\.PlayResource\.((?:(\d+)|(One|Two|Three|Longer))?(AP|SP|TP|BP|MP|KP|SR|actionPoints|staminaPoints|tacticPoints|budgetPoints|magicPoints|karmaPoints|styleRank|reactions|reaction|free))/gi)];
-		if (!matches.length) continue;
-		const fragment = document.createDocumentFragment();
-		let offset = 0;
-		for (const match of matches) {
-			fragment.append(document.createTextNode(node.nodeValue.slice(offset, match.index)));
-			const amount = match[2] ? Number(match[2]) : (aliases[match[3]] ?? 1);
-			const resourceKey = Object.keys(resources).find(key => key.toLowerCase() === match[4].toLowerCase());
-			const resource = resources[resourceKey];
-			const rendered = document.createElement("span");
-			rendered.className = "vurs-play-resource-token";
-			if (amount === 0 && resource === "AP") {
-				rendered.title = "Free Action";
-				const icon = document.createElement("img");
-				icon.src = "modules/vurs-pf2e/assets/custom-icons/resource-icons/FreeAction.svg";
-				icon.alt = "Free Action";
-				icon.draggable = false;
-				rendered.append(icon);
-				fragment.append(rendered);
-				offset = match.index + match[0].length;
-				continue;
-			}
-			rendered.title = `${amount === 4 ? "4+" : amount} ${resource}`;
-			appendVursPlayCostIcons(rendered, `${amount} ${resource}`);
-			fragment.append(rendered);
-			offset = match.index + match[0].length;
-		}
-		fragment.append(document.createTextNode(node.nodeValue.slice(offset)));
-		node.replaceWith(fragment);
-	}
-}
-
-function resolveVursPlayCostRolls(playCost, actor) {
-	const RollClass = globalThis.Roll ?? foundry?.dice?.Roll;
-	if (!playCost.includes("[[") || !RollClass) return playCost;
-	const rollData = actor?.getRollData?.() ?? {};
-	if (actor && !rollData.actor) rollData.actor = actor.getRollData?.() ?? actor;
-	return playCost.replace(/\[\[\s*([^\]]+)\s*\]\]/g, (match, formula) => {
-		try {
-			const roll = RollClass.create(formula, rollData);
-			roll.evaluate({ async: false });
-			return String(Number.isFinite(roll.total) ? roll.total : 0);
-		} catch (error) {
-			console.warn(`${MODULE_ID} | Failed to evaluate Play Cost inline roll`, formula, error);
-			return match;
-		}
-	});
 }
 
 function allowNegativeHpEntry(root, actor) {

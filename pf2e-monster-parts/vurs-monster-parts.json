@@ -1,7 +1,10 @@
 {
   "type": "refinement",
   "key": "skill:acquisition",
-  "label": "Acquisition",
+  "label": {
+    "type": "key",
+    "key": "VURS.Skills.Acquisition"
+  },
   "itemPredicate": [],
   "monsterPredicate": [],
   "header": {
@@ -9,7 +12,10 @@
       {
         "levelMin": 1,
         "levelMax": 20,
-        "text": "Header Label Text"
+        "text": {
+          "type": "key",
+          "key": "VURS.Skills.Acquisition"
+        }
       }
     ]
   }

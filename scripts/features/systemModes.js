@@ -116,6 +116,10 @@ export function actorHasDicelessFlag(actor) {
   return readActorFlagValue(actor, "diceless") === 1;
 }
 
+export function actorCanOverheal(actor) {
+  return readActorFlagValue(actor, "canOverheal") === 1;
+}
+
 export function actorUsesVursSystem(actor) {
   return getModeProfile(getActorSystemMode(actor)) !== null;
 }

@@ -195,7 +195,8 @@ export function linkVursStatisticSkillControls(root, actor) {
     selector.setAttribute("data-rank", String(type === "save"
       ? actor.system.saves?.[statisticSlug]?.rank ?? 0
       : actor.system.perception?.rank ?? 0));
-    selector.setAttribute("aria-label", `${CONFIG.PF2E.skills?.[skillSlug]?.label ?? skillSlug} proficiency (mirrors ${statisticSlug})`);
+    const label = game.i18n.localize(CONFIG.PF2E.skills?.[skillSlug]?.label ?? skillSlug);
+    selector.setAttribute("aria-label", `${label} proficiency (mirrors ${statisticSlug})`);
   }
 }
 

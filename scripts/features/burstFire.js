@@ -44,7 +44,8 @@ const BURST_FIRE_TRANSLATIONS = {
 		DamageFailed: "Could not generate or apply Burst-Fire damage.",
 		RollFailed: "Burst-Fire stopped because one of its Strikes could not be completed.",
 		InvalidStat: "Rate of Fire and Recoil must be non-negative whole numbers.",
-		StatUpdateFailed: "Could not update Burst-Fire {stat}."
+		StatUpdateFailed: "Could not update Burst-Fire {stat}.",
+		BurstFireOnly: "This weapon can only be used with Burst-Fire."
 	},
 	Notes: {
 		Shot: "Strike {number}: {outcome} — {target}",
@@ -401,14 +402,25 @@ function getAutomaticRollEvent(type) {
 	};
 }
 
+// Rate of Fire is recomputed for every burst-fire button on every HUD pass,
+// and each computation builds roll-option sets and StatisticModifier instances.
+// Strike action objects are rebuilt on every prepareDerivedData, so a WeakMap
+// keyed on the strike object invalidates exactly when its inputs can change.
+const rateOfFireCache = new WeakMap();
+
 export function getRateOfFire(actor, strike) {
+	const cacheable = strike !== null && typeof strike === "object";
+	if (cacheable && rateOfFireCache.has(strike)) return rateOfFireCache.get(strike);
 	const mapIndex = Math.min(1, (strike?.variants?.length ?? 0) - 1);
 	const effectiveMAP = mapIndex >= 0
 		? getEffectiveStrikeMAP(strike, mapIndex, actor)
 		: null;
-	if (!Number.isFinite(effectiveMAP)) return null;
-	const base = getBaseRateOfFire(strike?.item, effectiveMAP);
-	return Math.max(0, base + getBurstFireAdjustment(strike?.item, "rateOfFire"));
+	const result = !Number.isFinite(effectiveMAP)
+		? null
+		: Math.max(0, getBaseRateOfFire(strike?.item, effectiveMAP) +
+			getBurstFireAdjustment(strike?.item, "rateOfFire"));
+	if (cacheable) rateOfFireCache.set(strike, result);
+	return result;
 }
 
 function getWeaponMaxRange(weapon) {
@@ -749,7 +761,7 @@ async function consumeRounds(weapon, amount) {
 	return false;
 }
 
-async function rollBurstFire(actor, strike, startingMAP, options = {}) {
+export async function rollBurstFire(actor, strike, startingMAP, options = {}) {
 	const weapon = strike.item;
 	const primaryToken = getTargetToken(options.target ?? game.user.targets.first());
 	const scene = canvas.scene;
@@ -823,6 +835,7 @@ async function rollBurstFire(actor, strike, startingMAP, options = {}) {
 					target: primaryToken,
 					consumeAmmo: false,
 					createMessage: false,
+					vursBurstFire: true,
 					callback: (roll, _outcome, message) => {
 						const candidate = message ?? roll;
 						checkContext = foundry.utils.getProperty(
@@ -1341,10 +1354,14 @@ function markBurstFireAlternateUsage(app, element) {
 		const strike = resolveSheetStrike(actor, strikeElement);
 		const autoFireIndex = strike?.altUsages?.findIndex(usage => usage.type === "auto-fire") ?? -1;
 		const burstFireIndex = strike?.altUsages?.findIndex(usage => usage.type === "burst-fire") ?? -1;
-		if (burstFireIndex < 0) continue;
+		// Automatic+Area strikes must be hidden even when the burst-fire alt
+		// usage failed to inject — updatePreparedBurstFireButton applies the
+		// hidden class from the item's traits alone.
+		const isAreaOnly = Boolean(getAutomaticAreaCollateralTrait(strike?.item));
+		if (burstFireIndex < 0 && !isAreaOnly) continue;
 
 		const controlsAlreadyPlaced = strikeElement.querySelector(":scope > section > .vurs-burst-fire-controls");
-		if (controlsAlreadyPlaced) {
+		if (controlsAlreadyPlaced || burstFireIndex < 0) {
 			if (prepared?.itemId === strike.item?.id) {
 				prepared.root = root;
 				prepared.strikeElement = strikeElement;
@@ -1426,9 +1443,31 @@ function createBurstFireUsage(actor, strike, autoFire) {
 	};
 }
 
+const BURST_FIRE_ONLY_ROLL = Symbol.for(`${MODULE_ID}.burstFireOnlyRoll`);
+
+// Automatic+Area weapons may only attack through Burst-Fire. Wrap each MAP
+// variant's roll so direct Strike calls (HUD, sheets, API) are rejected unless
+// rollBurstFire passes the internal flag.
+function enforceBurstFireOnly(strike) {
+	for (const variant of strike?.variants ?? []) {
+		const originalRoll = variant?.roll;
+		if (typeof originalRoll !== "function" || variant[BURST_FIRE_ONLY_ROLL]) continue;
+		variant[BURST_FIRE_ONLY_ROLL] = true;
+		variant.roll = function (options = {}) {
+			if (options?.vursBurstFire === true) {
+				return originalRoll.call(this, options);
+			}
+			ui.notifications.warn(game.i18n.localize("VURS.BurstFire.Warnings.BurstFireOnly"));
+			return Promise.resolve(null);
+		};
+	}
+}
+
 function injectBurstFireAltUsages(actions, actor) {
 	for (const strike of actions) {
 		if (!isAutomaticStrike(strike)) continue;
+		const areaTrait = getAutomaticAreaCollateralTrait(strike.item);
+		if (areaTrait) enforceBurstFireOnly(strike);
 		try {
 			strike.altUsages ??= [];
 			if (strike.altUsages.some(usage => usage.type === "burst-fire")) continue;
@@ -1436,7 +1475,7 @@ function injectBurstFireAltUsages(actions, actor) {
 			const burstFire = createBurstFireUsage(actor, strike, autoFire);
 			const autoFireIndex = strike.altUsages.indexOf(autoFire);
 			strike.altUsages.splice(autoFireIndex >= 0 ? autoFireIndex + 1 : strike.altUsages.length, 0, burstFire);
-			if (getAutomaticAreaCollateralTrait(strike.item)) {
+			if (areaTrait) {
 				strike.altUsages = strike.altUsages.filter(usage =>
 					usage.type !== "auto-fire" && usage.type !== "area-fire");
 			}

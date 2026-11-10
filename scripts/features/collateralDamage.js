@@ -391,14 +391,18 @@ function registerCollateralDamageRuleElement({ quiet = false } = {}) {
 }
 
 export function getAutomaticAreaCollateralTrait(item) {
-	const source = item?.isOfType?.("weapon") ? item : item?.linkedWeapon;
-	if (!source?.isOfType?.("weapon")) return null;
-	const traits = source.system?.traits?.value ?? [];
-	if (!traits.includes(AUTOMATIC_TRAIT)) return null;
-	return Object.keys(AUTOMATIC_AREA_COLLATERAL_TRAITS)
-		.find(trait => traits.includes(trait)) ??
-		traits.find(trait => AUTOMATIC_AREA_BURST_TRAIT.test(trait)) ??
-		null;
+	// Check the item itself first, then its linked weapon — NPC strike items
+	// are `melee` type and may carry the traits directly without a weapon
+	// parent, mirroring isAutomaticStrike's item+linkedWeapon check.
+	for (const source of [item, item?.linkedWeapon]) {
+		const traits = source?.system?.traits?.value ?? source?.traits?.value ?? [];
+		if (!traits.includes(AUTOMATIC_TRAIT)) continue;
+		const trait = Object.keys(AUTOMATIC_AREA_COLLATERAL_TRAITS)
+			.find(candidate => traits.includes(candidate)) ??
+			traits.find(candidate => AUTOMATIC_AREA_BURST_TRAIT.test(candidate));
+		if (trait) return trait;
+	}
+	return null;
 }
 
 function getAutomaticAreaCollateralShape(trait) {
@@ -413,7 +417,10 @@ function getAutomaticAreaCollateralShape(trait) {
 }
 
 export function createAutomaticAreaCollateralRule(item) {
-	if (!item?.isOfType?.("weapon")) return null;
+	// Weapon items always qualify; melee items only when standalone (no linked
+	// weapon) so weapon+melee pairs don't get duplicate rules.
+	const isStandaloneMelee = item?.isOfType?.("melee") && !item.linkedWeapon;
+	if (!item?.isOfType?.("weapon") && !isStandaloneMelee) return null;
 	const trait = getAutomaticAreaCollateralTrait(item);
 	const shape = trait && getAutomaticAreaCollateralShape(trait);
 	if (!shape || !CollateralDamageRuleElement) return null;
@@ -519,6 +526,24 @@ function sameActor(left, right) {
 		left.uuid === right.uuid ||
 		left.id === right.id
 	));
+}
+
+function sameOwnedItem(left, right) {
+	if (!left || !right) return false;
+	if (left === right || left.uuid === right.uuid) return true;
+	return Boolean(left.id && left.id === right.id && sameActor(left.actor, right.actor));
+}
+
+// Item-parented rules (weapons, melee strikes) only apply to damage dealt by
+// that item or its linked weapon; actor/effect-parented rules stay global.
+function collateralRuleMatchesDamageItem(rule, damageItem) {
+	const ruleItem = rule.item;
+	if (!ruleItem?.isOfType?.("weapon", "melee")) return true;
+	if (!damageItem) return false;
+	if (sameOwnedItem(ruleItem, damageItem)) return true;
+	if (damageItem.linkedWeapon && sameOwnedItem(ruleItem, damageItem.linkedWeapon)) return true;
+	const ruleLinkedWeapon = ruleItem.linkedWeapon;
+	return Boolean(ruleLinkedWeapon && sameOwnedItem(damageItem, ruleLinkedWeapon));
 }
 
 function getSceneTokenForActor(actor, scene, nearToken) {
@@ -817,7 +842,8 @@ function getCollateralDamageContext(params, damageDealer, sourceMessage) {
 	const collateralRules = (damageDealer?.rules ?? []).filter(rule => rule.key === RULE_KEY);
 	const rules = collateralRules.filter(rule =>
 		!rule.ignored &&
-		selectorMatches(rule, selectors, rollOptions)
+		selectorMatches(rule, selectors, rollOptions) &&
+		collateralRuleMatchesDamageItem(rule, damageItem)
 	);
 	return { sourceMessage, damageDealer, damageItem, rollOptions, selectors, collateralRules, rules };
 }

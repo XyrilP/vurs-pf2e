@@ -3,7 +3,7 @@
 	"title": "Vionheart Universe Roleplaying System for Pf2E/Sf2E",
 	"manifest": "https://raw.githubusercontent.com/XyrilP/vurs-pf2e/refs/heads/main/module.json",
 	"download": "https://github.com/XyrilP/vurs-pf2e/archive/refs/heads/main.zip",
-	"version": "13.10.5",
+	"version": "13.11",
 	"compatibility": {
 		"minimum": "14",
 		"verified": "14",
@@ -23,51 +23,51 @@
 				"skills": {
 					"additional": {
 						"power": {
-							"label": "Power",
+							"label": "VURS.Skills.Power",
 							"attribute": "str"
 						},
 						"dexterity-skill": {
-							"label": "Dexterity",
+							"label": "VURS.Skills.Dexterity",
 							"attribute": "dex"
 						},
 						"mobility": {
-							"label": "Mobility",
+							"label": "VURS.Skills.Mobility",
 							"attribute": "dex"
 						},
 						"acquisition": {
-							"label": "Acquisition",
+							"label": "VURS.Skills.Acquisition",
 							"attribute": "con"
 						},
 						"strategy": {
-							"label": "Strategy",
+							"label": "VURS.Skills.Strategy",
 							"attribute": "int"
 						},
 						"coolness": {
-							"label": "Coolness",
+							"label": "VURS.Skills.Coolness",
 							"attribute": "cha"
 						},
 						"romance": {
-							"label": "Romance",
+							"label": "VURS.Skills.Romance",
 							"attribute": "cha"
 						},
 						"soul": {
-							"label": "Soul",
+							"label": "VURS.Skills.Soul",
 							"attribute": "wis"
 						},
 						"fortitude-skill": {
-							"label": "Fortitude",
+							"label": "VURS.Skills.Fortitude",
 							"attribute": "con"
 						},
 						"reflex-skill": {
-							"label": "Reflex",
+							"label": "VURS.Skills.Reflex",
 							"attribute": "dex"
 						},
 						"will-skill": {
-							"label": "Will",
+							"label": "VURS.Skills.Will",
 							"attribute": "int"
 						},
 						"perception-skill": {
-							"label": "Perception",
+							"label": "VURS.Skills.Perception",
 							"attribute": "cha"
 						}
 					}
@@ -323,7 +323,7 @@
 		},
 		"pf2e-monster-parts": {
 			"homebrewFiles": [
-				"pf2e-monster-parts/vurs-monster-parts.json"
+				"@module/pf2e-monster-parts/vurs-monster-parts.json"
 			]
 		}
 	},
@@ -566,6 +566,7 @@
 		"scripts/features/collateralDamage.js",
 		"scripts/features/burstFire.js",
 		"scripts/features/staggeredTurns.js",
-		"scripts/generalChanges.js"
+		"scripts/generalChanges.js",
+		"scripts/features/overhealing.js"
 	]
 }

@@ -408,7 +408,7 @@ body.vurs-disabled-features-unenforced .pf2e-hud-element [data-vurs-condition-la
   display: none;
 }
 
-/* pf2e-hud section-level disables: rows blur without their own overlay �
+/* pf2e-hud section-level disables: rows blur without their own overlay �
    the section header carries the condition label instead. */
 .pf2e-hud-element [data-vurs-sec-any="true"] > * {
   filter: blur(2px);
@@ -416,4 +416,65 @@ body.vurs-disabled-features-unenforced .pf2e-hud-element [data-vurs-condition-la
 
 body.vurs-disabled-features-unenforced .pf2e-hud-element [data-vurs-sec-any="true"]:hover > * {
   filter: none;
+}
+
+/* Generic disabled presentation for any element carrying a condition label.
+   The selector-listed rules above cover the classic flag targets; this catches
+   the extra elements flagged in Breaker mixed-mode disables (panels, lists,
+   headers) so non-Breaker content stays visually blocked. pf2e-hud's scoped
+   rules are more specific and keep their own styling. */
+[data-vurs-condition-label]:not([data-vurs-condition-label=""]) {
+  position: relative;
+}
+
+[data-vurs-condition-label]:not([data-vurs-condition-label=""]) > * {
+  filter: blur(2px);
+}
+
+[data-vurs-condition-label]:not([data-vurs-condition-label=""])::after {
+  align-items: center;
+  backdrop-filter: blur(3px);
+  background: rgba(25, 25, 25, 0.24);
+  color: white;
+  content: attr(data-vurs-condition-label);
+  display: flex;
+  font-size: 0.8rem;
+  font-weight: 700;
+  inset: 0;
+  justify-content: center;
+  letter-spacing: 0.08em;
+  pointer-events: none;
+  position: absolute;
+  text-shadow: 0 1px 3px black;
+  text-transform: uppercase;
+  z-index: 2;
+}
+/* Breaker items stay usable while disabled — PF2e's native glow keyframes
+   (defined in pf2e.css) mark them as available during disabling conditions. */
+.vurs-breaker-glow {
+  animation: glow 0.75s infinite alternate;
+}
+/* Breaker mixed-mode disables: the container carries one continuous overlay
+   (its own ::after) while flagged subtrees stay inert but are visually covered
+   by it — their per-element overlays are suppressed so Breaker rows can layer
+   above with the glow. Cooldown/charge-up overlays are left alone. */
+body .vurs-breaker-mixed[data-vurs-condition-label]:not([data-vurs-condition-label=""]) > *:has(.vurs-breaker-glow) {
+  filter: none;
+}
+
+body .vurs-breaker-mixed [data-vurs-condition-label]:not([data-vurs-condition-label=""]):not([data-vurs-cooldown="true"]):not([data-vurs-charge-up="true"])::after {
+  display: none;
+}
+
+/* Breaker glow rows must paint above the mixed-mode container overlay
+   (::after uses z-index: 2). */
+.vurs-breaker-glow {
+  position: relative;
+  z-index: 3;
+}
+/* Lift the whole Breaker-row ancestor chain above the mixed-mode container
+   overlay so intermediate stacking contexts can't trap the glow row. */
+.vurs-breaker-mixed .vurs-breaker-exempt {
+  position: relative;
+  z-index: 3;
 }

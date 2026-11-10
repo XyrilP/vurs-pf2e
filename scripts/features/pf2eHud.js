@@ -1,9 +1,10 @@
-import { getRateOfFire, handleBurstFireHudClick, isAutomaticStrike } from "./burstFire.js";
+import { getRateOfFire, handleBurstFireHudClick, isAutomaticStrike, rollBurstFire } from "./burstFire.js";
 import { getAutomaticAreaCollateralTrait } from "./collateralDamage.js";
 import { renderVursPlayResourcesHudPanel } from "./playResources.js";
 import { actorUsesVursHpRules } from "./systemModes.js";
 import { getVursBaseMaxHp, getVursMaxHpReduction } from "./vursHp.js";
 import { applyVursHudDisableStates } from "./pf2eHudDisables.js";
+import { replaceVursTextTokens } from "./vursTextTokens.js";
 
 const HUD_MODULE_ID = "pf2e-hud";
 const hudRootsWithBurstFireHandlers = new WeakSet();
@@ -85,12 +86,27 @@ function observeHudDisableStates(root) {
 				hudRootsWithDisableObservers.delete(root);
 				return;
 			}
+			// The refresh below mutates the observed subtree (burst-fire
+			// formatting, max-HP control); pause observation so our own writes
+			// don't re-trigger this callback every frame.
+			observer.disconnect();
 			const actor = resolveHudActor(root);
 			if (actor) {
 				applyVursHudDisableStates(root, actor);
 				formatHudBurstFireLabel(root, actor);
 				addVursHudMaxHpControl(root, actor);
+				// pf2e-hud swaps panel innerHTML without renderApplicationV2 or an
+				// actor update (e.g., token reselection), which wipes the injected
+				// Play Resources section — rebuild it when it's gone or stale.
+				if (root.id === "pf2e-hud-persistent" || root.id === "pf2e-hud-token") {
+					const section = root.querySelector(":scope > .vurs-play-resources-hud");
+					const actorUuid = actor.uuid ?? actor.id;
+					if (!section || section.dataset.actorUuid !== actorUuid) {
+						renderVursPlayResourcesHudPanel(root, actor, { refresh: true });
+					}
+				}
 			}
+			observer.observe(root, { childList: true, subtree: true });
 		});
 	});
 	observer.observe(root, { childList: true, subtree: true });
@@ -337,6 +353,11 @@ function addVursHudMaxHpControl(root, actor, retries = 4) {
 
 function onHudClick(event, app, root) {
 	if (!(event.target instanceof Element)) return;
+	const shortcut = event.target.closest(".shortcut[data-type='strike']");
+	if (shortcut && root.contains(shortcut)) {
+		const shortcutActor = getHudActor(app) ?? resolveHudActor(root);
+		if (shortcutActor && handleBurstFireShortcutClick(event, shortcutActor, shortcut)) return;
+	}
 	const target = event.target.closest('[data-action="strike-attack"]');
 	if (!target || !root.contains(target)) return;
 	const actor = getHudActor(app) ?? resolveHudActor(root);
@@ -421,8 +442,8 @@ function formatHudBurstFireLabel(root, actor) {
 			}
 		}
 
-		const hasBurstFireUsage = strike.altUsages?.some(usage => usage.type === "burst-fire");
-		if (!hasBurstFireUsage && isAutomaticStrike(strike)) {
+		const strikeHasBurstFireUsage = strike.altUsages?.some(usage => usage.type === "burst-fire");
+		if (!strikeHasBurstFireUsage && isAutomaticStrike(strike)) {
 			if (!strikeElement.querySelector(".vurs-burst-fire-trigger[data-vurs-synthetic]")) {
 				const rateOfFire = getRateOfFire(actor, strike) ?? 0;
 				const rateLabel = game.i18n.format("VURS.BurstFire.RateOfFireShort", {
@@ -460,8 +481,172 @@ function formatHudBurstFireLabel(root, actor) {
 	}
 }
 
+function getShortcutStrike(actor, slot) {
+	const itemId = slot?.dataset?.itemId;
+	return actor?.system?.actions?.find(action => action.item?.id === itemId) ?? null;
+}
+
+const PF2E_HUD_RADIAL_TEMPLATE = "modules/pf2e-hud/templates/shortcuts/radial.hbs";
+
+// Replicates pf2e-hud's shortcut radialMenu() so automatic+area strike
+// shortcuts get the same menu style as normal Melee/Ranged strikes.
+async function showShortcutRadialMenu(slot, sections, onSelect) {
+	const html = await foundry.applications.handlebars.renderTemplate(
+		PF2E_HUD_RADIAL_TEMPLATE,
+		{ sections }
+	);
+	if (!slot.isConnected) return;
+	const panel = document.createElement("div");
+	panel.className = "pf2e-hud-element";
+	panel.id = "pf2e-hud-radial-panel";
+	panel.innerHTML = html;
+	panel.style.setProperty("--columns", String(sections.length));
+	document.body.appendChild(panel);
+	const slotRect = slot.getBoundingClientRect();
+	const panelRect = panel.getBoundingClientRect();
+	panel.style.left = `${slotRect.left + slotRect.width / 2 - panelRect.width / 2}px`;
+	const above = slotRect.top - panelRect.height - 6;
+	panel.style.top = `${above >= 0 ? above : slotRect.bottom + 6}px`;
+	const close = () => panel.remove();
+	panel.addEventListener("click", event => {
+		event.preventDefault();
+		event.stopPropagation();
+		const option = event.target.closest(".option");
+		close();
+		if (option && !option.classList.contains("selected") && option.dataset.value !== undefined) {
+			onSelect(option.dataset.value, event);
+		}
+	});
+	panel.addEventListener("contextmenu", event => {
+		event.preventDefault();
+		event.stopPropagation();
+	});
+	panel.addEventListener("auxclick", event => {
+		event.preventDefault();
+		event.stopPropagation();
+	});
+	panel.addEventListener("mouseleave", close);
+}
+
+function getShortcutRangeTitle(item) {
+	return item?.isMelee
+		? "PF2E.WeaponRangeMelee"
+		: item?.isThrown
+			? "PF2E.TraitThrown"
+			: "PF2E.NPCAttackRanged";
+}
+
+// Mirrors pf2e-hud's strike radial labels: variant 0 gets the "Strike" label
+// plus glyph and a shortened variant label (NPC labels are two words like
+// "Strike +23"), while MAP variants keep their full "+18 (MAP -5)" text.
+function getShortcutVariantLabel(actor, variant, index = 0) {
+	const label = String(variant?.label ?? "");
+	if (index > 0) return label;
+	const short = actor.isOfType?.("npc") ? label.split(" ")[1] ?? label : label;
+	const glyph = globalThis.Handlebars?.helpers?.actionGlyph?.(1) ?? "";
+	return `${game.i18n.localize("PF2E.WeaponStrikeLabel")} ${glyph} ${short}`
+		.replace(/\s+/g, " ")
+		.trim();
+}
+
+// Second-stage radial: the strike's MAP variants for Burst-Fire.
+async function showShortcutBurstFireVariantRadial(slot, actor, strike, event) {
+	const sections = [{
+		title: getShortcutRangeTitle(strike.item),
+		options: (strike.variants ?? []).map((variant, index) => ({
+			value: String(index),
+			label: getShortcutVariantLabel(actor, variant, index)
+		}))
+	}];
+	await showShortcutRadialMenu(slot, sections, (value, selectEvent) => {
+		void rollBurstFire(actor, strike, Number(value), { event: selectEvent ?? event })
+			.catch(error => {
+				console.error(`${HUD_MODULE_ID} | Could not roll Burst-Fire from shortcut for ${strike.item.name}`, error);
+				ui.notifications.error(game.i18n.localize("VURS.BurstFire.Warnings.RollFailed"));
+			});
+	});
+}
+
+// Automatic strike shortcuts can't use pf2e-hud's own radial: it iterates
+// altUsages assuming three variants each, but the injected burst-fire usage
+// has one. Rebuild the same-style menu ourselves — normal strike variants
+// plus auto-fire alongside a Burst-Fire section. Automatic+Area weapons are
+// burst-fire-only, so their strike section is omitted entirely.
+async function showShortcutAutomaticRadial(slot, actor, strike, event) {
+	const isAreaOnly = Boolean(getAutomaticAreaCollateralTrait(strike.item));
+	const sections = [];
+	if (!isAreaOnly) {
+		sections.push({
+			title: getShortcutRangeTitle(strike.item),
+			options: (strike.variants ?? []).map((variant, index) => ({
+				value: `strike-${index}`,
+				label: getShortcutVariantLabel(actor, variant, index)
+			}))
+		});
+		const autoFire = strike.altUsages?.find(usage => usage.type === "auto-fire");
+		if (autoFire?.variants?.length) {
+			sections.push({
+				title: autoFire.label ?? "Auto-Fire",
+				options: autoFire.variants.map((variant, index) => ({
+					value: `auto-fire-${index}`,
+					label: getShortcutVariantLabel(actor, variant, index)
+				}))
+			});
+		}
+	}
+	const rateOfFire = getRateOfFire(actor, strike) ?? 0;
+	const rateLabel = game.i18n.format("VURS.BurstFire.RateOfFireShort", { shots: rateOfFire });
+	const burstFireTitle = game.i18n.localize("VURS.BurstFire.Title");
+	const actionGlyph = globalThis.Handlebars?.helpers?.actionGlyph?.(2) ?? "2";
+	sections.push({
+		title: burstFireTitle,
+		options: [{
+			value: "burst",
+			label: `${burstFireTitle} ${actionGlyph} (${rateLabel})`
+		}]
+	});
+	await showShortcutRadialMenu(slot, sections, async (value, selectEvent) => {
+		if (value === "burst") {
+			if (slot.isConnected) await showShortcutBurstFireVariantRadial(slot, actor, strike, event);
+			return;
+		}
+		const separator = value.lastIndexOf("-");
+		const kind = value.slice(0, separator);
+		const index = Number(value.slice(separator + 1));
+		const rollTarget = kind === "strike"
+			? strike
+			: strike.altUsages?.find(usage => usage.type === kind);
+		const variant = rollTarget?.variants?.[index];
+		if (!variant?.roll) return;
+		try {
+			await variant.roll({ event: selectEvent ?? event });
+		} catch (error) {
+			console.error(`${HUD_MODULE_ID} | Shortcut strike roll failed for ${strike.item.name}`, error);
+		}
+	});
+}
+
+function handleBurstFireShortcutClick(event, actor, slot) {
+	const strike = getShortcutStrike(actor, slot);
+	if (!strike || !isAutomaticStrike(strike)) return false;
+	event.preventDefault();
+	event.stopImmediatePropagation();
+	void showShortcutAutomaticRadial(slot, actor, strike, event);
+	return true;
+}
+
 Hooks.on("renderApplicationV2", (app, element) => {
 	if (!game.modules.get(HUD_MODULE_ID)?.active) return;
+	// pf2e-hud popups (item summaries, NPC notes, text popups) render enriched
+	// HTML outside actor sheets — resolve VURS text tokens there too.
+	const popupActor = app?.actor;
+	if (popupActor && element instanceof HTMLElement) {
+		if (element.querySelector(".item-summary")) {
+			replaceVursTextTokens(element, popupActor, app.item ?? null);
+		} else if (element.querySelector(".text-content")) {
+			replaceVursTextTokens(element, popupActor);
+		}
+	}
 	const root = getHudRoot(app, element);
 	if (!root) return;
 

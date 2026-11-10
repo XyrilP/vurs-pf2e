@@ -1,16 +1,21 @@
 import {
 	areDisabledFeaturesEnforced,
+	beginVursConditionPass,
 	getDragonblightDamageSources,
 	getDragonblightDamageTypes,
 	getVursConditionFlags,
+	getVursConditionPassGeneration,
 	getVursItemSlug,
 	getVursItemTraits,
 	hasDragonblightActionTrait,
 	hasDragonblightDamageTypeInValue,
 	isAcquisitionGatedItem,
 	isDragonblightStrikeAffected,
+	itemHasBreakerTrait,
 	itemIgnoresBroken,
-	setConditionDisabled
+	setConditionDisabled,
+	setConditionDisabledWithBreakerExemption,
+	updateVursBreakerGlow
 } from "./disableConditions.js";
 
 const ACTING_STATUSES = ["staggered", "unconscious", "cantAct", "incapacitated", "petrified", "stunned"];
@@ -22,13 +27,29 @@ function isVursSupportedActor(actor) {
 	return Boolean(actor?.isOfType?.("character") || actor?.isOfType?.("npc"));
 }
 
+// actor.system.actions is rescanned for every row otherwise; build the
+// itemId → action lookup once per pass generation.
+const hudActionMapCache = new WeakMap();
+function getHudActionMap(actor) {
+	const gen = getVursConditionPassGeneration();
+	const cached = actor && typeof actor === "object" ? hudActionMapCache.get(actor) : null;
+	if (cached && cached.gen === gen) return cached.map;
+	const map = new Map();
+	for (const action of actor?.system?.actions ?? []) {
+		const id = action?.item?.id;
+		if (id && !map.has(id)) map.set(id, action);
+	}
+	if (actor && typeof actor === "object") hudActionMapCache.set(actor, { gen, map });
+	return map;
+}
+
 function findHudAction(actor, itemId, index) {
 	if (Number.isInteger(index)) {
 		const byIndex = actor.system?.actions?.[index];
 		if (byIndex) return byIndex;
 	}
 	if (itemId) {
-		return actor.system?.actions?.find(action => action.item?.id === itemId) ?? null;
+		return getHudActionMap(actor).get(itemId) ?? null;
 	}
 	return null;
 }
@@ -92,9 +113,9 @@ function isDragonblightRowAffected(item, action, traits, isSpell, damageTypes) {
 	);
 }
 
-function applyActingStatuses(element, flags, disableInteraction = true) {
+function applyActingStatuses(element, flags, disableInteraction = true, exempt = false) {
 	for (const status of ACTING_STATUSES) {
-		setConditionDisabled(element, status, statusFlag(flags, status), disableInteraction);
+		setConditionDisabled(element, status, statusFlag(flags, status) && !exempt, disableInteraction);
 	}
 }
 
@@ -122,22 +143,44 @@ function hudSidebarType(root) {
 // item-level setConditionDisabled pass so the final inert state sees both.
 // ---------------------------------------------------------------------------
 
+// Each row receives ~10 section-condition writes per pass; the active-flag
+// count is tracked per element so secActive doesn't rescan every dataset key.
+const hudSectionActiveCounts = new WeakMap();
+
 function setHudSectionCondition(element, condition, isDisabled) {
 	if (!element) return;
-	element.dataset[`vursSec${condition[0].toUpperCase()}${condition.slice(1)}`] = String(isDisabled);
-	const secActive = Object.entries(element.dataset).some(([key, value]) =>
-		key.startsWith("vursSec") && key !== "vursSecAny" && value === "true");
-	element.dataset.vursSecAny = secActive ? "true" : "";
+	const flagKey = `vursSec${condition[0].toUpperCase()}${condition.slice(1)}`;
+	const flagValue = String(isDisabled);
+	const previous = element.dataset[flagKey];
+	const flagChanged = previous !== flagValue;
+	if (flagChanged) element.dataset[flagKey] = flagValue;
+
+	let activeCount = hudSectionActiveCounts.get(element);
+	if (activeCount === undefined) {
+		activeCount = Object.keys(element.dataset).reduce((count, key) =>
+			count + (key.startsWith("vursSec") && key !== "vursSecAny" && element.dataset[key] === "true" ? 1 : 0), 0);
+	}
+	if (flagChanged) {
+		if (previous === "true" && flagValue !== "true") activeCount--;
+		else if (previous !== "true" && flagValue === "true") activeCount++;
+		hudSectionActiveCounts.set(element, activeCount);
+	}
+	const secActive = activeCount > 0;
+	const secAny = secActive ? "true" : "";
+	if (element.dataset.vursSecAny !== secAny) element.dataset.vursSecAny = secAny;
 	const itemActive = (element.dataset.vursConditionLabel ?? "") !== "";
 	const disabled = areDisabledFeaturesEnforced() && (secActive || itemActive);
-	element.inert = disabled;
-	if (disabled) element.setAttribute("aria-disabled", "true");
-	else element.removeAttribute("aria-disabled");
+	if (element.inert !== disabled) element.inert = disabled;
+	if (disabled) {
+		if (element.getAttribute("aria-disabled") !== "true") element.setAttribute("aria-disabled", "true");
+	} else if (element.hasAttribute("aria-disabled")) {
+		element.removeAttribute("aria-disabled");
+	}
 }
 
-function applyHudActingStatusSection(element, flags) {
+function applyHudActingStatusSection(element, flags, exempt = false) {
 	for (const status of ACTING_STATUSES) {
-		setHudSectionCondition(element, status, statusFlag(flags, status));
+		setHudSectionCondition(element, status, statusFlag(flags, status) && !exempt);
 	}
 }
 
@@ -161,7 +204,18 @@ const EXEMPT_INVENTORY_SECTION_LABEL_KEYS = [
 	"PF2E.Actor.Inventory.Section.WeaponsAndShields",
 	"TYPES.Item.armor"
 ];
+// Runs per header per pass; localize + sibling-row walks are cached per
+// (header, actor, pass generation).
+const hudEquipmentSectionCache = new WeakMap();
 function isHudEquipmentSection(header, actor) {
+	const gen = getVursConditionPassGeneration();
+	const cached = header && typeof header === "object" ? hudEquipmentSectionCache.get(header) : null;
+	if (cached && cached.gen === gen && cached.actor === actor) return cached.result;
+	const result = computeIsHudEquipmentSection(header, actor);
+	if (header && typeof header === "object") hudEquipmentSectionCache.set(header, { gen, actor, result });
+	return result;
+}
+function computeIsHudEquipmentSection(header, actor) {
 	const label = header.querySelector(".name")?.textContent?.trim();
 	if (label && EXEMPT_INVENTORY_SECTION_LABEL_KEYS.some(key => label === game.i18n.localize(key))) {
 		return true;
@@ -174,31 +228,38 @@ function isHudEquipmentSection(header, actor) {
 	return types.size > 0 && [...types].every(type => EQUIPMENT_ITEM_TYPES.has(type));
 }
 
+function hudRowIsBreaker(actor, row) {
+	const item = row?.dataset?.itemId ? actor?.items?.get(row.dataset.itemId) : null;
+	return itemHasBreakerTrait(item);
+}
+
 function applyHudSectionStates(root, flags, actor) {
 	const sidebarType = hudSidebarType(root);
 	if (sidebarType === "spells") {
 		// Whole spellcasting tab: silenced (also when cursed), cursed,
 		// dragonblight and acting statuses.
 		for (const row of root.querySelectorAll('.item[data-item-type^="spell"][data-item-id]')) {
-			setHudSectionCondition(row, "silenced", flags.isSilenced || flags.isCursed);
-			setHudSectionCondition(row, "cursed", flags.isCursed);
-			setHudSectionCondition(row, "dragonblight", flags.isDragonblight);
-			applyHudActingStatusSection(row, flags);
+			const exempt = hudRowIsBreaker(actor, row);
+			setHudSectionCondition(row, "silenced", (flags.isSilenced || flags.isCursed) && !exempt);
+			setHudSectionCondition(row, "cursed", flags.isCursed && !exempt);
+			setHudSectionCondition(row, "dragonblight", flags.isDragonblight && !exempt);
+			applyHudActingStatusSection(row, flags, exempt);
 		}
 	} else if (sidebarType === "actions") {
 		// Strikes list: disarmed (also when cursed), cursed, restrained,
 		// paralyzed and acting statuses blanket every strike row.
 		for (const row of root.querySelectorAll(".item.attack[data-index][data-item-id]")) {
-			setHudSectionCondition(row, "disarmed", flags.isDisarmed || flags.isCursed);
-			setHudSectionCondition(row, "cursed", flags.isCursed);
-			setHudSectionCondition(row, "restrained", flags.isRestrained);
-			setHudSectionCondition(row, "paralyzed", flags.isParalyzed);
-			applyHudActingStatusSection(row, flags);
+			const exempt = hudRowIsBreaker(actor, row);
+			setHudSectionCondition(row, "disarmed", (flags.isDisarmed || flags.isCursed) && !exempt);
+			setHudSectionCondition(row, "cursed", flags.isCursed && !exempt);
+			setHudSectionCondition(row, "restrained", flags.isRestrained && !exempt);
+			setHudSectionCondition(row, "paralyzed", flags.isParalyzed && !exempt);
+			applyHudActingStatusSection(row, flags, exempt);
 		}
 		// .tab.actions disables the whole actions tab for acting statuses —
 		// blast rows and regular action rows included.
 		for (const row of root.querySelectorAll('.item.attack[data-item-id]:not([data-index]), .item.action[data-item-id]')) {
-			applyHudActingStatusSection(row, flags);
+			applyHudActingStatusSection(row, flags, hudRowIsBreaker(actor, row));
 		}
 		// Exploration/downtime panels are disabled as a whole when fatigued.
 		if (flags.isFatigued) {
@@ -217,8 +278,9 @@ function applyHudSectionStates(root, flags, actor) {
 		for (const header of root.querySelectorAll("header[data-filter-value]")) {
 			if (isHudEquipmentSection(header, actor)) continue;
 			for (const row of hudItemSectionRows(header)) {
-				setHudSectionCondition(row, "muted", flags.isMuted || flags.isCursed);
-				setHudSectionCondition(row, "cursed", flags.isCursed);
+				const exempt = hudRowIsBreaker(actor, row);
+				setHudSectionCondition(row, "muted", (flags.isMuted || flags.isCursed) && !exempt);
+				setHudSectionCondition(row, "cursed", flags.isCursed && !exempt);
 			}
 		}
 	}
@@ -232,20 +294,21 @@ function applyHudSectionStates(root, flags, actor) {
 // section-level flags (disarm/cursed/restrained/paralyzed/statuses) moved to
 // applyHudSectionStates.
 function applyStrikeConditions(element, actor, flags, damageTypes) {
-	const { item, action } = hudRowContext(element, actor, "strike");
+	const { item, action, traits } = hudRowContext(element, actor, "strike");
+	const isBreaker = traits.includes("breaker");
 
 	setConditionDisabled(
 		element,
 		"dragonblight",
-		flags.isDragonblight && isDragonblightStrikeAffected(item, action, damageTypes)
+		flags.isDragonblight && !isBreaker && isDragonblightStrikeAffected(item, action, damageTypes)
 	);
 
-	const disableItems = flags.isMuted || flags.isCursed;
+	const disableItems = (flags.isMuted || flags.isCursed) && !isBreaker;
 	for (const button of element.querySelectorAll('.variant.auxiliary[data-auxiliary-action-index]')) {
 		const auxiliary = action?.auxiliaryActions?.[Number(button.dataset.auxiliaryActionIndex)];
 		if (auxiliary?.action !== "raise-a-shield" && auxiliary?.action !== "parry") continue;
 		setConditionDisabled(button, "muted", disableItems);
-		setConditionDisabled(button, "cursed", flags.isCursed);
+		setConditionDisabled(button, "cursed", flags.isCursed && !isBreaker);
 	}
 }
 
@@ -262,41 +325,42 @@ function applyActionRowConditions(element, actor, flags, damageTypes) {
 	const isExplorationAction = Boolean(
 		element.querySelector('a[data-action="toggle-exploration"]')
 	);
+	const isBreaker = traits.includes("breaker");
 
 	// Silenced/cursed pass (mirrors applySilencedState: basic actions exempt).
-	setConditionDisabled(element, "silenced", flags.isSilenced && !isBasicAction);
-	setConditionDisabled(element, "cursed", flags.isCursed && !isBasicAction);
+	setConditionDisabled(element, "silenced", flags.isSilenced && !isBasicAction && !isBreaker);
+	setConditionDisabled(element, "cursed", flags.isCursed && !isBasicAction && !isBreaker);
 	// Muted pass runs after and overwrites vursCursed, exactly like the sheet.
-	setConditionDisabled(element, "muted", disableItems && isAcquisitionGated);
-	setConditionDisabled(element, "cursed", flags.isCursed && isAcquisitionGated);
+	setConditionDisabled(element, "muted", disableItems && isAcquisitionGated && !isBreaker);
+	setConditionDisabled(element, "cursed", flags.isCursed && isAcquisitionGated && !isBreaker);
 	if (slug === "raise-a-shield") {
-		setConditionDisabled(element, "muted", disableItems);
-		setConditionDisabled(element, "cursed", flags.isCursed);
+		setConditionDisabled(element, "muted", disableItems && !isBreaker);
+		setConditionDisabled(element, "cursed", flags.isCursed && !isBreaker);
 	}
 	setConditionDisabled(
 		element,
 		"fatigued",
-		flags.isFatigued && (isExplorationAction || traits.includes("exploration"))
+		flags.isFatigued && (isExplorationAction || traits.includes("exploration")) && !isBreaker
 	);
-	setConditionDisabled(element, "confused", flags.isConfused && (isDelayOrReady || isReaction));
+	setConditionDisabled(element, "confused", flags.isConfused && (isDelayOrReady || isReaction) && !isBreaker);
 	setConditionDisabled(
 		element,
 		"dragonblight",
-		flags.isDragonblight && isDragonblightRowAffected(item, action, traits, false, damageTypes)
+		flags.isDragonblight && !isBreaker && isDragonblightRowAffected(item, action, traits, false, damageTypes)
 	);
-	setConditionDisabled(element, "rooted", flags.isRooted && traits.some(trait => ["move", "traversal", "teleportation"].includes(trait)));
-	setConditionDisabled(element, "immobilized", flags.isImmobilized && traits.includes("move"));
-	setConditionDisabled(element, "prone", flags.isProne && !["crawl", "stand"].includes(slug) && traits.includes("move"));
+	setConditionDisabled(element, "rooted", flags.isRooted && !isBreaker && traits.some(trait => ["move", "traversal", "teleportation"].includes(trait)));
+	setConditionDisabled(element, "immobilized", flags.isImmobilized && !isBreaker && traits.includes("move"));
+	setConditionDisabled(element, "prone", flags.isProne && !isBreaker && !["crawl", "stand"].includes(slug) && traits.includes("move"));
 	setConditionDisabled(
 		element,
 		"restrained",
-		flags.isRestrained && !["escape", "force-open"].includes(slug) && traits.some(trait => ["attack", "manipulate"].includes(trait))
+		flags.isRestrained && !isBreaker && !["escape", "force-open"].includes(slug) && traits.some(trait => ["attack", "manipulate"].includes(trait))
 	);
-	setConditionDisabled(element, "paralyzed", flags.isParalyzed && slug !== "recall-knowledge");
+	setConditionDisabled(element, "paralyzed", flags.isParalyzed && !isBreaker && slug !== "recall-knowledge");
 	setConditionDisabled(
 		element,
 		"broken",
-		flags.isBroken && item?.isOfType?.("action", "feat") && (isReaction || (isPassive && !itemIgnoresBroken(item)))
+		flags.isBroken && !isBreaker && item?.isOfType?.("action", "feat") && (isReaction || (isPassive && !itemIgnoresBroken(item)))
 	);
 }
 
@@ -310,20 +374,21 @@ function applyFeatRowConditions(element, actor, flags, damageTypes) {
 	const isReaction = hasReactionCost(item, traits);
 	const isPassive = !item?.actionCost;
 	const isDelayOrReady = ["delay", "ready"].includes(slug);
+	const isBreaker = traits.includes("breaker");
 
-	setConditionDisabled(element, "muted", disableItems && isAcquisitionGated);
-	setConditionDisabled(element, "cursed", flags.isCursed && isAcquisitionGated);
-	setConditionDisabled(element, "fatigued", flags.isFatigued && traits.includes("exploration"));
-	setConditionDisabled(element, "confused", flags.isConfused && (isDelayOrReady || isReaction));
+	setConditionDisabled(element, "muted", disableItems && isAcquisitionGated && !isBreaker);
+	setConditionDisabled(element, "cursed", flags.isCursed && isAcquisitionGated && !isBreaker);
+	setConditionDisabled(element, "fatigued", flags.isFatigued && traits.includes("exploration") && !isBreaker);
+	setConditionDisabled(element, "confused", flags.isConfused && (isDelayOrReady || isReaction) && !isBreaker);
 	setConditionDisabled(
 		element,
 		"dragonblight",
-		flags.isDragonblight && isDragonblightRowAffected(item, action, traits, false, damageTypes)
+		flags.isDragonblight && !isBreaker && isDragonblightRowAffected(item, action, traits, false, damageTypes)
 	);
 	setConditionDisabled(
 		element,
 		"broken",
-		flags.isBroken && (isReaction || (isPassive && !itemIgnoresBroken(item)))
+		flags.isBroken && !isBreaker && (isReaction || (isPassive && !itemIgnoresBroken(item)))
 	);
 }
 
@@ -336,24 +401,25 @@ function applySpellRowConditions(element, actor, flags, damageTypes) {
 	const isAcquisitionGated = isAcquisitionGatedItem(item);
 	const isReaction = hasReactionCost(item, traits);
 	const isDelayOrReady = ["delay", "ready"].includes(slug);
+	const isBreaker = traits.includes("breaker");
 
-	setConditionDisabled(element, "muted", disableItems && isAcquisitionGated);
-	setConditionDisabled(element, "fatigued", flags.isFatigued && traits.includes("exploration"));
-	setConditionDisabled(element, "confused", flags.isConfused && (isDelayOrReady || isReaction));
+	setConditionDisabled(element, "muted", disableItems && isAcquisitionGated && !isBreaker);
+	setConditionDisabled(element, "fatigued", flags.isFatigued && traits.includes("exploration") && !isBreaker);
+	setConditionDisabled(element, "confused", flags.isConfused && (isDelayOrReady || isReaction) && !isBreaker);
 	setConditionDisabled(
 		element,
 		"dragonblight",
-		flags.isDragonblight && isDragonblightRowAffected(item, action, traits, true, damageTypes)
+		flags.isDragonblight && !isBreaker && isDragonblightRowAffected(item, action, traits, true, damageTypes)
 	);
-	setConditionDisabled(element, "rooted", flags.isRooted && traits.some(trait => ["move", "traversal", "teleportation"].includes(trait)));
-	setConditionDisabled(element, "immobilized", flags.isImmobilized && traits.includes("move"));
-	setConditionDisabled(element, "prone", flags.isProne && !["crawl", "stand"].includes(slug) && traits.includes("move"));
+	setConditionDisabled(element, "rooted", flags.isRooted && !isBreaker && traits.some(trait => ["move", "traversal", "teleportation"].includes(trait)));
+	setConditionDisabled(element, "immobilized", flags.isImmobilized && !isBreaker && traits.includes("move"));
+	setConditionDisabled(element, "prone", flags.isProne && !isBreaker && !["crawl", "stand"].includes(slug) && traits.includes("move"));
 	setConditionDisabled(
 		element,
 		"restrained",
-		flags.isRestrained && !["escape", "force-open"].includes(slug) && traits.some(trait => ["attack", "manipulate"].includes(trait))
+		flags.isRestrained && !isBreaker && !["escape", "force-open"].includes(slug) && traits.some(trait => ["attack", "manipulate"].includes(trait))
 	);
-	setConditionDisabled(element, "paralyzed", flags.isParalyzed && slug !== "recall-knowledge");
+	setConditionDisabled(element, "paralyzed", flags.isParalyzed && !isBreaker && slug !== "recall-knowledge");
 }
 
 // Skill actions (.item.statistic on the skills sidebar) get the same
@@ -375,33 +441,34 @@ function applySkillActionRowConditions(element, actor, flags, damageTypes) {
 	const isReaction = hasReactionCost(item, traits);
 	const isPassive = !item.actionCost;
 	const isDelayOrReady = ["delay", "ready"].includes(slug);
+	const isBreaker = traits.includes("breaker");
 
-	setConditionDisabled(element, "silenced", flags.isSilenced && !isBasicAction);
-	setConditionDisabled(element, "cursed", flags.isCursed && !isBasicAction);
-	setConditionDisabled(element, "muted", disableItems && isAcquisitionGated);
-	setConditionDisabled(element, "cursed", flags.isCursed && isAcquisitionGated);
-	setConditionDisabled(element, "fatigued", flags.isFatigued && traits.includes("exploration"));
-	setConditionDisabled(element, "confused", flags.isConfused && (isDelayOrReady || isReaction));
+	setConditionDisabled(element, "silenced", flags.isSilenced && !isBasicAction && !isBreaker);
+	setConditionDisabled(element, "cursed", flags.isCursed && !isBasicAction && !isBreaker);
+	setConditionDisabled(element, "muted", disableItems && isAcquisitionGated && !isBreaker);
+	setConditionDisabled(element, "cursed", flags.isCursed && isAcquisitionGated && !isBreaker);
+	setConditionDisabled(element, "fatigued", flags.isFatigued && traits.includes("exploration") && !isBreaker);
+	setConditionDisabled(element, "confused", flags.isConfused && (isDelayOrReady || isReaction) && !isBreaker);
 	setConditionDisabled(
 		element,
 		"dragonblight",
-		flags.isDragonblight && isDragonblightRowAffected(item, null, traits, false, damageTypes)
+		flags.isDragonblight && !isBreaker && isDragonblightRowAffected(item, null, traits, false, damageTypes)
 	);
-	setConditionDisabled(element, "rooted", flags.isRooted && traits.some(trait => ["move", "traversal", "teleportation"].includes(trait)));
-	setConditionDisabled(element, "immobilized", flags.isImmobilized && traits.includes("move"));
-	setConditionDisabled(element, "prone", flags.isProne && !["crawl", "stand"].includes(slug) && traits.includes("move"));
+	setConditionDisabled(element, "rooted", flags.isRooted && !isBreaker && traits.some(trait => ["move", "traversal", "teleportation"].includes(trait)));
+	setConditionDisabled(element, "immobilized", flags.isImmobilized && !isBreaker && traits.includes("move"));
+	setConditionDisabled(element, "prone", flags.isProne && !isBreaker && !["crawl", "stand"].includes(slug) && traits.includes("move"));
 	setConditionDisabled(
 		element,
 		"restrained",
-		flags.isRestrained && !["escape", "force-open"].includes(slug) && traits.some(trait => ["attack", "manipulate"].includes(trait))
+		flags.isRestrained && !isBreaker && !["escape", "force-open"].includes(slug) && traits.some(trait => ["attack", "manipulate"].includes(trait))
 	);
-	setConditionDisabled(element, "paralyzed", flags.isParalyzed && slug !== "recall-knowledge");
+	setConditionDisabled(element, "paralyzed", flags.isParalyzed && !isBreaker && slug !== "recall-knowledge");
 	setConditionDisabled(
 		element,
 		"broken",
-		flags.isBroken && (isReaction || (isPassive && !itemIgnoresBroken(item)))
+		flags.isBroken && !isBreaker && (isReaction || (isPassive && !itemIgnoresBroken(item)))
 	);
-	applyActingStatuses(element, flags);
+	applyActingStatuses(element, flags, true, isBreaker);
 }
 
 function applyHudCooldownChargeUp(root, actor) {
@@ -439,29 +506,49 @@ function applyCooldownChargeUpToItem(element, item, cooldownItemUuids, currentRo
 	);
 }
 
+const HUD_ITEM_ROW_SELECTOR = ".item[data-item-id], .item.statistic[data-item-uuid]";
+
+function hudBreakerRowItem(actor, row) {
+	const itemId = row?.dataset?.itemId;
+	if (itemId) {
+		const item = actor?.items?.get(itemId);
+		if (item) return item;
+	}
+	const index = row?.dataset?.index;
+	if (index !== undefined && index !== "") {
+		const action = actor?.system?.actions?.[Number(index)];
+		if (action?.item) return action.item;
+	}
+	return resolveHudSidebarItem(row);
+}
+
 // Tab-level conditions map to the sheet's .tab.spellcasting / .tab.actions
 // containers. The HUD sidebar's .inner element is the equivalent wrapper —
 // marking it produces ONE overlay + inert for the whole tab (headers, toggles
 // and rows included), exactly like the sheet. Runs unconditionally so cleared
-// conditions reset.
-function applyHudTabStates(root, flags) {
+// conditions reset. Containers holding Breaker rows switch to mixed mode so
+// those rows stay usable.
+function applyHudTabStates(root, flags, actor, resolveItem = null) {
 	const inner = root.querySelector(".inner");
 	if (!inner) return;
 	const sidebarType = hudSidebarType(root);
+	if (!resolveItem) resolveItem = row => hudBreakerRowItem(actor, row);
+	const tabCondition = (condition, active) =>
+		setConditionDisabledWithBreakerExemption(inner, condition, active, actor, HUD_ITEM_ROW_SELECTOR, resolveItem);
 	if (sidebarType === "spells") {
 		// The whole spellcasting tab: silenced (also when cursed), cursed,
 		// dragonblight and acting statuses.
-		setConditionDisabled(inner, "silenced", flags.isSilenced || flags.isCursed);
-		setConditionDisabled(inner, "cursed", flags.isCursed);
-		setConditionDisabled(inner, "dragonblight", flags.isDragonblight);
-		applyActingStatuses(inner, flags);
+		tabCondition("silenced", flags.isSilenced || flags.isCursed);
+		tabCondition("cursed", flags.isCursed);
+		tabCondition("dragonblight", flags.isDragonblight);
+		for (const status of ACTING_STATUSES) tabCondition(status, statusFlag(flags, status));
 	} else if (sidebarType === "actions") {
 		// .tab.actions is acting-status-disabled as a whole on the sheet.
-		applyActingStatuses(inner, flags);
+		for (const status of ACTING_STATUSES) tabCondition(status, statusFlag(flags, status));
 	} else if (sidebarType === "skills") {
 		// Can't act = staggered/unconscious/cantAct/incapacitated/petrified/
 		// stunned — the whole skills tab goes inert, checks included.
-		applyActingStatuses(inner, flags);
+		for (const status of ACTING_STATUSES) tabCondition(status, statusFlag(flags, status));
 	}
 }
 
@@ -518,6 +605,7 @@ function applyHudUtilityStates(root, flags) {
 
 export function applyVursHudDisableStates(root, actor) {
 	if (!root || !isVursSupportedActor(actor)) return;
+	beginVursConditionPass();
 	const flags = getVursConditionFlags(actor);
 	// Cooldown/charge-up are effect/trait driven and must run even with no
 	// condition flags; every other item-level state early-outs when nothing is
@@ -559,5 +647,7 @@ export function applyVursHudDisableStates(root, actor) {
 	}
 	applyHudSectionHeaderStates(root, flags, actor);
 	applyHudSectionStates(root, flags, actor);
-	applyHudTabStates(root, flags);
+	const breakerResolver = row => hudBreakerRowItem(actor, row);
+	applyHudTabStates(root, flags, actor, breakerResolver);
+	updateVursBreakerGlow(root, actor, HUD_ITEM_ROW_SELECTOR, breakerResolver);
 }

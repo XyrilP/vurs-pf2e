@@ -3,12 +3,16 @@
    also carries data-action="strike-attack", so the selector is narrowed to real
    buttons/variants and the icon is made non-interactive instead of hidden. */
 .vurs-area-strike-hidden :is(button, .variant.attack)[data-action="strike-attack"]:not(.vurs-burst-fire-trigger) {
-	display: none;
+	display: none !important;
 }
 
 .vurs-area-strike-hidden .item-image.variant-strike[data-action="strike-attack"] {
 	pointer-events: none;
 }
+
+/* Automatic+Area strike shortcuts reuse pf2e-hud's own radial menu
+   (modules/pf2e-hud/templates/shortcuts/radial.hbs) for the Burst-Fire flow,
+   so no module-specific shortcut styles are needed. */
 
 .pf2e-hud-element .variant.attack .vurs-burst-fire-icon {
 	height: 1em;

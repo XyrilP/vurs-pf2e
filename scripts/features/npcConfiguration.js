@@ -1876,7 +1876,8 @@ function getRelationshipRank(statistics = {}) {
 }
 
 function getRelationshipLevelAdjustment(rank) {
-	return Number.isSafeInteger(rank) ? rank : 0;
+	// Positive ranks floor, negative ranks ceil (round toward zero).
+	return Number.isFinite(rank) ? Math.trunc(rank) : 0;
 }
 
 function getNpcActorLevel(level, actor) {
