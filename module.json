@@ -564,9 +564,11 @@
 		"scripts/features/damageReturn.js",
 		"scripts/features/npcSheetActions.js",
 		"scripts/features/collateralDamage.js",
+      "scripts/features/wedgeTemplates.js",
 		"scripts/features/burstFire.js",
 		"scripts/features/staggeredTurns.js",
 		"scripts/generalChanges.js",
-		"scripts/features/overhealing.js"
+		"scripts/features/overhealing.js",
+		"scripts/features/disableOverrideKeybind.js"
 	]
 }

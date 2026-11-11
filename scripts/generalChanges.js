@@ -25,6 +25,7 @@ import {
 	getVursStoredMaxHpReduction
 } from "./features/vursHp.js";
 import {
+	actorHasVursDisableStates,
 	areDisabledFeaturesEnforced,
 	getBrokenConditionFlag,
 	getDragonblightDamageSources,
@@ -41,7 +42,9 @@ import {
 	ruleEnablesBroken,
 	ruleEnablesVursCondition,
 	beginVursConditionPass,
+	getVursConditionFlags,
 	getVursConditionPassGeneration,
+	getVursConditionPresenceKeys,
 	setConditionButtonDisabled,
 	setConditionDisabled,
 	setConditionDisabledWithBreakerExemption,
@@ -505,6 +508,8 @@ function updateDisabledFeaturesPresentation() {
 
 function hasMutedOrCursedCondition(actor, rules = null) {
 	if (!isSupportedVursActor(actor)) return false;
+	const presence = getVursConditionPresenceKeys(actor);
+	if (presence.has("muted") || presence.has("cursed")) return true;
 	if ([
 		foundry.utils.getProperty(actor, "flags.vurs.conditions.isMuted"),
 		foundry.utils.getProperty(actor, "flags.vurs.conditions.isCursed")
@@ -901,6 +906,121 @@ function applyNegativeHpSheetState(root, actor) {
 // not the whole item (inventory rows etc.).
 const VURS_BREAKER_GLOW_SHEET_SELECTOR = ".actions-list > .item[data-item-id], .feats-list [data-item-id], .spell-list > .spell[data-item-id], [data-strike][data-action-index]";
 
+// Stale disable markers left in the DOM: every disable path writes a
+// non-empty vursConditionLabel (cooldown/charge-up included) or the breaker
+// glow class, so their absence proves no pass has anything to clear.
+const VURS_SHEET_DISABLE_MARKS = '[data-vurs-condition-label]:not([data-vurs-condition-label=""]), .vurs-breaker-glow';
+
+// Every data-vurs-* condition attribute any pass can write. One shared scan
+// collects which are currently "true", letting inactive conditions skip their
+// passes entirely while stale flags still force the owning pass to run.
+const VURS_CONDITION_ATTRS = [
+	"cursed", "muted", "disarmed", "silenced", "dragonblight", "fatigued",
+	"confused", "rooted", "immobilized", "prone", "restrained", "paralyzed",
+	"staggered", "unconscious", "cant-act", "incapacitated", "petrified",
+	"stunned", "broken", "cooldown", "charge-up"
+];
+const vursAttrDatasetKey = attr =>
+	"vurs" + attr.split("-").map(part => part[0].toUpperCase() + part.slice(1)).join("");
+
+function applyVursConditionStates(root, actor) {
+	if (!actorHasVursDisableStates(actor) && !root.querySelector(VURS_SHEET_DISABLE_MARKS)) return;
+	const flags = getVursConditionFlags(actor);
+	const on = name => flags[`is${name}`] === true;
+	const staleAttrs = new Set();
+	for (const element of root.querySelectorAll(
+		VURS_CONDITION_ATTRS.map(attr => `[data-vurs-${attr}="true"]`).join(", ")
+	)) {
+		for (const attr of VURS_CONDITION_ATTRS) {
+			if (element.dataset[vursAttrDatasetKey(attr)] === "true") staleAttrs.add(attr);
+		}
+	}
+	const run = (active, attrs) => active || attrs.some(attr => staleAttrs.has(attr));
+
+	if (run(on("Disarmed") || on("Cursed"), ["disarmed", "cursed"])) applyDisarmedStrikeState(root, actor);
+	if (run(on("Silenced") || on("Cursed"), ["silenced", "cursed"])) applySilencedState(root, actor);
+	if (run(on("Dragonblight"), ["dragonblight"])) applyDragonblightState(root, actor);
+	if (run(on("Muted") || on("Cursed"), ["muted", "cursed"])) applyMutedState(root, actor);
+	if (run(on("Confused"), ["confused"])) applyConfusedState(root, actor);
+	if (run(on("Fatigued"), ["fatigued"])) applyFatiguedState(root, actor);
+	if (run(on("Rooted"), ["rooted"])) applyRootedState(root, actor);
+	if (run(on("Immobilized"), ["immobilized"])) applyImmobilizedState(root, actor);
+	if (run(on("Prone"), ["prone"])) applyProneState(root, actor);
+	if (run(on("Restrained"), ["restrained"])) applyRestrainedState(root, actor);
+	if (run(on("Staggered"), ["staggered"])) applyActingStatusState(root, actor, "staggered");
+	if (run(on("Paralyzed"), ["paralyzed"])) applyParalyzedState(root, actor);
+	if (run(on("Unconscious"), ["unconscious"])) applyActingStatusState(root, actor, "unconscious");
+	if (run(on("CantAct"), ["cant-act"])) applyActingStatusState(root, actor, "cantAct");
+	if (run(on("Incapacitated"), ["incapacitated"])) applyActingStatusState(root, actor, "incapacitated");
+	if (run(on("Petrified"), ["petrified"])) applyActingStatusState(root, actor, "petrified");
+	if (run(on("Stunned"), ["stunned"])) applyActingStatusState(root, actor, "stunned");
+	if (run(on("Broken"), ["broken"])) applyBrokenState(root, actor);
+	applyCooldownChargeUpState(root, actor);
+	exemptVursFrequencyEditors(root);
+	updateVursBreakerGlow(root, actor, VURS_BREAKER_GLOW_SHEET_SELECTOR);
+}
+
+// Cooldown doubles as a "recharge pending" state: the frequency/uses input is
+// the manual recharge path, so it must stay editable. inert cannot exempt
+// descendants, so when cooldown is the row's ONLY active disable we move inert
+// onto the row's other children and leave .frequency interactive. Any extra
+// condition — or the hold-key bypass lifting inert entirely — restores the
+// normal full lock.
+const VURS_FREQ_LOCK_MARK = "vursFreqLock";
+
+function exemptVursFrequencyEditors(root) {
+	for (const row of root.querySelectorAll(".item, .spell")) {
+		const frequency = row.querySelector(".frequency");
+		const otherConditionActive = VURS_CONDITION_ATTRS.some(attr =>
+			attr !== "cooldown" && row.dataset[vursAttrDatasetKey(attr)] === "true"
+		);
+		const exempt = frequency
+			&& row.inert
+			&& row.dataset.vursCooldown === "true"
+			&& !otherConditionActive;
+		if (exempt) {
+			row.inert = false;
+			row.dataset.vursFreqExempt = "true";
+			for (const child of row.children) {
+				if (child === frequency || child.contains(frequency)) continue;
+				if (!child.inert) child.inert = true;
+				child.dataset[VURS_FREQ_LOCK_MARK] = "true";
+			}
+			continue;
+		}
+		if (row.dataset.vursFreqExempt !== "true") continue;
+		delete row.dataset.vursFreqExempt;
+		for (const child of row.children) {
+			if (child.dataset[VURS_FREQ_LOCK_MARK] !== "true") continue;
+			child.inert = false;
+			delete child.dataset[VURS_FREQ_LOCK_MARK];
+		}
+	}
+}
+
+// Re-runs the condition passes on every open actor sheet. Used by the
+// hold-key disable bypass (disableOverrideKeybind.js) so inert/buttons
+// recompute the moment the bypass engages or releases.
+export function refreshVursDisableLocks() {
+	// One pass generation for the whole refresh so getVursConditionFlags and
+	// the row caches are shared across an actor's multiple open sheets.
+	beginVursConditionPass();
+	const actors = new Set([
+		...(game.actors?.contents ?? []),
+		game.user?.character,
+		...(game.combat?.combatants?.contents ?? []).map(combatant => combatant.actor),
+		...(canvas.tokens?.placeables ?? []).map(token => token.actor)
+	].filter(Boolean));
+	for (const actor of actors) {
+		if (!isSupportedVursActor(actor)) continue;
+		for (const app of Object.values(actor.apps ?? {})) {
+			const root = app?.element instanceof HTMLElement ? app.element : app?.element?.[0];
+			if (!root) continue;
+			applyVursConditionStates(root, actor);
+		}
+	}
+}
+
 function applyActorSheetPresentation(app, element) {
 	const root = element instanceof HTMLElement ? element : element?.[0];
 	const actor = [
@@ -917,26 +1037,7 @@ function applyActorSheetPresentation(app, element) {
 	renderVursPlayResourcesDrawer(root, actor, app);
 	addNpcConfigurationButton(root, actor);
 	renderNpcRelationshipStatistics(root, actor, app);
-	applyDisarmedStrikeState(root, actor);
-	applySilencedState(root, actor);
-	applyDragonblightState(root, actor);
-	applyMutedState(root, actor);
-	applyConfusedState(root, actor);
-	applyFatiguedState(root, actor);
-	applyRootedState(root, actor);
-	applyImmobilizedState(root, actor);
-	applyProneState(root, actor);
-	applyRestrainedState(root, actor);
-	applyActingStatusState(root, actor, "staggered");
-	applyParalyzedState(root, actor);
-	applyActingStatusState(root, actor, "unconscious");
-	applyActingStatusState(root, actor, "cantAct");
-	applyActingStatusState(root, actor, "incapacitated");
-	applyActingStatusState(root, actor, "petrified");
-	applyActingStatusState(root, actor, "stunned");
-	applyBrokenState(root, actor);
-	applyCooldownChargeUpState(root, actor);
-	updateVursBreakerGlow(root, actor, VURS_BREAKER_GLOW_SHEET_SELECTOR);
+	applyVursConditionStates(root, actor);
 	replaceVursPlayResourceTokens(root, actor);
 	replaceVursPlayCostTokensOnActorSheet(root, actor);
 	if (!root.dataset.vursPlayResourceTokenObserver) {
@@ -954,25 +1055,7 @@ function applyActorSheetPresentation(app, element) {
 					return;
 				}
 				beginVursConditionPass();
-				applySilencedState(root, actor);
-				applyDragonblightState(root, actor);
-				applyMutedState(root, actor);
-				applyConfusedState(root, actor);
-				applyFatiguedState(root, actor);
-				applyRootedState(root, actor);
-				applyImmobilizedState(root, actor);
-				applyProneState(root, actor);
-				applyRestrainedState(root, actor);
-				applyActingStatusState(root, actor, "staggered");
-				applyParalyzedState(root, actor);
-				applyActingStatusState(root, actor, "unconscious");
-				applyActingStatusState(root, actor, "cantAct");
-				applyActingStatusState(root, actor, "incapacitated");
-				applyActingStatusState(root, actor, "petrified");
-				applyActingStatusState(root, actor, "stunned");
-				applyBrokenState(root, actor);
-				applyCooldownChargeUpState(root, actor);
-				updateVursBreakerGlow(root, actor, VURS_BREAKER_GLOW_SHEET_SELECTOR);
+				applyVursConditionStates(root, actor);
 				applyNegativeHpSheetState(root, actor);
 				replaceVursPlayResourceTokens(root, actor);
 				replaceVursPlayCostTokensOnActorSheet(root, actor);
@@ -1001,12 +1084,7 @@ const SPELL_ROW_SELECTOR = ".spell-list > .spell[data-item-id]";
 const ITEM_ROW_SELECTOR = `${ACTION_ROW_SELECTOR}, ${SPELL_ROW_SELECTOR}, ${STRIKE_ROW_SELECTOR}`;
 
 function applyDisarmedStrikeState(root, actor) {
-	const isDisarmed = [1, "1", true].includes(
-		foundry.utils.getProperty(actor, "flags.vurs.conditions.isDisarmed")
-	);
-	const isCursed = [1, "1", true].includes(
-		foundry.utils.getProperty(actor, "flags.vurs.conditions.isCursed")
-	);
+	const { isDisarmed, isCursed } = getVursConditionFlags(actor);
 	let section;
 
 	if (actor.isOfType?.("character") || actor.type === "character") {
@@ -1022,12 +1100,7 @@ function applyDisarmedStrikeState(root, actor) {
 }
 
 function applySilencedState(root, actor) {
-	const isSilenced = [1, "1", true].includes(
-		foundry.utils.getProperty(actor, "flags.vurs.conditions.isSilenced")
-	);
-	const isCursed = [1, "1", true].includes(
-		foundry.utils.getProperty(actor, "flags.vurs.conditions.isCursed")
-	);
+	const { isSilenced, isCursed } = getVursConditionFlags(actor);
 	const spellcastingTab = root.querySelector(
 		'.tab.spellcasting[data-tab="spellcasting"], .tab.spells[data-tab="spells"]'
 	);
@@ -1054,9 +1127,7 @@ function applySilencedState(root, actor) {
 }
 
 function applyDragonblightState(root, actor) {
-	const isDragonblight = [1, "1", true].includes(
-		foundry.utils.getProperty(actor, "flags.vurs.conditions.isDragonblight")
-	);
+	const { isDragonblight } = getVursConditionFlags(actor);
 	if (!isDragonblight) {
 		for (const element of root.querySelectorAll('[data-vurs-dragonblight="true"]')) {
 			setConditionDisabled(element, "dragonblight", false);
@@ -1122,12 +1193,7 @@ function isDragonblightAffected(item, action, element, damageTypes) {
 }
 
 function applyMutedState(root, actor) {
-	const isMuted = [1, "1", true].includes(
-		foundry.utils.getProperty(actor, "flags.vurs.conditions.isMuted")
-	);
-	const isCursed = [1, "1", true].includes(
-		foundry.utils.getProperty(actor, "flags.vurs.conditions.isCursed")
-	);
+	const { isMuted, isCursed } = getVursConditionFlags(actor);
 	const disableItems = isMuted || isCursed;
 	const inventoryTab = root.querySelector('.tab.inventory[data-tab="inventory"]');
 	setConditionDisabled(inventoryTab, "muted", false);
@@ -1201,9 +1267,7 @@ function applyMutedState(root, actor) {
 }
 
 function applyFatiguedState(root, actor) {
-	const isFatigued = [1, "1", true].includes(
-		foundry.utils.getProperty(actor, "flags.vurs.conditions.isFatigued")
-	);
+	const { isFatigued } = getVursConditionFlags(actor);
 	for (const panel of root.querySelectorAll(
 		'.tab.actions .actions-panel[data-tab="exploration"], .tab.actions .actions-panel[data-tab="downtime"]'
 	)) {
@@ -1234,9 +1298,7 @@ function applyFatiguedState(root, actor) {
 }
 
 function applyConfusedState(root, actor) {
-	const isConfused = [1, "1", true].includes(
-		foundry.utils.getProperty(actor, "flags.vurs.conditions.isConfused")
-	);
+	const { isConfused } = getVursConditionFlags(actor);
 	const selector = [
 		".actions-list > .item[data-item-id]",
 		".spell-list > .spell[data-item-id]",
@@ -1254,9 +1316,7 @@ function applyConfusedState(root, actor) {
 }
 
 function applyRootedState(root, actor) {
-	const isRooted = [1, "1", true].includes(
-		foundry.utils.getProperty(actor, "flags.vurs.conditions.isRooted")
-	);
+	const { isRooted } = getVursConditionFlags(actor);
 	applyMovementConditionToSpeed(root, actor, "rooted", isRooted);
 	for (const { element, traits } of getActionAndSpellItems(root, actor)) {
 		const hasMovementTrait = traits.some(trait => ["move", "traversal", "teleportation"].includes(trait));
@@ -1265,9 +1325,7 @@ function applyRootedState(root, actor) {
 }
 
 function applyImmobilizedState(root, actor) {
-	const isImmobilized = [1, "1", true].includes(
-		foundry.utils.getProperty(actor, "flags.vurs.conditions.isImmobilized")
-	);
+	const { isImmobilized } = getVursConditionFlags(actor);
 	applyMovementConditionToSpeed(root, actor, "immobilized", isImmobilized);
 	for (const { element, traits } of getActionAndSpellItems(root, actor)) {
 		setConditionDisabled(element, "immobilized", isImmobilized && traits.includes("move") && !traits.includes("breaker"));
@@ -1275,9 +1333,7 @@ function applyImmobilizedState(root, actor) {
 }
 
 function applyProneState(root, actor) {
-	const isProne = [1, "1", true].includes(
-		foundry.utils.getProperty(actor, "flags.vurs.conditions.isProne")
-	);
+	const { isProne } = getVursConditionFlags(actor);
 	applyMovementConditionToSpeed(root, actor, "prone", isProne);
 	for (const { element, traits, slug } of getActionAndSpellItems(root, actor)) {
 		const isException = ["crawl", "stand"].includes(slug);
@@ -1286,9 +1342,7 @@ function applyProneState(root, actor) {
 }
 
 function applyRestrainedState(root, actor) {
-	const isRestrained = [1, "1", true].includes(
-		foundry.utils.getProperty(actor, "flags.vurs.conditions.isRestrained")
-	);
+	const { isRestrained } = getVursConditionFlags(actor);
 
 	for (const { element, traits, slug } of getActionAndSpellItems(root, actor)) {
 		const isException = ["escape", "force-open"].includes(slug);
@@ -1308,9 +1362,7 @@ function applyRestrainedState(root, actor) {
 }
 
 function applyParalyzedState(root, actor) {
-	const isParalyzed = [1, "1", true].includes(
-		foundry.utils.getProperty(actor, "flags.vurs.conditions.isParalyzed")
-	);
+	const { isParalyzed } = getVursConditionFlags(actor);
 	applyMovementConditionToSpeed(root, actor, "paralyzed", isParalyzed);
 
 	for (const { element, traits, slug } of getActionAndSpellItems(root, actor)) {
@@ -1325,8 +1377,8 @@ function applyParalyzedState(root, actor) {
 }
 
 function applyActingStatusState(root, actor, condition) {
-	const flagValue = foundry.utils.getProperty(actor, `flags.vurs.conditions.is${condition[0].toUpperCase()}${condition.slice(1)}`);
-	const isActive = [1, "1", true].includes(flagValue) || (typeof flagValue === "number" && flagValue > 0);
+	const flagKey = `is${condition[0].toUpperCase()}${condition.slice(1)}`;
+	const isActive = getVursConditionFlags(actor)[flagKey] === true;
 	applyMovementConditionToSpeed(root, actor, condition, isActive);
 
 	if (actor.isOfType?.("character") || actor.type === "character") {
@@ -1378,9 +1430,8 @@ function applyMovementConditionToSpeed(root, actor, condition, isDisabled) {
 }
 
 function applyBrokenState(root, actor) {
-	const isBroken = [1, "1", true].includes(
-		getBrokenConditionFlag(actor)
-	);
+	const isBroken = [1, "1", true].includes(getBrokenConditionFlag(actor)) ||
+		getVursConditionPresenceKeys(actor).has("broken");
 	const itemSelector = actor.isOfType?.("character") || actor.type === "character"
 		? [
 			'.tab.actions[data-tab="actions"] .actions-list > .item[data-item-id]',
@@ -1415,7 +1466,8 @@ function applyCooldownChargeUpState(root, actor) {
 			? traits.find(trait => /^charge-up-\d+$/.test(trait))
 			: null;
 		const chargeUpRound = chargeUpTrait ? Number(chargeUpTrait.match(/\d+$/)?.[0]) : null;
-		setConditionDisabled(element, "cooldown", cooldownItemUuids.has(item.uuid));
+		const frequencyDepleted = foundry.utils.getProperty(item, "system.frequency.value") === 0;
+		setConditionDisabled(element, "cooldown", cooldownItemUuids.has(item.uuid) || frequencyDepleted);
 		setConditionDisabled(
 			element,
 			"chargeUp",
@@ -1529,6 +1581,7 @@ function installBrokenPassiveRuleSuppression() {
 			const rules = original.apply(this, args);
 			if (!areDisabledFeaturesEnforced()) return rules;
 			const isBroken = [1, "1", true].includes(getBrokenConditionFlag(this)) ||
+				getVursConditionPresenceKeys(this).has("broken") ||
 				rules.some(rule => ruleEnablesBroken(rule, this));
 			if (!isBroken) return rules;
 
@@ -1553,7 +1606,8 @@ function installDragonblightRuleSuppression() {
 
 			const isDragonblight = [1, "1", true].includes(
 				foundry.utils.getProperty(this, "flags.vurs.conditions.isDragonblight")
-			) || rules.some(rule => ruleEnablesVursCondition(rule, this, "isDragonblight"));
+			) || getVursConditionPresenceKeys(this).has("dragonblight") ||
+				rules.some(rule => ruleEnablesVursCondition(rule, this, "isDragonblight"));
 			if (!isDragonblight) return rules;
 
 			const damageTypes = getDragonblightDamageTypes();
@@ -1575,7 +1629,7 @@ function installDragonblightRuleSuppression() {
 function actorHasDragonblight(actor) {
 	return [1, "1", true].includes(
 		foundry.utils.getProperty(actor, "flags.vurs.conditions.isDragonblight")
-	) || actor?.rules?.some(rule =>
+	) || getVursConditionPresenceKeys(actor).has("dragonblight") || actor?.rules?.some(rule =>
 		ruleEnablesVursCondition(rule, actor, "isDragonblight")
 	);
 }

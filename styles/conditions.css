@@ -418,6 +418,20 @@ body.vurs-disabled-features-unenforced .pf2e-hud-element [data-vurs-sec-any="tru
   filter: none;
 }
 
+/* Hold-key bypass: ALL VURS disable visuals are fully revealed while held —
+   no hover required, sheets and pf2e-hud alike. Every overlay is an ::after
+   driven by data-vurs-condition-label (cooldown/charge-up and Breaker
+   mixed-mode containers included); every blur targets > * of a labelled
+   element or a data-vurs-sec-any section row. */
+body.vurs-disable-bypass [data-vurs-condition-label]:not([data-vurs-condition-label=""]) > *,
+body.vurs-disable-bypass [data-vurs-sec-any="true"] > * {
+  filter: none;
+}
+
+body.vurs-disable-bypass [data-vurs-condition-label]:not([data-vurs-condition-label=""])::after {
+  display: none;
+}
+
 /* Generic disabled presentation for any element carrying a condition label.
    The selector-listed rules above cover the classic flag targets; this catches
    the extra elements flagged in Breaker mixed-mode disables (panels, lists,

@@ -1,10 +1,12 @@
 import {
-	areDisabledFeaturesEnforced,
+	actorHasVursDisableStates,
+	areVursDisableLocksUiEnforced,
 	beginVursConditionPass,
 	getDragonblightDamageSources,
 	getDragonblightDamageTypes,
 	getVursConditionFlags,
 	getVursConditionPassGeneration,
+	getVursItemFrequencyValue,
 	getVursItemSlug,
 	getVursItemTraits,
 	hasDragonblightActionTrait,
@@ -169,7 +171,7 @@ function setHudSectionCondition(element, condition, isDisabled) {
 	const secAny = secActive ? "true" : "";
 	if (element.dataset.vursSecAny !== secAny) element.dataset.vursSecAny = secAny;
 	const itemActive = (element.dataset.vursConditionLabel ?? "") !== "";
-	const disabled = areDisabledFeaturesEnforced() && (secActive || itemActive);
+	const disabled = areVursDisableLocksUiEnforced() && (secActive || itemActive);
 	if (element.inert !== disabled) element.inert = disabled;
 	if (disabled) {
 		if (element.getAttribute("aria-disabled") !== "true") element.setAttribute("aria-disabled", "true");
@@ -480,15 +482,17 @@ function applyHudCooldownChargeUp(root, actor) {
 	const combat = game.combat;
 	const currentRound = combat?.started ? combat.round : 0;
 	// Mirrors getDisableableActionItems: action/feat/spell rows only — strikes
-	// ([data-index]) are excluded on the sheet too.
-	const rowSelector = ".item.action[data-item-id], .item.feat[data-item-id], .item[data-item-type=\"spell\"][data-item-id]";
+	// ([data-index]) are excluded on the sheet too. Persistent-HUD shortcut
+	// slots carry the same data-item-id/data-item-uuid payloads.
+	const rowSelector = ".item.action[data-item-id], .item.feat[data-item-id], .item[data-item-type=\"spell\"][data-item-id], .shortcut[data-item-id]";
 	for (const element of root.querySelectorAll(rowSelector)) {
 		const item = actor.items?.get(element.dataset.itemId);
 		if (!item) continue;
 		applyCooldownChargeUpToItem(element, item, cooldownItemUuids, currentRound);
 	}
-	// Skills-sidebar actions resolve to compendium items via data-item-uuid.
-	for (const element of root.querySelectorAll(".item.statistic[data-item-uuid]")) {
+	// Skills-sidebar actions and statistic shortcuts resolve to compendium
+	// items via data-item-uuid.
+	for (const element of root.querySelectorAll(".item.statistic[data-item-uuid], .shortcut[data-item-uuid]")) {
 		const item = resolveHudSidebarItem(element);
 		if (item) applyCooldownChargeUpToItem(element, item, cooldownItemUuids, currentRound);
 	}
@@ -498,7 +502,8 @@ function applyCooldownChargeUpToItem(element, item, cooldownItemUuids, currentRo
 	const traits = getVursItemTraits(item);
 	const chargeUpTrait = traits.find(trait => /^charge-up-\d+$/.test(trait));
 	const chargeUpRound = chargeUpTrait ? Number(chargeUpTrait.match(/\d+$/)?.[0]) : null;
-	setConditionDisabled(element, "cooldown", cooldownItemUuids.has(item.uuid));
+	const frequencyDepleted = getVursItemFrequencyValue(item) === 0;
+	setConditionDisabled(element, "cooldown", cooldownItemUuids.has(item.uuid) || frequencyDepleted);
 	setConditionDisabled(
 		element,
 		"chargeUp",
@@ -506,7 +511,7 @@ function applyCooldownChargeUpToItem(element, item, cooldownItemUuids, currentRo
 	);
 }
 
-const HUD_ITEM_ROW_SELECTOR = ".item[data-item-id], .item.statistic[data-item-uuid]";
+const HUD_ITEM_ROW_SELECTOR = ".item[data-item-id], .item.statistic[data-item-uuid], .shortcut[data-item-uuid]";
 
 function hudBreakerRowItem(actor, row) {
 	const itemId = row?.dataset?.itemId;
@@ -603,9 +608,84 @@ function applyHudUtilityStates(root, flags) {
 	}
 }
 
+// ---------------------------------------------------------------------------
+// Persistent-HUD shortcut slots
+//
+// [data-panel="shortcuts"] renders .shortcut.item slots that none of the
+// sidebar passes above match. Each slot's data-type maps to the same rules as
+// its sidebar counterpart: strikes/blasts take the strikes section conditions,
+// actions/feats/spells/skill actions take their row rules, consumables take
+// the inventory muted/cursed rule, and equipment plus non-action utilities
+// (macros, roll-option toggles, blast cost) stay usable — matching how the
+// sheet leaves equipment sections and non-action UI alone.
+// ---------------------------------------------------------------------------
+
+function resolveHudShortcutItem(element, actor) {
+	const itemId = element.dataset.itemId;
+	if (itemId) {
+		const item = actor.items?.get(itemId);
+		if (item) return item;
+	}
+	return resolveHudSidebarItem(element);
+}
+
+function applyHudShortcutConditions(element, actor, flags, damageTypes) {
+	const type = element.dataset.type;
+
+	if (type === "strike" || type === "blast") {
+		// Strike shortcuts carry the weapon's itemId; the strike action is
+		// resolved through the same itemId → action map the sidebar uses.
+		const { item, action, traits } = hudRowContext(element, actor, "strike");
+		const exempt = traits.includes("breaker");
+		setConditionDisabled(element, "disarmed", (flags.isDisarmed || flags.isCursed) && !exempt);
+		setConditionDisabled(element, "cursed", flags.isCursed && !exempt);
+		setConditionDisabled(element, "restrained", flags.isRestrained && !exempt);
+		setConditionDisabled(element, "paralyzed", flags.isParalyzed && !exempt);
+		setConditionDisabled(
+			element,
+			"dragonblight",
+			flags.isDragonblight && !exempt && isDragonblightStrikeAffected(item, action, damageTypes)
+		);
+		applyActingStatuses(element, flags, true, exempt);
+		return;
+	}
+
+	const exempt = itemHasBreakerTrait(resolveHudShortcutItem(element, actor));
+
+	if (type === "action") {
+		// The actions tab is acting-status disabled as a whole on the sheet.
+		applyActionRowConditions(element, actor, flags, damageTypes);
+		applyActingStatuses(element, flags, true, exempt);
+	} else if (type === "feat" || type === "stance") {
+		applyFeatRowConditions(element, actor, flags, damageTypes);
+	} else if (type === "spell") {
+		// Spellcasting tab conditions blanket every spell: silenced (also when
+		// cursed), cursed, dragonblight and acting statuses.
+		applySpellRowConditions(element, actor, flags, damageTypes);
+		setConditionDisabled(element, "silenced", (flags.isSilenced || flags.isCursed) && !exempt);
+		setConditionDisabled(element, "cursed", flags.isCursed && !exempt);
+		setConditionDisabled(element, "dragonblight", flags.isDragonblight && !exempt);
+		applyActingStatuses(element, flags, true, exempt);
+	} else if (type === "skillAction" || type === "extraAction") {
+		// Statistic shortcuts carry data-item-uuid — the sidebar-item resolver
+		// and row rules apply unchanged (acting statuses included).
+		applySkillActionRowConditions(element, actor, flags, damageTypes);
+	} else if (type === "consumable") {
+		setConditionDisabled(element, "muted", (flags.isMuted || flags.isCursed) && !exempt);
+		setConditionDisabled(element, "cursed", flags.isCursed && !exempt);
+	}
+	// equipment / macro / toggle / blastCost: no disable rules.
+}
+
+// Stale disable markers: item/section labels (vursConditionLabel covers
+// cooldown/charge-up too), section row flags, and breaker glow. Their absence
+// proves every pass below would write false/no-op.
+const HUD_DISABLE_MARKS = '[data-vurs-condition-label]:not([data-vurs-condition-label=""]), [data-vurs-sec-any="true"], .vurs-breaker-glow';
+
 export function applyVursHudDisableStates(root, actor) {
 	if (!root || !isVursSupportedActor(actor)) return;
 	beginVursConditionPass();
+	if (!actorHasVursDisableStates(actor) && !root.querySelector(HUD_DISABLE_MARKS)) return;
 	const flags = getVursConditionFlags(actor);
 	// Cooldown/charge-up are effect/trait driven and must run even with no
 	// condition flags; every other item-level state early-outs when nothing is
@@ -642,6 +722,11 @@ export function applyVursHudDisableStates(root, actor) {
 			for (const element of root.querySelectorAll(".item.statistic[data-item-uuid]")) {
 				applySkillActionRowConditions(element, actor, flags, damageTypes);
 			}
+		}
+		// Persistent-HUD shortcut slots (empty slots are .shortcut.empty and
+		// carry no item payload, so .shortcut.item selects populated ones).
+		for (const element of root.querySelectorAll(".shortcut.item")) {
+			applyHudShortcutConditions(element, actor, flags, damageTypes);
 		}
 		applyHudUtilityStates(root, flags);
 	}

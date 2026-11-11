@@ -49,6 +49,22 @@ export function areDisabledFeaturesEnforced() {
 	return settings.get(MODULE_ID, key) !== false;
 }
 
+// Hold-key bypass (scripts/features/disableOverrideKeybind.js): while active,
+// DOM-level disable locks (inert, disabled buttons) lift so sheets and the HUD
+// stay interactive. Deliberately separate from areDisabledFeaturesEnforced() —
+// rule-element suppression in prepareRuleElements keeps enforcing, so item
+// mechanics are unaffected by the bypass.
+let vursDisableUiBypass = false;
+export function setVursDisableUiBypass(active) {
+	vursDisableUiBypass = Boolean(active);
+}
+export function isVursDisableUiBypassActive() {
+	return vursDisableUiBypass;
+}
+export function areVursDisableLocksUiEnforced() {
+	return areDisabledFeaturesEnforced() && !vursDisableUiBypass;
+}
+
 const VURS_CONDITION_NAMES = ["Cursed", "Muted", "Disarmed", "Silenced", "Dragonblight", "Confused", "Fatigued", "Rooted", "Immobilized", "Incapacitated", "Paralyzed", "Petrified", "Prone", "Restrained", "Staggered", "Stunned", "Unconscious", "CantAct", "Broken", "Cooldown", "ChargeUp"];
 
 // Every refresh pass re-asserts every flag on every element, so the common
@@ -83,7 +99,7 @@ export function setConditionDisabled(element, condition, isDisabled, disableInte
 			.join(" · ");
 		if (element.dataset.vursConditionLabel !== label) element.dataset.vursConditionLabel = label;
 	}
-	const disabled = areDisabledFeaturesEnforced() && disableInteraction && activeCount > 0;
+	const disabled = areVursDisableLocksUiEnforced() && disableInteraction && activeCount > 0;
 	if (element.inert !== disabled) element.inert = disabled;
 	if (disabled) {
 		if (element.getAttribute("aria-disabled") !== "true") element.setAttribute("aria-disabled", "true");
@@ -93,7 +109,7 @@ export function setConditionDisabled(element, condition, isDisabled, disableInte
 }
 
 export function setConditionButtonDisabled(button, isDisabled) {
-	isDisabled = isDisabled && areDisabledFeaturesEnforced();
+	isDisabled = isDisabled && areVursDisableLocksUiEnforced();
 	if (isDisabled) {
 		if (!Object.hasOwn(button.dataset, "vursOriginalDisabled")) {
 			button.dataset.vursOriginalDisabled = String(button.disabled);
@@ -294,8 +310,59 @@ export function getVursConditionFlags(actor) {
 	return flags;
 }
 
+// Cheap pre-check for refresh paths: true when the actor could have ANY VURS
+// disable state — condition flags, cooldown effects, or charge-up traits.
+// Covers every source the DOM passes write, so callers can skip the full
+// pipeline for actors with nothing disabled. No DOM access.
+export function actorHasVursDisableStates(actor) {
+	if (!actor) return false;
+	if (Object.values(getVursConditionFlags(actor)).some(Boolean)) return true;
+	if ((actor.itemTypes?.effect ?? []).some(effect => effect.getFlag?.("vurs-pf2e", "sourceItemUuid"))) return true;
+	const inCombat = !!globalThis.game?.combat;
+	for (const item of actor.items ?? []) {
+		if (foundry.utils.getProperty(item, "system.frequency.value") === 0) return true;
+		if (!inCombat) continue;
+		const traits = foundry.utils.getProperty(item, "system.traits.value");
+		if (Array.isArray(traits) && traits.some(trait => typeof trait === "string" && /^charge-up-\d+$/.test(trait))) return true;
+	}
+	return false;
+}
+
+function normalizeVursConditionKey(value) {
+	return String(value ?? "").toLowerCase().replace(/[^a-z0-9]/g, "");
+}
+
+// Valued conditions (e.g. Staggered) can have their rule-driven flag drop
+// while the item is still on the actor — Staggered's badge is consumed to 0
+// by the turn-delay automation but the item remains until the delayed turn.
+// Presence of the condition/effect item is therefore an independent source of
+// truth: while it exists, the disable stays active regardless of value.
+export function getVursConditionPresenceKeys(actor) {
+	const keys = new Set();
+	for (const item of actor?.items ?? []) {
+		if (item?.type !== "condition" && item?.type !== "effect") continue;
+		if (item.disabled === true) continue;
+		const slug = normalizeVursConditionKey(item.slug ?? item.system?.slug);
+		const name = normalizeVursConditionKey(item.name);
+		for (const key of VURS_FLAG_CONDITION_KEYS) {
+			if (slug === key || name.includes(key)) keys.add(key);
+		}
+	}
+	return keys;
+}
+
+const VURS_FLAG_CONDITION_KEYS = [
+	"cursed", "muted", "disarmed", "silenced", "dragonblight", "fatigued",
+	"confused", "rooted", "immobilized", "incapacitated", "paralyzed",
+	"petrified", "prone", "restrained", "staggered", "stunned", "unconscious",
+	"cantact", "broken"
+];
+
 function buildVursConditionFlags(actor) {
+	const presence = getVursConditionPresenceKeys(actor);
 	const flag = name => {
+		const key = name.slice(2).toLowerCase();
+		if (presence.has(key)) return true;
 		const value = foundry.utils.getProperty(actor, `flags.vurs.conditions.${name}`);
 		return [1, "1", true].includes(value) || (typeof value === "number" && value > 0);
 	};
@@ -312,7 +379,7 @@ function buildVursConditionFlags(actor) {
 		isProne: flag("isProne"),
 		isRestrained: flag("isRestrained"),
 		isParalyzed: flag("isParalyzed"),
-		isBroken: [1, "1", true].includes(getBrokenConditionFlag(actor)),
+		isBroken: [1, "1", true].includes(getBrokenConditionFlag(actor)) || presence.has("broken"),
 		isStaggered: flag("isStaggered"),
 		isUnconscious: flag("isUnconscious"),
 		isCantAct: flag("isCantAct"),
@@ -327,6 +394,10 @@ export function getVursItemTraits(item) {
 	return Array.isArray(traits) ? traits : [];
 }
 
+export function getVursItemFrequencyValue(item) {
+	return foundry.utils.getProperty(item, "system.frequency.value");
+}
+
 export function itemHasBreakerTrait(item) {
 	return getVursItemTraits(item).includes("breaker");
 }
@@ -336,8 +407,11 @@ export function getVursItemSlug(item, element = null) {
 		foundry.utils.getProperty(item, "system.slug") ??
 		element?.dataset?.slug ??
 		element?.dataset?.actionSlug ??
-		element?.dataset?.action ??
-		null;
+		// pf2e-hud shortcut slots carry data-action="shortcut-slot" — that is a
+		// click handler name, not an action slug, so it must not be used.
+		(element?.dataset?.action && !element.classList?.contains("shortcut")
+			? element.dataset.action
+			: null);
 }
 
 // ---------------------------------------------------------------------------
@@ -390,7 +464,7 @@ function refreshMixedContainerInert(container) {
 		const key = name[0].toLowerCase() + name.slice(1);
 		return !mixedConditions.has(key);
 	});
-	const inert = areDisabledFeaturesEnforced() && blocked;
+	const inert = areVursDisableLocksUiEnforced() && blocked;
 	container.inert = inert;
 	if (inert) container.setAttribute("aria-disabled", "true");
 	else container.removeAttribute("aria-disabled");

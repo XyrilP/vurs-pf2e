@@ -1,4 +1,4 @@
-export const AREA_TYPES = ["burst", "cone", "cube", "cylinder", "emanation", "line", "ring", "square"];
+export const AREA_TYPES = ["burst", "cone", "cube", "cylinder", "emanation", "line", "ring", "square", "wedge"];
 
 export function normalizeToken(token) {
 	return token?.document ?? token ?? null;
@@ -9,6 +9,41 @@ export function getTokenCenter(token) {
 	if (!document) return null;
 	const center = document.object?.getCenterPoint?.() ?? document.getCenterPoint?.();
 	return center && { x: center.x, y: center.y };
+}
+
+// Single origin point for a Collateral Damage area: the midpoint of the
+// origin token's edge on the side the attacker→target direction exits.
+// placement "self" puts it on the edge facing the target; "target" puts it
+// on the edge facing away from the damage source.
+export function getPlacementAreaOrigin(placement, sourceToken, targetToken) {
+	const sourceCenter = getTokenCenter(sourceToken);
+	const targetCenter = getTokenCenter(targetToken);
+	if (!sourceCenter || !targetCenter) return null;
+
+	let dx = targetCenter.x - sourceCenter.x;
+	let dy = targetCenter.y - sourceCenter.y;
+	const length = Math.hypot(dx, dy);
+	let rotation;
+	if (length === 0) {
+		const fallback = normalizeToken(sourceToken).rotation ?? 0;
+		const fallbackAngle = Math.toRadians(fallback);
+		dx = Math.cos(fallbackAngle);
+		dy = Math.sin(fallbackAngle);
+		rotation = fallback;
+	} else {
+		rotation = Math.toDegrees(Math.atan2(dy, dx));
+		dx /= length;
+		dy /= length;
+	}
+
+	const originToken = normalizeToken(placement === "self" ? sourceToken : targetToken);
+	const center = placement === "self" ? sourceCenter : targetCenter;
+	const halfWidth = (originToken.width * canvas.grid.sizeX) / 2;
+	const halfHeight = (originToken.height * canvas.grid.sizeY) / 2;
+	const point = Math.abs(dx) >= Math.abs(dy)
+		? { x: center.x + Math.sign(dx) * halfWidth, y: center.y }
+		: { x: center.x, y: center.y + Math.sign(dy) * halfHeight };
+	return { ...point, rotation };
 }
 
 export function getPlacementGeometries(placement, sourceToken, targetToken) {
@@ -87,6 +122,65 @@ export function isTokenCenterInArea(region, token) {
 	return isAreaPointHighlighted(region, getTokenCenter(token));
 }
 
+function getTokenBoundsRect(token) {
+	const document = normalizeToken(token);
+	const center = getTokenCenter(document);
+	if (!document || !center) return null;
+	const halfWidth = (document.width * canvas.grid.sizeX) / 2;
+	const halfHeight = (document.height * canvas.grid.sizeY) / 2;
+	return {
+		left: center.x - halfWidth,
+		right: center.x + halfWidth,
+		top: center.y - halfHeight,
+		bottom: center.y + halfHeight
+	};
+}
+
+function isPointInRect(point, rect) {
+	return Boolean(point) &&
+		point.x >= rect.left && point.x <= rect.right &&
+		point.y >= rect.top && point.y <= rect.bottom;
+}
+
+function getRegionShapePoints(shape) {
+	const points = [];
+	if (Number.isFinite(shape?.x) && Number.isFinite(shape?.y)) {
+		points.push({ x: shape.x, y: shape.y });
+	}
+	const base = shape?.base;
+	if (base && Number.isFinite(base.x) && Number.isFinite(base.y)) {
+		points.push({ x: base.x, y: base.y });
+	}
+	return points;
+}
+
+// True token/area overlap: any of the token's bounds sample points inside the
+// region, or any region shape origin inside the token's bounds (covers a
+// small area fully contained within a large token).
+export function isTokenInArea(region, token) {
+	if (!region?.polygonTree) return false;
+	const rect = getTokenBoundsRect(token);
+	if (!rect) return false;
+	const midX = (rect.left + rect.right) / 2;
+	const midY = (rect.top + rect.bottom) / 2;
+	const samples = [
+		{ x: midX, y: midY },
+		{ x: rect.left, y: rect.top },
+		{ x: rect.right, y: rect.top },
+		{ x: rect.left, y: rect.bottom },
+		{ x: rect.right, y: rect.bottom },
+		{ x: midX, y: rect.top },
+		{ x: midX, y: rect.bottom },
+		{ x: rect.left, y: midY },
+		{ x: rect.right, y: midY }
+	];
+	if (samples.some(point => region.polygonTree.testPoint(point))) return true;
+	for (const shape of region.shapes ?? []) {
+		if (getRegionShapePoints(shape).some(point => isPointInRect(point, rect))) return true;
+	}
+	return false;
+}
+
 export function isTokenInAreaLevel(region, token) {
 	const level = token.level ?? 0;
 	if (region.includedInLevel && !region.includedInLevel(level)) return false;
@@ -114,7 +208,7 @@ export function getTokensInCollateralShape(shape) {
 	if (!region) return [];
 	return [...scene.tokens].filter(token =>
 		token.actor?.attributes?.hp &&
-		isTokenCenterInArea(region, token) &&
+		isTokenInArea(region, token) &&
 		isTokenInAreaLevel(region, token)
 	);
 }

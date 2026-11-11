@@ -17,13 +17,11 @@ import { localizeRuleElementFormText } from "./ruleElementFormLocalization.js";
 import {
 	AREA_TYPES,
 	normalizeToken,
-	getPlacementGeometries,
+	getPlacementAreaOrigin,
 	getRegionForShapes,
 	getTokenCenter,
 	getTokenDistance,
-	getTokensInCollateralShape,
-	isAreaPointHighlighted,
-	isTokenCenterInArea,
+	isTokenInArea,
 	isTokenInAreaLevel
 } from "./collateralGeometry.js";
 import {
@@ -247,7 +245,7 @@ function registerCollateralDamageRuleElement({ quiet = false } = {}) {
 					nullable: true,
 					initial: null,
 					label: localizeRuleElementFormText("CollateralDamage.Width", "Width"),
-					placeholder: "5"
+					placeholder: localizeRuleElementFormText("CollateralDamage.WidthAuto", "Auto")
 				}),
 				collateralDamageThreshold: new ResolvableValueField({
 					required: false,
@@ -679,10 +677,14 @@ function resolveCollateralWithin(rule, damageItem, damageSource) {
 	}
 }
 
+const WIDTH_USING_TYPES = new Set(["line", "ring", "wedge"]);
+const DEFAULT_WIDTHS = { line: 5, ring: 5 };
+
 function getAreaShape(rule, geometry, originToken, distance) {
-	const width = rule.width === undefined || rule.width === null
-		? 5
-		: Number(rule.resolveValue(rule.width, 5));
+	const defaultWidth = rule.type === "wedge" ? distance : (DEFAULT_WIDTHS[rule.type] ?? 5);
+	const width = !WIDTH_USING_TYPES.has(rule.type) || rule.width === undefined || rule.width === null
+		? defaultWidth
+		: Number(rule.resolveValue(rule.width, defaultWidth));
 	if (!Number.isFinite(distance) || distance <= 0 || !Number.isFinite(width) || width <= 0) {
 		console.error(`${MODULE_ID} | Skipping ${RULE_KEY} on ${rule.item?.name ?? "unknown item"}: area dimensions must resolve to positive numbers`);
 		return null;
@@ -741,6 +743,26 @@ function getAreaShape(rule, geometry, originToken, distance) {
 				innerWidth: widthPixels / 2,
 				outerWidth: widthPixels / 2
 			};
+		case "wedge": {
+			const radians = (geometry.rotation * Math.PI) / 180;
+			const dirX = Math.cos(radians);
+			const dirY = Math.sin(radians);
+			const perpX = -Math.sin(radians);
+			const perpY = Math.cos(radians);
+			const nearHalf = widthPixels / 4;
+			const farHalf = widthPixels / 2;
+			const near = { x: common.x - perpX * nearHalf, y: common.y - perpY * nearHalf };
+			const nearFar = { x: common.x + perpX * nearHalf, y: common.y + perpY * nearHalf };
+			const farCenterX = common.x + dirX * radius;
+			const farCenterY = common.y + dirY * radius;
+			const far = { x: farCenterX - perpX * farHalf, y: farCenterY - perpY * farHalf };
+			const farEnd = { x: farCenterX + perpX * farHalf, y: farCenterY + perpY * farHalf };
+			return {
+				type: "polygon",
+				points: [near.x, near.y, far.x, far.y, farEnd.x, farEnd.y, nearFar.x, nearFar.y],
+				origin: { x: common.x, y: common.y }
+			};
+		}
 		default:
 			console.error(`${MODULE_ID} | Unsupported ${RULE_KEY} area type: ${rule.type}`);
 			return null;
@@ -783,7 +805,7 @@ function getAreaTargets(region, sourceToken, primaryToken, placementToken, rule,
 		if (token.id === source?.id && !rule.affectsSelf) continue;
 		if (sameActor(token.actor, source?.actor) && token.id !== source?.id) continue;
 		if (!token.actor?.attributes?.hp) continue;
-		if (!isTokenCenterInArea(region, token)) continue;
+		if (!isTokenInArea(region, token)) continue;
 		if (!isTokenInAreaLevel(region, token)) continue;
 		if (getTokenDistanceWithElevation(placementToken, token) > maxDistance) continue;
 		if (!isAffectedByRule(rule, source, token)) continue;
@@ -1006,19 +1028,17 @@ function getDamageEffectCauses(effect) {
 		const isHealing = effect.appliedDamage?.isHealing || effect.type === "lifesteal";
 		const amountKey = isHealing ? "healing" : "damage";
 		const causes = effect.sources.map(source => ({
-			label: `${source.label || effect.label || getEffectName(effect.type)} ${
-				isHealing ? "+" : "-"
-			}${source[amountKey] ?? source.amount ?? 0}`,
+			label: `${source.label || effect.label || getEffectName(effect.type)} ${isHealing ? "+" : "-"
+				}${source[amountKey] ?? source.amount ?? 0}`,
 			modifiers
 		}));
 		if (causes.length > 0 || !effect.healingEffectiveness?.length) return causes;
 	}
 	return [{
-		label: `${effect.label || getEffectName(effect.type)} ${
-			effect.fullHealth
+		label: `${effect.label || getEffectName(effect.type)} ${effect.fullHealth
 				? ": Full HP"
 				: `${effect.appliedDamage?.isHealing || effect.type === "lifesteal" ? "+" : "-"}${effect.amount}`
-		}`,
+			}`,
 		modifiers
 	}];
 }
@@ -4477,7 +4497,7 @@ function prepareBounceDamage(
 			if (rule.bounceNearest ?? true) {
 				candidates = candidates.sort((left, right) =>
 					getBounceDistance(currentToken, left, distanceCache) -
-						getBounceDistance(currentToken, right, distanceCache) ||
+					getBounceDistance(currentToken, right, distanceCache) ||
 					left.id.localeCompare(right.id)
 				);
 				target = candidates[0];
@@ -4741,13 +4761,13 @@ async function applyCollateralDamage(
 		}
 
 		const placement = rule.placement ?? "self";
-		const geometries = getPlacementGeometries(placement, sourceToken, targetToken);
-		if (!geometries?.length) {
+		const geometry = getPlacementAreaOrigin(placement, sourceToken, targetToken);
+		if (!geometry) {
 			console.error(`${MODULE_ID} | Could not apply ${RULE_KEY}: source and target positions are unavailable`);
 			continue;
 		}
 		const originToken = placement === "self" ? sourceToken : targetToken;
-		const shapeGeometries = rule.type === "emanation" ? geometries.slice(0, 1) : geometries;
+		const shapeGeometries = [geometry];
 		const areaDistance = within === null ? distance : Math.min(distance, within);
 		const areaShapes = shapeGeometries
 			.map(geometry => getAreaShape(rule, geometry, originToken, areaDistance))
@@ -5261,7 +5281,7 @@ async function queuePrimaryCollateralDamage(message, request, secretApplications
 			});
 		}
 	});
-	pendingPrimaryDamageUpdates.set(messageId, current.catch(() => {}));
+	pendingPrimaryDamageUpdates.set(messageId, current.catch(() => { }));
 	await current;
 }
 

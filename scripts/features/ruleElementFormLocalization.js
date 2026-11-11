@@ -39,6 +39,7 @@ const RULE_ELEMENT_FORM_TRANSLATIONS = {
 			line: "Line",
 			ring: "Ring",
 			square: "Square",
+			wedge: "Wedge",
 			bounce: "Bounce"
 		},
 		Tabs: {
@@ -51,6 +52,7 @@ const RULE_ELEMENT_FORM_TRANSLATIONS = {
 		Within: "Within",
 		NoLimit: "No limit",
 		Width: "Width",
+		WidthAuto: "Auto",
 		Threshold: "Collateral Damage Threshold",
 		BounceShots: "Bounce Shots",
 		BounceCount: "Bounce Count",

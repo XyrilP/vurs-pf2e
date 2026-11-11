@@ -257,126 +257,15 @@ export function addVursExtendedSaveRows(root, actor) {
     modifier.classList.remove("tooltipstered");
     const value = Number(statistic.totalModifier ?? statistic.mod ?? statistic.check?.mod ?? 0);
     modifier.textContent = `${value >= 0 ? "+" : ""}${Math.trunc(value)}`;
-    // Keep this distinct from the skill's own Proficiencies-tab tooltip ID.
-    const tooltipId = `${root.id}-vurs-sidebar-${slug}-modifiers`;
-    modifier.setAttribute("data-tooltip-content", `#${tooltipId}`);
-    let tooltip = row.querySelector(`#${CSS.escape(tooltipId)}`);
-    if (!tooltip) {
-      tooltip = document.createElement("div");
-      tooltip.className = "hover-content modifiers-tooltip";
-      tooltip.id = tooltipId;
-      tooltip.dataset.stat = slug;
-      tooltip.style.maxHeight = "50vh";
-      tooltip.style.overflowY = "auto";
-      tooltip.style.overscrollBehavior = "contain";
-      const title = document.createElement("div");
-      title.className = "sidebar_title";
-      const heading = document.createElement("h2");
-      heading.textContent = localizedLabel;
-      title.append(heading);
-      const modifiers = document.createElement("ul");
-      modifiers.className = "modifier-list";
-      for (const entry of statistic.modifiers ?? statistic._modifiers ?? []) {
-        if (entry.enabled === false && entry.hideIfDisabled) continue;
-        const item = document.createElement("li");
-        item.className = `item${entry.enabled === false ? " no-effect" : ""}`;
-        const type = document.createElement("span");
-        type.className = "tag-legacy";
-        type.textContent = game.i18n.localize(`PF2E.ModifierType.${entry.type ?? "untyped"}`);
-        const name = document.createElement("span");
-        name.className = "label";
-        name.textContent = entry.label ?? entry.slug ?? "Modifier";
-        const amount = document.createElement("span");
-        amount.className = "data";
-        const modifierValue = Number(entry.modifier ?? entry.value ?? 0);
-        amount.textContent = `${modifierValue >= 0 ? "+" : ""}${Math.trunc(modifierValue)}`;
-        item.append(type, name, amount);
-        if (entry.custom && entry.slug) {
-          const remove = document.createElement("i");
-          remove.className = "fa-regular fa-circle-xmark remove-modifier";
-          remove.dataset.action = "remove-modifier";
-          remove.dataset.slug = entry.slug;
-          remove.title = game.i18n.localize("PF2E.RemoveModifierTitle");
-          remove.addEventListener("click", () => actor.removeCustomModifier(slug, entry.slug));
-          item.append(remove);
-        }
-        modifiers.append(item);
-      }
-      if (actor.isOwner) {
-        const add = document.createElement("li");
-        add.className = "item add-modifier";
-        const valueControls = document.createElement("div");
-        valueControls.className = "add-modifier-value";
-        const decrement = document.createElement("button");
-        decrement.type = "button";
-        decrement.dataset.action = "decrement";
-        decrement.setAttribute("aria-label", game.i18n.localize("PF2E.ModifierDecrease"));
-        decrement.innerHTML = '<i class="fa-solid fa-minus"></i>';
-        const valueInput = document.createElement("input");
-        valueInput.type = "number";
-        valueInput.value = "1";
-        valueInput.placeholder = "+1";
-        valueInput.setAttribute("aria-label", game.i18n.localize("PF2E.Roll.Dialog.ModifierValue"));
-        const increment = document.createElement("button");
-        increment.type = "button";
-        increment.dataset.action = "increment";
-        increment.setAttribute("aria-label", game.i18n.localize("PF2E.ModifierIncrease"));
-        increment.innerHTML = '<i class="fa-solid fa-plus"></i>';
-        decrement.addEventListener("click", () => valueInput.stepDown());
-        increment.addEventListener("click", () => valueInput.stepUp());
-        valueControls.append(decrement, valueInput, increment);
-
-        const nameInput = document.createElement("input");
-        nameInput.type = "text";
-        nameInput.className = "add-modifier-name";
-        nameInput.placeholder = game.i18n.localize("PF2E.ModifierNamePlaceholder");
-        nameInput.setAttribute("aria-label", game.i18n.localize("PF2E.Roll.Dialog.ModifierName"));
-        const typeSelect = document.createElement("select");
-        typeSelect.className = "tag-legacy add-modifier-type";
-        typeSelect.setAttribute("aria-label", game.i18n.localize("PF2E.Roll.Dialog.ModifierType"));
-        const modifierTypes = ["", "ability", "proficiency", "item", "status", "circumstance", "untyped"];
-        for (const typeValue of modifierTypes) {
-          const option = document.createElement("option");
-          option.value = typeValue;
-          option.textContent = game.i18n.localize(typeValue
-            ? `PF2E.ModifierType.${typeValue}`
-            : "PF2E.ModifierTypeTitle");
-          typeSelect.append(option);
-        }
-        const submit = document.createElement("button");
-        submit.type = "button";
-        submit.className = "add-modifier-submit";
-        submit.textContent = game.i18n.localize("PF2E.AddModifierTitle");
-        submit.addEventListener("click", () => {
-          const amount = Number.isFinite(valueInput.valueAsNumber) ? valueInput.valueAsNumber : 1;
-          const label = nameInput.value.trim();
-          const modifierType = typeSelect.value;
-          if (!modifierType) {
-            ui.notifications.error("Type is required.");
-            return;
-          }
-          actor.addCustomModifier(slug, label || game.i18n.localize(`PF2E.ModifierType.${modifierType}`), amount, modifierType);
-        });
-        add.append(valueControls, nameInput, typeSelect, submit);
-        modifiers.append(add);
-      }
-      tooltip.append(title, modifiers);
-      row.append(tooltip);
-    }
-    const jq = globalThis.jQuery ?? globalThis.$;
-    if (jq && !modifier.classList.contains("tooltipstered") && typeof jq(modifier).tooltipster === "function") {
-      jq(modifier).tooltipster({
-        trigger: "click",
-        arrow: false,
-        contentAsHTML: true,
-        debug: false,
-        interactive: true,
-        side: ["right", "bottom"],
-        theme: "crb-hover",
-        minWidth: 120,
-        content: tooltip
-      });
-    }
+    attachVursSaveModifierTooltip({
+      row,
+      actor,
+      slug,
+      statistic,
+      label: localizedLabel,
+      rootId: root.id,
+      trigger: modifier
+    });
   }
 
   const order = ["fortitude", "reflex", "acquisition", "will", "perception", "soul"];
@@ -388,6 +277,164 @@ export function addVursExtendedSaveRows(root, actor) {
     row.style.minWidth = "0";
     if (index % 3 === 0) row.style.borderLeft = "none";
   });
+}
+
+// Breakdown string for NPC extended-save tooltips. StatisticCheck.breakdown
+// lists raw check modifiers, which can contain the same slug twice (statistic
+// modifiers plus synthetics re-extracted for check domains); the displayed
+// total dedupes by slug keeping the largest value, so mirror that here.
+function vursStatisticBreakdown(statistic) {
+  const modifiers = statistic?.check?.modifiers ?? statistic?.modifiers ?? statistic?._modifiers ?? [];
+  const bySlug = new Map();
+  for (const entry of modifiers) {
+    if (!entry?.enabled) continue;
+    const value = Number(entry.modifier ?? entry.value) || 0;
+    const slug = entry.slug ?? entry.label ?? "";
+    const existing = bySlug.get(slug);
+    if (!existing || Math.abs(value) > Math.abs(existing.value)) {
+      bySlug.set(slug, { label: entry.label ?? slug, value });
+    }
+  }
+  const parts = [...bySlug.values()].map(({ label, value }) => `${label} ${value >= 0 ? "+" : ""}${value}`);
+  return parts.length ? parts.join(", ") : null;
+}
+
+// Base modifier for adjusted-value coloring: ability/proficiency/base-slug
+// entries only, mirroring PF2e's CreatureSaves base calculation.
+function vursStatisticBaseModifier(statistic) {
+  const modifiers = statistic?.modifiers ?? statistic?._modifiers ?? statistic?.check?.modifiers ?? [];
+  return modifiers.reduce((sum, entry) => {
+    if (entry?.enabled === false) return sum;
+    const isBase = entry?.slug === "base" || entry?.type === "ability" || entry?.type === "proficiency";
+    return isBase ? sum + (Number(entry?.modifier ?? entry?.value) || 0) : sum;
+  }, 0);
+}
+
+// Shared modifier Tooltipster for the extended save rows (PCs and NPCs).
+// Builds the itemized modifier list plus add/remove UI once per row, then
+// attaches jQuery tooltipster to the given trigger element.
+function attachVursSaveModifierTooltip({ row, actor, slug, statistic, label, rootId, trigger }) {
+  // Keep this distinct from the skill's own Proficiencies-tab tooltip ID.
+  const tooltipId = `${rootId}-vurs-sidebar-${slug}-modifiers`;
+  trigger.setAttribute("data-tooltip-content", `#${tooltipId}`);
+  trigger.classList.remove("tooltipstered");
+  let tooltip = row.querySelector(`#${CSS.escape(tooltipId)}`);
+  if (!tooltip) {
+    tooltip = document.createElement("div");
+    tooltip.className = "hover-content modifiers-tooltip";
+    tooltip.id = tooltipId;
+    tooltip.dataset.stat = slug;
+    tooltip.style.maxHeight = "50vh";
+    tooltip.style.overflowY = "auto";
+    tooltip.style.overscrollBehavior = "contain";
+    const title = document.createElement("div");
+    title.className = "sidebar_title";
+    const heading = document.createElement("h2");
+    heading.textContent = label;
+    title.append(heading);
+    const modifiers = document.createElement("ul");
+    modifiers.className = "modifier-list";
+    for (const entry of statistic.modifiers ?? statistic._modifiers ?? statistic.check?.modifiers ?? []) {
+      if (entry.enabled === false && entry.hideIfDisabled) continue;
+      const item = document.createElement("li");
+      item.className = `item${entry.enabled === false ? " no-effect" : ""}`;
+      const type = document.createElement("span");
+      type.className = "tag-legacy";
+      type.textContent = game.i18n.localize(`PF2E.ModifierType.${entry.type ?? "untyped"}`);
+      const name = document.createElement("span");
+      name.className = "label";
+      name.textContent = entry.label ?? entry.slug ?? "Modifier";
+      const amount = document.createElement("span");
+      amount.className = "data";
+      const modifierValue = Number(entry.modifier ?? entry.value ?? 0);
+      amount.textContent = `${modifierValue >= 0 ? "+" : ""}${Math.trunc(modifierValue)}`;
+      item.append(type, name, amount);
+      if (entry.custom && entry.slug) {
+        const remove = document.createElement("i");
+        remove.className = "fa-regular fa-circle-xmark remove-modifier";
+        remove.dataset.action = "remove-modifier";
+        remove.dataset.slug = entry.slug;
+        remove.title = game.i18n.localize("PF2E.RemoveModifierTitle");
+        remove.addEventListener("click", () => actor.removeCustomModifier(slug, entry.slug));
+        item.append(remove);
+      }
+      modifiers.append(item);
+    }
+    if (actor.isOwner) {
+      const add = document.createElement("li");
+      add.className = "item add-modifier";
+      const valueControls = document.createElement("div");
+      valueControls.className = "add-modifier-value";
+      const decrement = document.createElement("button");
+      decrement.type = "button";
+      decrement.dataset.action = "decrement";
+      decrement.setAttribute("aria-label", game.i18n.localize("PF2E.ModifierDecrease"));
+      decrement.innerHTML = '<i class="fa-solid fa-minus"></i>';
+      const valueInput = document.createElement("input");
+      valueInput.type = "number";
+      valueInput.value = "1";
+      valueInput.placeholder = "+1";
+      valueInput.setAttribute("aria-label", game.i18n.localize("PF2E.Roll.Dialog.ModifierValue"));
+      const increment = document.createElement("button");
+      increment.type = "button";
+      increment.dataset.action = "increment";
+      increment.setAttribute("aria-label", game.i18n.localize("PF2E.ModifierIncrease"));
+      increment.innerHTML = '<i class="fa-solid fa-plus"></i>';
+      decrement.addEventListener("click", () => valueInput.stepDown());
+      increment.addEventListener("click", () => valueInput.stepUp());
+      valueControls.append(decrement, valueInput, increment);
+
+      const nameInput = document.createElement("input");
+      nameInput.type = "text";
+      nameInput.className = "add-modifier-name";
+      nameInput.placeholder = game.i18n.localize("PF2E.ModifierNamePlaceholder");
+      nameInput.setAttribute("aria-label", game.i18n.localize("PF2E.Roll.Dialog.ModifierName"));
+      const typeSelect = document.createElement("select");
+      typeSelect.className = "tag-legacy add-modifier-type";
+      typeSelect.setAttribute("aria-label", game.i18n.localize("PF2E.Roll.Dialog.ModifierType"));
+      const modifierTypes = ["", "ability", "proficiency", "item", "status", "circumstance", "untyped"];
+      for (const typeValue of modifierTypes) {
+        const option = document.createElement("option");
+        option.value = typeValue;
+        option.textContent = game.i18n.localize(typeValue
+          ? `PF2E.ModifierType.${typeValue}`
+          : "PF2E.ModifierTypeTitle");
+        typeSelect.append(option);
+      }
+      const submit = document.createElement("button");
+      submit.type = "button";
+      submit.className = "add-modifier-submit";
+      submit.textContent = game.i18n.localize("PF2E.AddModifierTitle");
+      submit.addEventListener("click", () => {
+        const amount = Number.isFinite(valueInput.valueAsNumber) ? valueInput.valueAsNumber : 1;
+        const name = nameInput.value.trim();
+        const modifierType = typeSelect.value;
+        if (!modifierType) {
+          ui.notifications.error("Type is required.");
+          return;
+        }
+        actor.addCustomModifier(slug, name || game.i18n.localize(`PF2E.ModifierType.${modifierType}`), amount, modifierType);
+      });
+      add.append(valueControls, nameInput, typeSelect, submit);
+      modifiers.append(add);
+    }
+    tooltip.append(title, modifiers);
+    row.append(tooltip);
+  }
+  const jq = globalThis.jQuery ?? globalThis.$;
+  if (jq && !trigger.classList.contains("tooltipstered") && typeof jq(trigger).tooltipster === "function") {
+    jq(trigger).tooltipster({
+      trigger: "click",
+      arrow: false,
+      contentAsHTML: true,
+      debug: false,
+      interactive: true,
+      side: ["right", "bottom"],
+      theme: "crb-hover",
+      minWidth: 120,
+      content: tooltip
+    });
+  }
 }
 
 function addNpcVursExtendedSaveRows(root, actor) {
@@ -410,23 +457,28 @@ function addNpcVursExtendedSaveRows(root, actor) {
       list.append(row);
     }
 
-    const label = statistic.label ?? slug;
-    const displayLabel = { acquisition: "Acq", perception: "Perc", soul: "Soul" }[slug] ?? label;
+    const label = CONFIG.PF2E.skills?.[slug]?.label ?? statistic.label ?? slug;
+    const localizedLabel = game.i18n.localize(label);
+    const displayLabel = { acquisition: "Acq", perception: "Perc", soul: "Soul" }[slug] ?? localizedLabel;
     const value = Number(statistic.totalModifier ?? statistic.mod ?? statistic.check?.mod ?? 0);
     const formattedValue = `${value >= 0 ? "+" : ""}${Math.trunc(value)}`;
     const roll = row.querySelector('[data-action="roll-check"]');
     roll.dataset.statistic = slug;
     roll.removeAttribute("data-save");
     roll.textContent = displayLabel;
-    roll.dataset.tooltip = statistic.breakdown ?? `Modifier ${formattedValue}`;
+    // Match native NPC save rows: a hover data-tooltip on the roll link
+    // carrying the itemized modifier breakdown.
+    roll.dataset.tooltip = vursStatisticBreakdown(statistic) ?? `Modifier ${formattedValue}`;
 
     const modifier = row.querySelector("input.modifier");
     modifier.value = formattedValue;
     modifier.readOnly = true;
-    modifier.classList.remove("adjustable");
-    modifier.setAttribute("aria-label", label);
+    modifier.setAttribute("aria-label", localizedLabel);
     modifier.removeAttribute("data-property");
     modifier.removeAttribute("data-dtype");
+    const baseValue = vursStatisticBaseModifier(statistic);
+    modifier.classList.toggle("adjusted-higher", value > baseValue);
+    modifier.classList.toggle("adjusted-lower", value < baseValue);
   }
 
   for (const slug of ["fortitude", "reflex", "acquisition", "will", "perception", "soul"]) {

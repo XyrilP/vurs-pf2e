@@ -86,8 +86,9 @@ function drawOverlay(
 	const validShapes = (Array.isArray(shapes) ? shapes : []).filter(shape =>
 		shape && typeof shape.type === "string" && AREA_TYPES.some(type =>
 			(type === "burst" || type === "cylinder") ? shape.type === "circle" :
-			(type === "cube" || type === "square") ? shape.type === "rectangle" :
-			shape.type === type
+				(type === "cube" || type === "square") ? shape.type === "rectangle" :
+					type === "wedge" ? shape.type === "polygon" :
+						shape.type === type
 		)
 	);
 	const validPaths = (Array.isArray(paths) ? paths : [])

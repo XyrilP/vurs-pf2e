@@ -669,6 +669,17 @@ Hooks.on("renderApplicationV2", (app, element) => {
 	root.addEventListener("click", event => onHudClick(event, app, root), true);
 });
 
+// Re-runs disable states on every open pf2e-hud element. Used by the hold-key
+// disable bypass (disableOverrideKeybind.js) so inert/labels recompute the
+// moment the bypass engages or releases.
+export function refreshVursHudDisableLocks() {
+	if (!game.modules.get(HUD_MODULE_ID)?.active) return;
+	for (const root of document.querySelectorAll(".pf2e-hud-element")) {
+		const actor = resolveHudActor(root);
+		if (actor) applyVursHudDisableStates(root, actor);
+	}
+}
+
 Hooks.on("updateActor", actor => {
 	if (!game.modules.get(HUD_MODULE_ID)?.active) return;
 	for (const root of document.querySelectorAll(".pf2e-hud-element")) {

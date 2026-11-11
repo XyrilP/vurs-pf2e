@@ -106,6 +106,7 @@
                     "line": "Line",
                     "ring": "Ring",
                     "square": "Square",
+                    "wedge": "wedge",
                     "bounce": "Bounce"
                 },
                 "Distance": "Distance",
@@ -149,6 +150,11 @@
             "Reflex": "Reflex",
             "Will": "Will",
             "Perception": "Perception"
+        },
+        "Template": {
+            "Wedge": "Wedge",
+            "DistanceInvalid": "Template distance must be a positive number.",
+            "WidthInvalid": "Template width must be a positive number."
         }
     },
     "PF2E": {
@@ -875,7 +881,8 @@
                 "cylinder": "cylinder",
                 "emanation": "emanation",
                 "line": "line",
-                "square": "square"
+                "square": "square",
+                "wedge": "wedge"
             },
             "Size": {
                 "Half": "half",
