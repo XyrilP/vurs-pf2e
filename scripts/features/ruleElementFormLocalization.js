@@ -75,6 +75,31 @@ const RULE_ELEMENT_FORM_TRANSLATIONS = {
 			Target: "Target",
 			Self: "Self"
 		}
+	},
+	Displacement: {
+		Direction: "Direction",
+		Directions: {
+			push: "Push",
+			pull: "Pull",
+			up: "Up",
+			down: "Down",
+			left: "Left",
+			right: "Right"
+		},
+		Affects: "Affects",
+		AffectsTypes: {
+			Self: "Self",
+			Target: "Target"
+		},
+		Distance: "Distance",
+		DistancePlaceholder: "@damage, @self, @target, or a value",
+		Rounded: "Round to Grid",
+		RoundedPlaceholder: "On",
+		MovementType: "Movement Type",
+		MovementTypePlaceholder: "Travel",
+		AntiAir: "Anti-Air",
+		AntiAirPlaceholder: "Off",
+		Outcome: "Outcome"
 	}
 };
 const VURS_CUSTOM_RULE_ELEMENT_KEYS = new Set([
@@ -84,7 +109,8 @@ const VURS_CUSTOM_RULE_ELEMENT_KEYS = new Set([
 	"Healing Effectiveness",
 	"Lifesteal",
 	"Damage Return",
-	"Collateral Damage"
+	"Collateral Damage",
+	"Displacement"
 ]);
 
 function registerRuleElementFormTranslations(entries, prefix) {

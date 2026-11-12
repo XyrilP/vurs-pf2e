@@ -1016,6 +1016,16 @@
   vertical-align: middle;
 }
 
+.vurs-play-cost-hero-point {
+  align-items: center;
+  display: inline-flex;
+  font-size: 0.85rem;
+  height: 1.1rem;
+  justify-content: center;
+  line-height: 1;
+  width: 1.1rem;
+}
+
 .vurs-play-resource-token img {
   background: transparent;
   border: 0;

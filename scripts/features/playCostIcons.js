@@ -22,7 +22,7 @@ export function appendVursPlayCostIcons(container, playCost) {
     if (!container.title) container.title = playCost;
     let hasMinimumSuffix = false;
     const normalizedPlayCost = playCost.replace(
-        /\b(\d+)\s+or more\s+(AP|SP|TP|BP|MP|KP|SR|RP|REACTIONS?)\b/gi,
+        /\b(\d+)\s+or more\s+(AP|SP|TP|BP|MP|KP|SR|RP|REACTIONS?|HP|Hero\s*Points?|Mythic\s*Points?)\b/gi,
         (_match, amount, resource) => {
             hasMinimumSuffix = true;
             return `${amount} ${resource}`;
@@ -41,13 +41,27 @@ export function appendVursPlayCostIcons(container, playCost) {
             container.append(separator);
             continue;
         }
-        const match = entry.match(/^(\d+)?\s*(AP|SP|TP|BP|MP|KP|SR|RP|REACTIONS?|FREE)$/i);
+        const match = entry.match(/^(\d+)?\s*(AP|SP|TP|BP|MP|KP|SR|RP|REACTIONS?|FREE|HP|Hero\s*Points?|Mythic\s*Points?)$/i);
         if (!match) {
             container.append(document.createTextNode(entry));
             continue;
         }
-        const amount = Math.max(1, Number(match[1] ?? (lastOperator === "or" ? lastAmount : 1)));
-        const resource = /^(RP|REACTIONS?)$/i.test(match[2]) ? "REACTION" : /^(FREE)$/i.test(match[2]) ? "FREE" : match[2].toUpperCase();
+        const amount = Math.max(1, Number(match[1] ?? (lastOperator ? lastAmount : 1)));
+        const resource = /^(RP|REACTIONS?)$/i.test(match[2]) ? "REACTION"
+            : /^(FREE)$/i.test(match[2]) ? "FREE"
+            : /^(HP|Hero\s*Points?)$/i.test(match[2]) ? "HERO"
+            : /^Mythic\s*Points?$/i.test(match[2]) ? "MYTHIC"
+            : match[2].toUpperCase();
+        if (resource === "HERO" || resource === "MYTHIC") {
+            for (let index = 0; index < amount; index += 1) {
+                const icon = document.createElement("i");
+                icon.className = `fa-solid ${resource === "HERO" ? "fa-circle-h" : "fa-circle-m"} vurs-play-cost-hero-point`;
+                icon.setAttribute("aria-hidden", "true");
+                container.append(icon);
+            }
+            lastAmount = amount;
+            continue;
+        }
         if (resource === "BP") {
             const stacks = document.createElement("span");
             stacks.className = `vurs-play-cost-resource-stacks vurs-play-cost-${resource.toLowerCase()}-stacks`;

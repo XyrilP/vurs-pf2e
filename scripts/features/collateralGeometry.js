@@ -4,9 +4,31 @@ export function normalizeToken(token) {
 	return token?.document ?? token ?? null;
 }
 
+// Freshness window for flags.vurs.displacementOrigin — the pre-move position
+// stamped by Displacement so damage-time geometry (collateral areas, burst
+// fire) resolves where the token was when it was hit, not mid-animation or
+// post-move. See displacement.js stampDisplacementOrigin.
+const DISPLACEMENT_ORIGIN_TTL_MS = 60 * 1000;
+
+function getDisplacementOriginCenter(document) {
+	const origin = document?.flags?.vurs?.displacementOrigin;
+	if (!origin) return null;
+	if (!Number.isFinite(origin.x) || !Number.isFinite(origin.y)) return null;
+	if (Date.now() - (origin.at ?? 0) > DISPLACEMENT_ORIGIN_TTL_MS) return null;
+	const grid = canvas.grid;
+	const center = {
+		x: (origin.x + document.width / 2) * grid.sizeX,
+		y: (origin.y + document.height / 2) * grid.sizeY
+	};
+	console.log(`vurs-pf2e | Collateral Damage: using pre-displacement origin for ${document.name} (${center.x}, ${center.y})`);
+	return center;
+}
+
 export function getTokenCenter(token) {
 	const document = normalizeToken(token);
 	if (!document) return null;
+	const displaced = getDisplacementOriginCenter(document);
+	if (displaced) return displaced;
 	const center = document.object?.getCenterPoint?.() ?? document.getCenterPoint?.();
 	return center && { x: center.x, y: center.y };
 }

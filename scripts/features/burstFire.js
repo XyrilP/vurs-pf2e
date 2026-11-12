@@ -321,8 +321,24 @@ export function handleBurstFireHudClick(event, actor, target, root) {
 function clearPreparedBurstFireForItem(item) {
 	const actor = item?.actor ?? item?.parent;
 	if (!actor) return;
+	burstFireRelevantActors.delete(actor);
 	const key = actor.uuid ?? actor.id;
 	if (preparedBurstFires.get(key)?.itemId === item.id) clearPreparedBurstFire(key);
+}
+
+// injectBurstFireAltUsages runs on every prepareDerivedData (i.e. every actor
+// update). Gate it behind a cached check for any owned item carrying the
+// "automatic" trait — the only strikes that can receive a Burst-Fire usage.
+const burstFireRelevantActors = new WeakMap();
+function actorMayHaveAutomaticStrike(actor) {
+	const cached = actor && typeof actor === "object" ? burstFireRelevantActors.get(actor) : undefined;
+	if (cached !== undefined) return cached;
+	const relevant = (actor?.items ?? []).some(item =>
+		itemTraitSlugs(item).includes(AUTOMATIC_TRAIT) ||
+		itemTraitSlugs(item.linkedWeapon).includes(AUTOMATIC_TRAIT)
+	);
+	if (actor && typeof actor === "object") burstFireRelevantActors.set(actor, relevant);
+	return relevant;
 }
 
 function handleBurstFireSheetClick(actor, root, event) {
@@ -1049,8 +1065,17 @@ export function isAutomaticStrike(strike) {
 		itemTraitSlugs(item?.linkedWeapon).includes(AUTOMATIC_TRAIT);
 }
 
+// Burst-Fire overrides were stored under the package flag scope before the
+// flags.vurs migration; merge both, with flags.vurs winning per key.
+function getItemBurstFireFlags(item) {
+	return {
+		...foundry.utils.getProperty(item, `flags.${MODULE_ID}.burstFire`),
+		...foundry.utils.getProperty(item, "flags.vurs.burstFire")
+	};
+}
+
 function readBurstFireBaseOverride(item, stat) {
-	const burstFire = foundry.utils.getProperty(item, `flags.${MODULE_ID}.burstFire`) ?? {};
+	const burstFire = getItemBurstFireFlags(item);
 	const baseKey = `base${stat[0].toUpperCase()}${stat.slice(1)}`;
 	const legacyKey = stat;
 	const value = Object.hasOwn(burstFire, baseKey)
@@ -1065,11 +1090,11 @@ function getBurstFireBaseOverride(item, stat) {
 }
 
 function getBurstFireAdjustment(item, stat) {
-	const path = `flags.${MODULE_ID}.burstFire.${stat}Adjustment`;
-	const value = foundry.utils.getProperty(item, path);
+	const key = `${stat}Adjustment`;
+	const value = getItemBurstFireFlags(item)[key];
 	if (Number.isInteger(value)) return value;
 	const linked = item?.linkedWeapon;
-	const inherited = linked ? foundry.utils.getProperty(linked, path) : undefined;
+	const inherited = linked ? getItemBurstFireFlags(linked)[key] : undefined;
 	return Number.isInteger(inherited) ? inherited : 0;
 }
 
@@ -1141,7 +1166,7 @@ function addBurstFireWeaponSection(app, element) {
 			input.disabled = true;
 			try {
 				await item.update({
-					[`flags.${MODULE_ID}.burstFire.${field}`]: value === null
+					[`flags.vurs.burstFire.${field}`]: value === null
 						? new foundry.data.operators.ForcedDeletion()
 						: value
 				});
@@ -1556,7 +1581,9 @@ function installBurstFirePrepareAttacks({ quiet = false } = {}) {
 			value: function (...args) {
 				const result = original.apply(this, args);
 				const actions = this.system?.actions;
-				if (Array.isArray(actions)) injectBurstFireAltUsages(actions, this);
+				if (Array.isArray(actions) && actions.length && actorMayHaveAutomaticStrike(this)) {
+					injectBurstFireAltUsages(actions, this);
+				}
 				return result;
 			}
 		});
@@ -1571,6 +1598,7 @@ Hooks.once("ready", () => {
 	registerBurstFireLocalization();
 	installBurstFirePrepareAttacks();
 	Hooks.on("renderItemSheet", (app, html) => addBurstFireWeaponSection(app, html));
+	Hooks.on("createItem", clearPreparedBurstFireForItem);
 	Hooks.on("updateItem", clearPreparedBurstFireForItem);
 	Hooks.on("deleteItem", clearPreparedBurstFireForItem);
 });

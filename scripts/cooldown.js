@@ -1,12 +1,45 @@
+import {
+  actorHasUsedNova,
+  actorHasUsedSupernova,
+  getVursEffectSourceItemUuid,
+  itemHasNovaTrait,
+  itemHasSupernovaTrait
+} from "./features/disableConditions.js";
+import { normalizeToken } from "./features/collateralGeometry.js";
+
 const MODULE_ID = "vurs-pf2e";
+const VURS_FLAG_SCOPE = "vurs";
 const COOLDOWN_TRAIT = /^cooldown-(\d+)$/;
 const RECHARGE_FLAG = /#Recharge\s+([^}\]]+)/i;
 const DESCRIPTION_INLINE = /\[\[([\s\S]*?)\]\]/g;
 const processingCooldownMessages = new Set();
 const processingRechargeMessages = new Set();
+const processingNovaMessages = new Set();
+const processingSupernovaMessages = new Set();
 const processingItems = new Set();
 const pendingRecharges = new Map();
 const RECHARGE_PENDING_TTL = 15 * 60 * 1000;
+// The four createChatMessage handlers all need the same combatant/item for a
+// message — resolve once per message instead of four times.
+const messageContextCache = new Map();
+const MESSAGE_CONTEXT_TTL = 60 * 1000;
+
+function getMessageContext(message) {
+  const cached = messageContextCache.get(message.id);
+  if (cached) return cached;
+  const promise = (async () => {
+    const origin = message.flags?.[game.system.id]?.origin;
+    const itemUuid = origin?.uuid ?? origin?.itemUuid;
+    if (!itemUuid) return { itemUuid: null, combatant: null, actor: null, item: null };
+    const combatant = getMessageCombatant(message);
+    const actor = combatant?.actor ?? null;
+    const item = await fromUuid(itemUuid);
+    return { itemUuid, combatant, actor, item };
+  })();
+  messageContextCache.set(message.id, promise);
+  setTimeout(() => messageContextCache.delete(message.id), MESSAGE_CONTEXT_TTL);
+  return promise;
+}
 
 Hooks.on("createChatMessage", message => {
   if (!game.user.isGM || !game.system?.id || !game.combat?.started) return;
@@ -16,6 +49,12 @@ Hooks.on("createChatMessage", message => {
   });
   void applyRechargeCooldownsFromMessage(message).catch(error => {
     console.error(`${MODULE_ID} | Failed to apply recharge cooldown from chat message ${message.id}`, error);
+  });
+  void applyNovaFromMessage(message).catch(error => {
+    console.error(`${MODULE_ID} | Failed to apply Nova cooldown from chat message ${message.id}`, error);
+  });
+  void applySupernovaFromMessage(message).catch(error => {
+    console.error(`${MODULE_ID} | Failed to apply Supernova cooldown from chat message ${message.id}`, error);
   });
 });
 
@@ -29,7 +68,7 @@ function getMessageCombatant(message) {
 
 function hasCooldownEffect(actor, sourceItemUuid) {
   return actor.itemTypes.effect.some(effect =>
-    effect.getFlag(MODULE_ID, "sourceItemUuid") === sourceItemUuid
+    getVursEffectSourceItemUuid(effect) === sourceItemUuid
   );
 }
 
@@ -53,7 +92,7 @@ async function createCooldownEffect(actor, item, rounds, messageId, flagKey, ini
         traits: { value: [], otherTags: [] }
       },
       flags: {
-        [MODULE_ID]: {
+        vurs: {
           [flagKey]: messageId,
           sourceItemUuid
         }
@@ -70,20 +109,12 @@ async function createCooldownEffect(actor, item, rounds, messageId, flagKey, ini
 async function applyCooldownFromMessage(message) {
   const messageId = message.id;
   if (!messageId || processingCooldownMessages.has(messageId)) return;
-  if (message.getFlag(MODULE_ID, "cooldownApplied")) return;
+  if (message.getFlag(VURS_FLAG_SCOPE, "cooldownApplied")) return;
   processingCooldownMessages.add(messageId);
 
   try {
-    const origin = message.flags?.[game.system.id]?.origin;
-    const itemUuid = origin?.uuid ?? origin?.itemUuid;
-    if (!itemUuid) return;
-
-    const combatant = getMessageCombatant(message);
-    if (!combatant?.actor) return;
-    const actor = combatant.actor;
-
-    const item = await fromUuid(itemUuid);
-    if (!item || (item.actor && item.actor.id !== actor.id)) return;
+    const { itemUuid, combatant, actor, item } = await getMessageContext(message);
+    if (!itemUuid || !combatant || !actor || !item || (item.actor && item.actor.id !== actor.id)) return;
 
     const cooldownTrait = item.system?.traits?.value?.find(trait => COOLDOWN_TRAIT.test(trait));
     const match = cooldownTrait?.match(COOLDOWN_TRAIT);
@@ -94,11 +125,163 @@ async function applyCooldownFromMessage(message) {
     if (hasCooldownEffect(actor, item.uuid)) return;
 
     const created = await createCooldownEffect(actor, item, rounds, messageId, "cooldownMessageId", combatant.initiative);
-    if (created) await message.setFlag(MODULE_ID, "cooldownApplied", true);
+    if (created) await message.setFlag(VURS_FLAG_SCOPE, "cooldownApplied", true);
   } finally {
     processingCooldownMessages.delete(messageId);
   }
 }
+
+// Nova is once per encounter per actor: the first Nova-traited item used in
+// combat marks the actor, and every Nova-traited item is disabled until the
+// encounter ends (see applyCooldownChargeUpState / HUD pass).
+async function applyNovaFromMessage(message) {
+  const messageId = message.id;
+  if (!messageId || processingNovaMessages.has(messageId)) return;
+  if (message.getFlag(VURS_FLAG_SCOPE, "novaApplied")) return;
+  processingNovaMessages.add(messageId);
+
+  try {
+    const { itemUuid, combatant, actor, item } = await getMessageContext(message);
+    if (!itemUuid || !combatant || !actor || !item || !itemHasNovaTrait(item) || (item.actor && item.actor.id !== actor.id)) return;
+    if (actorHasUsedNova(actor)) return;
+
+    const processingKey = `${actor.uuid}:nova`;
+    if (processingItems.has(processingKey)) return;
+    processingItems.add(processingKey);
+
+    try {
+      await actor.createEmbeddedDocuments("Item", [{
+        name: "Nova Used",
+        type: "effect",
+        img: item.img || "icons/svg/daze.svg",
+        system: {
+          description: { value: `<p>${item.name} was used. No other Nova can be used this encounter.</p>` },
+          duration: { value: 0, unit: "encounter", expiry: null },
+          rules: [],
+          traits: { value: [], otherTags: [] }
+        },
+        flags: {
+          vurs: {
+            novaUsed: messageId
+          }
+        }
+      }]);
+      await message.setFlag(VURS_FLAG_SCOPE, "novaApplied", true);
+    } finally {
+      processingItems.delete(processingKey);
+    }
+  } finally {
+    processingNovaMessages.delete(messageId);
+  }
+}
+
+// Supernovas count as Novas: permanently add the "nova" trait to any item
+// carrying "supernova" so every Nova check (per-actor lockout, cooldown
+// display, glow) applies to it automatically.
+function ensureNovaTraitOnSupernova(item) {
+  const traits = item?.system?.traits?.value;
+  if (!Array.isArray(traits) || !traits.includes("supernova") || traits.includes("nova")) return;
+  item.update({ "system.traits.value": [...traits, "nova"] }).catch(error =>
+    console.error(`${MODULE_ID} | Failed to add Nova trait to ${item.name}`, error)
+  );
+}
+
+Hooks.on("createItem", ensureNovaTraitOnSupernova);
+Hooks.on("updateItem", ensureNovaTraitOnSupernova);
+Hooks.once("ready", () => {
+  for (const actor of game.actors ?? []) {
+    for (const item of actor.items ?? []) ensureNovaTraitOnSupernova(item);
+  }
+});
+
+// Supernova is once per encounter per allegiance group: using one marks every
+// combatant actor sharing the user's token disposition, disabling their
+// Supernova-traited items until the encounter ends.
+async function applySupernovaFromMessage(message) {
+  const messageId = message.id;
+  if (!messageId || processingSupernovaMessages.has(messageId)) return;
+  if (message.getFlag(VURS_FLAG_SCOPE, "supernovaApplied")) return;
+  processingSupernovaMessages.add(messageId);
+
+  try {
+    const { itemUuid, combatant, actor, item } = await getMessageContext(message);
+    if (!itemUuid || !combatant || !actor || !item || !itemHasSupernovaTrait(item) || (item.actor && item.actor.id !== actor.id)) return;
+
+    const disposition = normalizeToken(combatant.token)?.disposition;
+    const groupActors = new Map();
+    for (const member of game.combat?.combatants ?? []) {
+      if (!member.actor) continue;
+      const memberDisposition = normalizeToken(member.token)?.disposition;
+      if (memberDisposition === undefined || memberDisposition !== disposition) continue;
+      groupActors.set(member.actor.uuid ?? member.actor.id, member.actor);
+    }
+    if (!groupActors.size) groupActors.set(actor.uuid ?? actor.id, actor);
+
+    const targets = [...groupActors.values()];
+    if (targets.some(target => actorHasUsedSupernova(target))) {
+      await message.setFlag(VURS_FLAG_SCOPE, "supernovaApplied", true);
+      return;
+    }
+
+    const processingKey = `${actor.uuid}:supernova`;
+    if (processingItems.has(processingKey)) return;
+    processingItems.add(processingKey);
+
+    try {
+      for (const target of targets) {
+        await target.createEmbeddedDocuments("Item", [{
+          name: "Supernova Used",
+          type: "effect",
+          img: item.img || "icons/svg/daze.svg",
+          system: {
+            description: { value: `<p>${item.name} was used. No other Supernova can be used by ${actor.name}'s allies this encounter.</p>` },
+            duration: { value: 0, unit: "encounter", expiry: null },
+            rules: [],
+            traits: { value: [], otherTags: [] }
+          },
+          flags: {
+            vurs: {
+              supernovaUsed: messageId
+            }
+          }
+        }]);
+      }
+      await message.setFlag(VURS_FLAG_SCOPE, "supernovaApplied", true);
+    } finally {
+      processingItems.delete(processingKey);
+    }
+  } finally {
+    processingSupernovaMessages.delete(messageId);
+  }
+}
+
+function isActiveGmClient() {
+  return game.user.isGM && (!game.users.activeGM || game.user.id === game.users.activeGM.id);
+}
+
+// The Nova marker uses PF2e's "encounter" duration, but PF2e only auto-removes
+// such effects when its removeEffects automation is enabled — clear it
+// explicitly on encounter end / combat deletion as a guarantee.
+function clearNovaEffectsForCombat(combat) {
+  if (!isActiveGmClient()) return;
+  for (const combatant of combat?.combatants ?? []) {
+    const actor = combatant.actor;
+    if (!actor) continue;
+    const effectIds = (actor.itemTypes?.effect ?? [])
+      .filter(effect => effect.getFlag?.(VURS_FLAG_SCOPE, "novaUsed") || effect.getFlag?.(VURS_FLAG_SCOPE, "supernovaUsed"))
+      .map(effect => effect.id);
+    if (!effectIds.length) continue;
+    actor.deleteEmbeddedDocuments("Item", effectIds).catch(error =>
+      console.error(`${MODULE_ID} | Failed to clear Nova effects for ${actor.name}`, error)
+    );
+  }
+}
+
+Hooks.on("updateCombat", (combat, changes) => {
+  if (changes?.started === false) clearNovaEffectsForCombat(combat);
+});
+
+Hooks.on("deleteCombat", clearNovaEffectsForCombat);
 
 function normalizeItemName(name) {
   return String(name ?? "").toLowerCase().replace(/[^a-z0-9]+/g, "");
@@ -219,26 +402,18 @@ async function tryConsumePendingRecharge(message) {
 async function applyRechargeCooldownsFromMessage(message) {
   const messageId = message.id;
   if (!messageId || processingRechargeMessages.has(messageId)) return;
-  if (message.getFlag(MODULE_ID, "rechargeCooldownApplied")) return;
+  if (message.getFlag(VURS_FLAG_SCOPE, "rechargeCooldownApplied")) return;
 
   processingRechargeMessages.add(messageId);
 
   try {
     if (await tryConsumePendingRecharge(message)) {
-      await message.setFlag(MODULE_ID, "rechargeCooldownApplied", true);
+      await message.setFlag(VURS_FLAG_SCOPE, "rechargeCooldownApplied", true);
       return;
     }
 
-    const origin = message.flags?.[game.system.id]?.origin;
-    const itemUuid = origin?.uuid ?? origin?.itemUuid;
-    if (!itemUuid) return;
-
-    const combatant = getMessageCombatant(message);
-    if (!combatant?.actor) return;
-    const actor = combatant.actor;
-
-    const item = await fromUuid(itemUuid);
-    if (!item || (item.actor && item.actor.id !== actor.id)) return;
+    const { itemUuid, combatant, actor, item } = await getMessageContext(message);
+    if (!itemUuid || !combatant || !actor || !item || (item.actor && item.actor.id !== actor.id)) return;
 
     const recharges = extractRechargeInlines(getItemDescription(item));
     if (!recharges.length) return;
@@ -250,7 +425,7 @@ async function applyRechargeCooldownsFromMessage(message) {
     }
     pendingRecharges.set(actor.uuid, entries.slice(-20));
 
-    await message.setFlag(MODULE_ID, "rechargeCooldownApplied", true);
+    await message.setFlag(VURS_FLAG_SCOPE, "rechargeCooldownApplied", true);
   } finally {
     processingRechargeMessages.delete(messageId);
   }

@@ -1336,7 +1336,7 @@ async function renderCollateralDamageCard(application) {
 }
 
 function updateGroupedDamageTokenNames(message, html) {
-	if (!foundry.utils.getProperty(message, `flags.${MODULE_ID}.damageEffects`)) return;
+	if (!foundry.utils.getProperty(message, `flags.vurs.damageEffects`)) return;
 	const group = getGroupedDamageData(message);
 	if (!group?.entries?.length) return;
 
@@ -1929,7 +1929,7 @@ function tagAutomatedDamageMessage(message, userId) {
 	if (!sourceMessage) return;
 	message.updateSource({
 		flags: {
-			[MODULE_ID]: {
+			vurs: {
 				automatedDamageSource: {
 					sourceId: pending?.messageId ?? sourceMessage.id,
 					workflow: pending?.pending.workflow ?? "strike"
@@ -1942,7 +1942,7 @@ function tagAutomatedDamageMessage(message, userId) {
 function associateAutomatedDamageSource(damageMessage) {
 	let source = foundry.utils.getProperty(
 		damageMessage,
-		`flags.${MODULE_ID}.automatedDamageSource`
+		`flags.vurs.automatedDamageSource`
 	);
 	if ((!source?.sourceId || !source.workflow) && damageMessage.isDamageRoll) {
 		const strike = findRecentSuccessfulStrike(damageMessage);
@@ -1967,7 +1967,7 @@ function associateAutomatedDamageSource(damageMessage) {
 function getAutomatedDamageSource(message) {
 	return foundry.utils.getProperty(
 		message,
-		`flags.${MODULE_ID}.automatedDamageSource`
+		`flags.vurs.automatedDamageSource`
 	) ??
 		automatedDamageSourceByMessage.get(message.id) ??
 		null;
@@ -2338,7 +2338,7 @@ function associateToolbeltDamageSource(damageMessage) {
 	if (!damageMessage.isDamageRoll || !damageMessage.item?.uuid) return;
 	const automatedSourceId = foundry.utils.getProperty(
 		damageMessage,
-		`flags.${MODULE_ID}.automatedDamageSource.sourceId`
+		`flags.vurs.automatedDamageSource.sourceId`
 	);
 	const automatedSourceMessage = automatedSourceId
 		? game.messages.get(automatedSourceId)
@@ -3187,7 +3187,7 @@ async function finalizeGroupedDamageCard(transaction) {
 
 	await message.update({
 		content: container.innerHTML,
-		[`flags.${MODULE_ID}.damageEffects`]: {
+		[`flags.vurs.damageEffects`]: {
 			...group,
 			entries: entries.map(entry => {
 				const { sourceIndexes, ...stored } = foundry.utils.deepClone(entry);
@@ -3215,7 +3215,7 @@ async function finalizeGroupedDamageCard(transaction) {
 }
 
 function getGroupedDamageData(message) {
-	const group = foundry.utils.getProperty(message, `flags.${MODULE_ID}.damageEffects`);
+	const group = foundry.utils.getProperty(message, `flags.vurs.damageEffects`);
 	if (!group?.entries?.length) return group;
 	if (group.entries.every(entry => Array.isArray(entry.effects))) return group;
 
@@ -3370,7 +3370,7 @@ async function updateGroupedDamageState(
 	);
 	const updates = {
 		content: container.innerHTML,
-		[`flags.${MODULE_ID}.damageEffects`]: (() => {
+		[`flags.vurs.damageEffects`]: (() => {
 			const { wasLegacy, ...storedGroup } = group;
 			return {
 				...storedGroup,
@@ -3454,25 +3454,25 @@ async function updatePendingPrimaryDamageRequest(message, requestId, update) {
 	if (!request) throw new Error("Could not find the pending primary damage request");
 	update(request);
 	await message.update({
-		[`flags.${MODULE_ID}.pendingPrimaryDamage`]: requests
+		[`flags.vurs.pendingPrimaryDamage`]: requests
 	});
 	return request;
 }
 
 async function updatePendingCollateralCard(message, cardId, update) {
 	const burstCards = foundry.utils.deepClone(
-		foundry.utils.getProperty(message, `flags.${MODULE_ID}.pendingBurstFireCollateral`) ?? []
+		foundry.utils.getProperty(message, `flags.vurs.pendingBurstFireCollateral`) ?? []
 	);
 	const burstCard = burstCards.find(candidate => candidate.id === cardId);
 	if (burstCard) {
 		update(burstCard);
 		const records = foundry.utils.getProperty(
 			message,
-			`flags.${MODULE_ID}.pendingBurstFireDamage`
+			`flags.vurs.pendingBurstFireDamage`
 		) ?? [];
 		const isApplied = Boolean(foundry.utils.getProperty(
 			message,
-			`flags.${MODULE_ID}.pendingBurstFireApplied`
+			`flags.vurs.pendingBurstFireApplied`
 		));
 		await message.update({
 			content: renderBurstFirePendingControls(
@@ -3481,16 +3481,16 @@ async function updatePendingCollateralCard(message, cardId, update) {
 				isApplied,
 				Boolean(foundry.utils.getProperty(
 					message,
-					`flags.${MODULE_ID}.pendingBurstFireSecretMessageId`
+					`flags.vurs.pendingBurstFireSecretMessageId`
 				))
 			),
-			[`flags.${MODULE_ID}.pendingBurstFireCollateral`]: burstCards
+			[`flags.vurs.pendingBurstFireCollateral`]: burstCards
 		});
 		return burstCard;
 	}
 
 	const cards = foundry.utils.deepClone(
-		foundry.utils.getProperty(message, `flags.${MODULE_ID}.pendingCollateralApplications`) ?? []
+		foundry.utils.getProperty(message, `flags.vurs.pendingCollateralApplications`) ?? []
 	);
 	const card = cards.find(candidate => candidate.id === cardId);
 	if (!card) return null;
@@ -3500,7 +3500,7 @@ async function updatePendingCollateralCard(message, cardId, update) {
 	for (const candidate of cards) content.append(renderPendingCollateralCard(candidate));
 	await message.update({
 		content: content.innerHTML,
-		[`flags.${MODULE_ID}.pendingCollateralApplications`]: cards
+		[`flags.vurs.pendingCollateralApplications`]: cards
 	});
 	return card;
 }
@@ -3574,11 +3574,11 @@ function getPendingCollateralCards(message) {
 		.flatMap(request => request.collateralApplications ?? []);
 	const burstCards = foundry.utils.getProperty(
 		message,
-		`flags.${MODULE_ID}.pendingBurstFireCollateral`
+		`flags.vurs.pendingBurstFireCollateral`
 	) ?? [];
 	const standaloneCards = foundry.utils.getProperty(
 		message,
-		`flags.${MODULE_ID}.pendingCollateralApplications`
+		`flags.vurs.pendingCollateralApplications`
 	) ?? [];
 	const groupedCards = (getGroupedDamageData(message)?.entries ?? [])
 		.flatMap(entry => entry.collateralDamageCards ?? []);
@@ -3599,27 +3599,27 @@ function getRelayedDamageRecords(message, action, cardId) {
 	if (action === "apply-burst-fire") {
 		const records = foundry.utils.getProperty(
 			message,
-			`flags.${MODULE_ID}.pendingBurstFireDamage`
+			`flags.vurs.pendingBurstFireDamage`
 		) ?? [];
 		const cards = foundry.utils.getProperty(
 			message,
-			`flags.${MODULE_ID}.pendingBurstFireCollateral`
+			`flags.vurs.pendingBurstFireCollateral`
 		) ?? [];
 		const secretMessageId = foundry.utils.getProperty(
 			message,
-			`flags.${MODULE_ID}.pendingBurstFireSecretMessageId`
+			`flags.vurs.pendingBurstFireSecretMessageId`
 		);
 		const secretMessage = secretMessageId ? game.messages?.get(secretMessageId) : null;
 		const secretRecords = secretMessage
 			? foundry.utils.getProperty(
 				secretMessage,
-				`flags.${MODULE_ID}.pendingBurstFireDamageApplications`
+				`flags.vurs.pendingBurstFireDamageApplications`
 			) ?? []
 			: [];
 		const secretCards = secretMessage
 			? foundry.utils.getProperty(
 				secretMessage,
-				`flags.${MODULE_ID}.pendingCollateralApplications`
+				`flags.vurs.pendingCollateralApplications`
 			) ?? []
 			: [];
 		const pending = [
@@ -3797,7 +3797,7 @@ async function applyPendingPrimaryCollateralDamage(message, requestId) {
 		const secretCards = secretMessage
 			? foundry.utils.deepClone(foundry.utils.getProperty(
 				secretMessage,
-				`flags.${MODULE_ID}.pendingCollateralApplications`
+				`flags.vurs.pendingCollateralApplications`
 			) ?? [])
 			: [];
 		const pendingCards = [
@@ -3876,21 +3876,21 @@ async function applyPendingBurstFireDamage(message) {
 	if (!game.user.isGM) {
 		return requestDamageApplication("apply-burst-fire", message);
 	}
-	if (foundry.utils.getProperty(message, `flags.${MODULE_ID}.pendingBurstFireApplied`) ||
+	if (foundry.utils.getProperty(message, `flags.vurs.pendingBurstFireApplied`) ||
 		message._vursBurstFireApplying) return;
 	message._vursBurstFireApplying = true;
 	try {
 		const records = foundry.utils.deepClone(foundry.utils.getProperty(
 			message,
-			`flags.${MODULE_ID}.pendingBurstFireDamage`
+			`flags.vurs.pendingBurstFireDamage`
 		) ?? []);
 		const cards = foundry.utils.deepClone(foundry.utils.getProperty(
 			message,
-			`flags.${MODULE_ID}.pendingBurstFireCollateral`
+			`flags.vurs.pendingBurstFireCollateral`
 		) ?? []);
 		const secretMessageId = foundry.utils.getProperty(
 			message,
-			`flags.${MODULE_ID}.pendingBurstFireSecretMessageId`
+			`flags.vurs.pendingBurstFireSecretMessageId`
 		);
 		const secretMessage = secretMessageId ? game.messages?.get(secretMessageId) : null;
 		if (secretMessageId && !secretMessage) {
@@ -3899,13 +3899,13 @@ async function applyPendingBurstFireDamage(message) {
 		const secretRecords = secretMessage
 			? foundry.utils.deepClone(foundry.utils.getProperty(
 				secretMessage,
-				`flags.${MODULE_ID}.pendingBurstFireDamageApplications`
+				`flags.vurs.pendingBurstFireDamageApplications`
 			) ?? [])
 			: [];
 		const secretCards = secretMessage
 			? foundry.utils.deepClone(foundry.utils.getProperty(
 				secretMessage,
-				`flags.${MODULE_ID}.pendingCollateralApplications`
+				`flags.vurs.pendingCollateralApplications`
 			) ?? [])
 			: [];
 		const allRecords = [...records, ...secretRecords];
@@ -3957,11 +3957,11 @@ async function applyPendingBurstFireDamage(message) {
 			const publicCardIds = new Set(cards.filter(card => card.isApplied).map(card => card.id));
 			const secretCardIds = new Set(secretCards.filter(card => card.isApplied).map(card => card.id));
 			const messageUpdate = {
-				[`flags.${MODULE_ID}.pendingBurstFireDamage`]: records.map(record => ({
+				[`flags.vurs.pendingBurstFireDamage`]: records.map(record => ({
 					...record,
 					isApplied: publicRecordIds.has(record.id)
 				})),
-				[`flags.${MODULE_ID}.pendingBurstFireCollateral`]: cards.map(card => ({
+				[`flags.vurs.pendingBurstFireCollateral`]: cards.map(card => ({
 					...card,
 					isApplied: publicCardIds.has(card.id),
 					isApplying: false
@@ -3974,16 +3974,16 @@ async function applyPendingBurstFireDamage(message) {
 					true,
 					Boolean(secretMessageId)
 				);
-				messageUpdate[`flags.${MODULE_ID}.pendingBurstFireApplied`] = true;
+				messageUpdate[`flags.vurs.pendingBurstFireApplied`] = true;
 			}
 			const updates = [message.update(messageUpdate)];
 			if (secretMessage) {
 				updates.push(secretMessage.update({
-					[`flags.${MODULE_ID}.pendingBurstFireDamageApplications`]: secretRecords.map(record => ({
+					[`flags.vurs.pendingBurstFireDamageApplications`]: secretRecords.map(record => ({
 						...record,
 						isApplied: secretRecordIds.has(record.id)
 					})),
-					[`flags.${MODULE_ID}.pendingCollateralApplications`]: secretCards.map(card => ({
+					[`flags.vurs.pendingCollateralApplications`]: secretCards.map(card => ({
 						...card,
 						isApplied: secretCardIds.has(card.id),
 						isApplying: false
@@ -4006,10 +4006,10 @@ async function toggleNestedCollateralShield(message, cardId) {
 		request.collateralApplications?.some(card => card.id === cardId)
 	) || (foundry.utils.getProperty(
 		message,
-		`flags.${MODULE_ID}.pendingBurstFireCollateral`
+		`flags.vurs.pendingBurstFireCollateral`
 	) ?? []).some(card => card.id === cardId) || Boolean(foundry.utils.getProperty(
 		message,
-		`flags.${MODULE_ID}.pendingCollateralApplications`
+		`flags.vurs.pendingCollateralApplications`
 	));
 	if (pendingCard) {
 		await updatePendingCollateralCard(message, cardId, card => {
@@ -4044,10 +4044,10 @@ async function applyNestedCollateralDamage(message, cardId, multiplier = 1) {
 		request.collateralApplications?.some(card => card.id === cardId)
 	) || (foundry.utils.getProperty(
 		message,
-		`flags.${MODULE_ID}.pendingBurstFireCollateral`
+		`flags.vurs.pendingBurstFireCollateral`
 	) ?? []).some(card => card.id === cardId) || Boolean(foundry.utils.getProperty(
 		message,
-		`flags.${MODULE_ID}.pendingCollateralApplications`
+		`flags.vurs.pendingCollateralApplications`
 	));
 	if (hasPendingCards) {
 		let card = null;
@@ -4229,8 +4229,8 @@ function installGroupedDamageUndo() {
 		if (button.hasAttribute("data-vurs-collateral-shield")) {
 			if (!getGroupedDamageData(message) &&
 				!getPendingPrimaryDamage(message).length &&
-				!foundry.utils.getProperty(message, `flags.${MODULE_ID}.pendingBurstFireCollateral`) &&
-				!foundry.utils.getProperty(message, `flags.${MODULE_ID}.pendingCollateralApplications`)) return;
+				!foundry.utils.getProperty(message, `flags.vurs.pendingBurstFireCollateral`) &&
+				!foundry.utils.getProperty(message, `flags.vurs.pendingCollateralApplications`)) return;
 			event.preventDefault();
 			event.stopImmediatePropagation();
 			void toggleNestedCollateralShield(message, button.dataset.vursCollateralShield)
@@ -4243,8 +4243,8 @@ function installGroupedDamageUndo() {
 		if (button.hasAttribute("data-vurs-apply-collateral")) {
 			if (!getGroupedDamageData(message) &&
 				!getPendingPrimaryDamage(message).length &&
-				!foundry.utils.getProperty(message, `flags.${MODULE_ID}.pendingBurstFireCollateral`) &&
-				!foundry.utils.getProperty(message, `flags.${MODULE_ID}.pendingCollateralApplications`)) return;
+				!foundry.utils.getProperty(message, `flags.vurs.pendingBurstFireCollateral`) &&
+				!foundry.utils.getProperty(message, `flags.vurs.pendingCollateralApplications`)) return;
 			event.preventDefault();
 			event.stopImmediatePropagation();
 			const cardContainer = button.closest(".vurs-collateral-damage-card");
@@ -4342,7 +4342,7 @@ async function createCollateralDamageCard(damageParams, effect, secret) {
 		...(secret ? { whisper, blind: true } : {}),
 		flags: {
 			[game.system.id]: systemFlags,
-			[MODULE_ID]: { collateralDamageCard: true }
+			vurs: { collateralDamageCard: true }
 		}
 	});
 }
@@ -4800,7 +4800,7 @@ async function applyCollateralDamage(
 }
 
 function getPendingPrimaryDamage(message) {
-	return foundry.utils.getProperty(message, `flags.${MODULE_ID}.pendingPrimaryDamage`) ?? [];
+	return foundry.utils.getProperty(message, `flags.vurs.pendingPrimaryDamage`) ?? [];
 }
 
 function renderBurstFirePendingControls(
@@ -5121,7 +5121,7 @@ async function createSecretCollateralApplicationsMessage(requestId, cards) {
 		whisper: recipients,
 		blind: true,
 		flags: {
-			[MODULE_ID]: {
+			vurs: {
 				pendingCollateralRequestId: requestId,
 				pendingCollateralApplications: cards
 			}
@@ -5185,7 +5185,7 @@ async function createSecretBurstFireMessage(records, cards) {
 		whisper: recipients,
 		blind: true,
 		flags: {
-			[MODULE_ID]: {
+			vurs: {
 				pendingBurstFireDamageApplications: records,
 				pendingCollateralApplications: cards
 			}
@@ -5240,9 +5240,9 @@ export async function prepareBurstFireDamage(message, applications) {
 			false,
 			Boolean(secretMessageId)
 		),
-		[`flags.${MODULE_ID}.pendingBurstFireDamage`]: records,
-		[`flags.${MODULE_ID}.pendingBurstFireCollateral`]: cards,
-		[`flags.${MODULE_ID}.pendingBurstFireSecretMessageId`]: secretMessageId
+		[`flags.vurs.pendingBurstFireDamage`]: records,
+		[`flags.vurs.pendingBurstFireCollateral`]: cards,
+		[`flags.vurs.pendingBurstFireSecretMessageId`]: secretMessageId
 	});
 	if (!game.settings.get(MODULE_ID, "manualDamageApplication")) {
 		try {
@@ -5265,7 +5265,7 @@ async function queuePrimaryCollateralDamage(message, request, secretApplications
 		const storedRequest = foundry.utils.deepClone(request);
 		requests.push(storedRequest);
 		await latestMessage.update({
-			[`flags.${MODULE_ID}.pendingPrimaryDamage`]: requests
+			[`flags.vurs.pendingPrimaryDamage`]: requests
 		});
 		const secretMessageId = await createSecretCollateralApplicationsMessage(
 			storedRequest.id,
@@ -5277,7 +5277,7 @@ async function queuePrimaryCollateralDamage(message, request, secretApplications
 			if (!stored) throw new Error("Could not link hidden collateral damage to its primary damage");
 			stored.secretMessageId = secretMessageId;
 			await latestMessage.update({
-				[`flags.${MODULE_ID}.pendingPrimaryDamage`]: updatedRequests
+				[`flags.vurs.pendingPrimaryDamage`]: updatedRequests
 			});
 		}
 	});
@@ -5300,7 +5300,7 @@ async function applyCollateralDamageHandler(actor, wrapped, args) {
 	}
 	const damage = typeof params.damage === "number" ? params.damage : params.damage?.total;
 	const sourceMessage = getDamageSourceMessage(params.damage, params.item);
-	if (sourceMessage?.flags?.[MODULE_ID]?.collateralDamageCard) return wrapped(...args);
+	if (sourceMessage?.flags?.vurs?.collateralDamageCard) return wrapped(...args);
 	const damageDealer = getDamageDealer(params, sourceMessage);
 	if (typeof damage !== "number" || damage <= 0 || !damageDealer) {
 		logBurstFireCollateral("skipped damage event", params, {

@@ -37,7 +37,13 @@ import {
 	isAcquisitionGatedItem,
 	isDragonblightStrikeAffected,
 	isDragonblightTrait,
+	actorHasNovaItems,
+	actorHasUsedNova,
+	actorHasUsedSupernova,
+	getVursEffectSourceItemUuid,
 	itemHasBreakerTrait,
+	itemHasNovaTrait,
+	itemHasSupernovaTrait,
 	itemIgnoresBroken,
 	ruleEnablesBroken,
 	ruleEnablesVursCondition,
@@ -48,7 +54,8 @@ import {
 	setConditionButtonDisabled,
 	setConditionDisabled,
 	setConditionDisabledWithBreakerExemption,
-	updateVursBreakerGlow
+	updateVursBreakerGlow,
+	updateVursNovaGlow
 } from "./features/disableConditions.js";
 import {
 	addNpcConfigurationButton,
@@ -327,9 +334,18 @@ function clearVursNpcHpReduction(actor) {
 	}, { render: false }).catch(error =>
 		console.error(`${MODULE_ID} | Failed to clear NPC HP reduction`, error));
 }
-Hooks.on("updateActor", actor => {
+Hooks.on("updateActor", (actor, changes) => {
 	stripVursDeathConditions(actor);
-	void enforceVursDownedEffect(actor);
+	// The Downed check only cares about HP, VURS mode/condition flags, or
+	// actors already tracked as candidates — actor updates arrive in bursts
+	// during combat, so skip the async pass when none of those changed.
+	const downedRelevant = !changes || Object.keys(changes).some(key =>
+		key.startsWith("system.attributes.hp") ||
+		key.startsWith("flags.vurs") ||
+		key.startsWith("flags.vurs-pf2e"));
+	if (downedRelevant || vursDownedCandidates.has(actor)) {
+		void enforceVursDownedEffect(actor);
+	}
 	clearVursNpcHpReduction(actor);
 });
 Hooks.on("createItem", item => {
@@ -673,17 +689,33 @@ Hooks.on("renderApplicationV2", (app, element, context, options) => {
 			context?.actor,
 			options?.actor
 		].find(candidate => candidate?.documentName === "Actor" || candidate?.type === "npc") ??
-			game.actors?.contents?.find(
-				candidate => candidate.apps?.[app?.id] === app
-			);
+			// Only actor sheets hide the actor from the cheap lookups above;
+			// other apps (dialogs, popups) would pay an all-actors scan for
+			// nothing. Sheet roots carry the "sheet" class.
+			(root?.classList?.contains("sheet") || root?.querySelector?.(".sheet")
+				? game.actors?.contents?.find(
+					candidate => candidate.apps?.[app?.id] === app
+				)
+				: null);
 
 		// Do not render Play Resources in the generic ApplicationV2 hook.
 
+		// Actor sheets also fire renderActorSheet → applyActorSheetPresentation,
+		// which already runs most of this battery — keep only the two passes it
+		// doesn't cover (main-attribute builder control, attribute column order).
+		const sheetPresentationCovered = Boolean(
+			app?.actor ||
+			app?.document?.documentName === "Actor" ||
+			app?.object?.documentName === "Actor"
+		);
 		if (actorUsesMainAttribute(actor)) addMainAttributeBuilderControl(app, root, actor);
-		addMainAttributeIndicator(root, actor);
-		addNpcRestButton(root, actor);
+		if (!sheetPresentationCovered) {
+			addMainAttributeIndicator(root, actor);
+			addNpcRestButton(root, actor);
+		}
 		if (!isSupportedVursActor(actor)) return;
 		reorderAttributeBuilderColumns(root, actor);
+		if (sheetPresentationCovered) return;
 		reorderCharacterSheetAttributes(root, actor);
 		applyActorAbilityLabels(root, actor);
 		colorVursAttributeModifierFrames(root, actor);
@@ -756,15 +788,20 @@ function syncVursConditionFlagsFromItem(item) {
 	syncVursConditionFlags(item.actor ?? item.parent);
 }
 
+// Item updates arrive in bursts; coalesce the per-sheet DOM scan to one pass
+// per actor per frame, matching refreshCooldownChargeUpStateFromItem.
+const scheduledBrokenRefreshes = new WeakSet();
 function refreshBrokenStateFromItem(item) {
-	if (!item?.isOfType?.("action", "feat")) return;
-	const actor = item.actor ?? item.parent;
-	if (!isSupportedVursActor(actor)) return;
-
-	for (const app of Object.values(actor.apps ?? {})) {
-		const root = app?.element instanceof HTMLElement ? app.element : app?.element?.[0];
-		if (root) applyBrokenState(root, actor);
-	}
+	const actor = item?.actor ?? item?.parent;
+	if (!item?.isOfType?.("action", "feat") || !isSupportedVursActor(actor) || scheduledBrokenRefreshes.has(actor)) return;
+	scheduledBrokenRefreshes.add(actor);
+	requestAnimationFrame(() => {
+		scheduledBrokenRefreshes.delete(actor);
+		for (const app of Object.values(actor.apps ?? {})) {
+			const root = app?.element instanceof HTMLElement ? app.element : app?.element?.[0];
+			if (root) applyBrokenState(root, actor);
+		}
+	});
 }
 
 async function syncVursConditionFlags(actor) {
@@ -844,7 +881,9 @@ Hooks.on("updateActor", (actor, changes, options = {}, userId) => {
 				applyActingStatusState(root, actor, "stunned");
 				applyBrokenState(root, actor);
 				applyCooldownChargeUpState(root, actor);
+				exemptVursFrequencyEditors(root);
 				updateVursBreakerGlow(root, actor, VURS_BREAKER_GLOW_SHEET_SELECTOR);
+				updateVursNovaGlow(root, actor, VURS_BREAKER_GLOW_SHEET_SELECTOR);
 			});
 		}
 
@@ -909,7 +948,7 @@ const VURS_BREAKER_GLOW_SHEET_SELECTOR = ".actions-list > .item[data-item-id], .
 // Stale disable markers left in the DOM: every disable path writes a
 // non-empty vursConditionLabel (cooldown/charge-up included) or the breaker
 // glow class, so their absence proves no pass has anything to clear.
-const VURS_SHEET_DISABLE_MARKS = '[data-vurs-condition-label]:not([data-vurs-condition-label=""]), .vurs-breaker-glow';
+const VURS_SHEET_DISABLE_MARKS = '[data-vurs-condition-label]:not([data-vurs-condition-label=""]), .vurs-breaker-glow, .vurs-nova-glow';
 
 // Every data-vurs-* condition attribute any pass can write. One shared scan
 // collects which are currently "true", letting inactive conditions skip their
@@ -924,7 +963,7 @@ const vursAttrDatasetKey = attr =>
 	"vurs" + attr.split("-").map(part => part[0].toUpperCase() + part.slice(1)).join("");
 
 function applyVursConditionStates(root, actor) {
-	if (!actorHasVursDisableStates(actor) && !root.querySelector(VURS_SHEET_DISABLE_MARKS)) return;
+	if (!actorHasVursDisableStates(actor) && !actorHasNovaItems(actor) && !root.querySelector(VURS_SHEET_DISABLE_MARKS)) return;
 	const flags = getVursConditionFlags(actor);
 	const on = name => flags[`is${name}`] === true;
 	const staleAttrs = new Set();
@@ -958,6 +997,7 @@ function applyVursConditionStates(root, actor) {
 	applyCooldownChargeUpState(root, actor);
 	exemptVursFrequencyEditors(root);
 	updateVursBreakerGlow(root, actor, VURS_BREAKER_GLOW_SHEET_SELECTOR);
+	updateVursNovaGlow(root, actor, VURS_BREAKER_GLOW_SHEET_SELECTOR);
 }
 
 // Cooldown doubles as a "recharge pending" state: the frequency/uses input is
@@ -1453,11 +1493,14 @@ function applyBrokenState(root, actor) {
 }
 
 function applyCooldownChargeUpState(root, actor) {
+	const effects = actor.itemTypes?.effect ?? [];
 	const cooldownItemUuids = new Set(
-		(actor.itemTypes?.effect ?? [])
-			.map(effect => effect.getFlag?.("vurs-pf2e", "sourceItemUuid"))
+		effects
+			.map(getVursEffectSourceItemUuid)
 			.filter(Boolean)
 	);
+	const novaUsed = actorHasUsedNova(actor);
+	const supernovaUsed = actorHasUsedSupernova(actor);
 	const combat = game.combat;
 	const currentRound = combat?.started ? combat.round : 0;
 	for (const { element, item } of getDisableableActionItems(root, actor)) {
@@ -1467,7 +1510,12 @@ function applyCooldownChargeUpState(root, actor) {
 			: null;
 		const chargeUpRound = chargeUpTrait ? Number(chargeUpTrait.match(/\d+$/)?.[0]) : null;
 		const frequencyDepleted = foundry.utils.getProperty(item, "system.frequency.value") === 0;
-		setConditionDisabled(element, "cooldown", cooldownItemUuids.has(item.uuid) || frequencyDepleted);
+		setConditionDisabled(
+			element,
+			"cooldown",
+			cooldownItemUuids.has(item.uuid) || frequencyDepleted ||
+			(novaUsed && itemHasNovaTrait(item)) || (supernovaUsed && itemHasSupernovaTrait(item))
+		);
 		setConditionDisabled(
 			element,
 			"chargeUp",

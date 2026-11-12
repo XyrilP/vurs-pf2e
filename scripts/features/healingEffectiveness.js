@@ -375,7 +375,7 @@ function applyHealingEffectivenessToRoll(roll, actor, messageData) {
 		options[REDUCTION_ACTOR_OPTION] = actor.uuid;
 		foundry.utils.setProperty(
 			messageData,
-			`flags.${MODULE_ID}.healingEffectivenessReductionActorUuid`,
+			`flags.vurs.healingEffectivenessReductionActorUuid`,
 			actor.uuid
 		);
 		const contextOptions = foundry.utils.getProperty(
@@ -414,7 +414,7 @@ function getHealingApplicationContext(healingRoll, params, actor) {
 	return {
 		rollOptions,
 		selectors,
-		reductionActorUuid: sourceMessage?.flags?.[MODULE_ID]?.healingEffectivenessReductionActorUuid
+		reductionActorUuid: sourceMessage?.flags?.vurs?.healingEffectivenessReductionActorUuid
 	};
 }
 

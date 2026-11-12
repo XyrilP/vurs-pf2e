@@ -683,6 +683,10 @@ export function refreshVursHudDisableLocks() {
 Hooks.on("updateActor", actor => {
 	if (!game.modules.get(HUD_MODULE_ID)?.active) return;
 	for (const root of document.querySelectorAll(".pf2e-hud-element")) {
+		// resolveHudActor is kept fresh by the HUD MutationObserver — compare
+		// the cached UUID first so unrelated actor updates skip the lookup.
+		const cachedUuid = root.dataset?.vursHudActorUuid;
+		if (cachedUuid && cachedUuid !== actor.uuid) continue;
 		const hudActor = resolveHudActor(root);
 		if (hudActor?.uuid !== actor.uuid) continue;
 		observeHudDisableStates(root);

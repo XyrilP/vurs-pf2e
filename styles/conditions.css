@@ -463,6 +463,28 @@ body.vurs-disable-bypass [data-vurs-condition-label]:not([data-vurs-condition-la
   text-transform: uppercase;
   z-index: 2;
 }
+/* Frequency/uses readouts ("[0] / 1 per round") are direct children of item
+   rows, so they inherit the row's blur and sit under the ::after dim overlay.
+   Lift them above the overlay (z-index 2) and clear the blur so the remaining
+   count stays readable while the item is disabled. */
+[data-vurs-condition-label]:not([data-vurs-condition-label=""]) > .frequency {
+  filter: none;
+  position: relative;
+  z-index: 3;
+}
+/* NPC action rows nest .frequency inside .button-group (alongside the Use
+   button) instead of placing it as a direct row child. The row's > * blur
+   hits .button-group as a unit, so the whole group must be unblurred for the
+   readout to escape; lifting .frequency above the ::after overlay then works
+   because an unfiltered .button-group creates no stacking context. */
+[data-vurs-condition-label]:not([data-vurs-condition-label=""]) > .button-group:has(.frequency) {
+  filter: none;
+}
+[data-vurs-condition-label]:not([data-vurs-condition-label=""]) .frequency {
+  filter: none;
+  position: relative;
+  z-index: 3;
+}
 /* Breaker items stay usable while disabled — PF2e's native glow keyframes
    (defined in pf2e.css) mark them as available during disabling conditions. */
 .vurs-breaker-glow {
@@ -489,6 +511,22 @@ body .vurs-breaker-mixed [data-vurs-condition-label]:not([data-vurs-condition-la
 /* Lift the whole Breaker-row ancestor chain above the mixed-mode container
    overlay so intermediate stacking contexts can't trap the glow row. */
 .vurs-breaker-mixed .vurs-breaker-exempt {
+  position: relative;
+  z-index: 3;
+}
+/* Nova abilities glow in the actor's player color (set per-row via
+   --vurs-nova-color). PF2e's native `glow` keyframes hardcode #ffb351, so a
+   custom animation is required. */
+@keyframes vurs-nova-glow {
+  from {
+    box-shadow: 0 0 1px 1px var(--vurs-nova-color, #ffb351);
+  }
+  to {
+    box-shadow: 0 0 3px 3px var(--vurs-nova-color, #ffb351);
+  }
+}
+.vurs-nova-glow {
+  animation: vurs-nova-glow 0.75s infinite alternate;
   position: relative;
   z-index: 3;
 }

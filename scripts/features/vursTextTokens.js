@@ -55,15 +55,16 @@ export function replaceVursPlayResourceTokens(description, actor) {
 	const resources = {
 		AP: "AP", SP: "SP", TP: "TP", BP: "BP", MP: "MP", KP: "KP", SR: "SR",
 		actionPoints: "AP", staminaPoints: "SP", tacticPoints: "TP", budgetPoints: "BP",
-		magicPoints: "MP", karmaPoints: "KP", styleRank: "SR", reactions: "REACTION", free: "FREE"
+		magicPoints: "MP", karmaPoints: "KP", styleRank: "SR", reactions: "REACTION", free: "FREE",
+		HP: "Hero Points", heroPoints: "Hero Points", mythicPoints: "Mythic Points"
 	};
 	for (const node of nodes) {
 		const resolvedText = node.nodeValue
 			.replace(/VURS\.PlayResource\.\[\[(.+?)\]\](AP|SP|TP|BP|MP|KP|SR)/gi,
 				(match, formula, resource) => `VURS.PlayResource.${resolveVursPlayCostRolls(`[[${formula}]]`, actor)}${resource}`)
-			.replace(/\b(\d+)\s+or more\s+(AP|SP|TP|BP|MP|KP|SR|RP|actions?|reactions?)\b/gi, "$1+ $2");
+			.replace(/\b(\d+)\s+or more\s+(AP|SP|TP|BP|MP|KP|SR|RP|actions?|reactions?|HP|heroPoints?|mythicPoints?)\b/gi, "$1+ $2");
 		if (resolvedText !== node.nodeValue) node.nodeValue = resolvedText;
-		const matches = [...node.nodeValue.matchAll(/VURS\.PlayResource\.((?:(\d+)|(One|Two|Three|Longer))?(AP|SP|TP|BP|MP|KP|SR|actionPoints|staminaPoints|tacticPoints|budgetPoints|magicPoints|karmaPoints|styleRank|reactions|reaction|free))/gi)];
+		const matches = [...node.nodeValue.matchAll(/VURS\.PlayResource\.((?:(\d+)|(One|Two|Three|Longer))?(AP|SP|TP|BP|MP|KP|SR|actionPoints|staminaPoints|tacticPoints|budgetPoints|magicPoints|karmaPoints|styleRank|reactions|reaction|free|HP|heroPoints|mythicPoints))/gi)];
 		if (!matches.length) continue;
 		const fragment = document.createDocumentFragment();
 		let offset = 0;

@@ -314,13 +314,24 @@ export function getVursConditionFlags(actor) {
 // disable state — condition flags, cooldown effects, or charge-up traits.
 // Covers every source the DOM passes write, so callers can skip the full
 // pipeline for actors with nothing disabled. No DOM access.
+// Cooldown effects created before the flags.vurs migration stored their
+// source under the package scope; read both, write only flags.vurs.
+export function getVursEffectSourceItemUuid(effect) {
+	return effect?.getFlag?.("vurs", "sourceItemUuid") ??
+		effect?.getFlag?.(MODULE_ID, "sourceItemUuid");
+}
+
 export function actorHasVursDisableStates(actor) {
 	if (!actor) return false;
 	if (Object.values(getVursConditionFlags(actor)).some(Boolean)) return true;
-	if ((actor.itemTypes?.effect ?? []).some(effect => effect.getFlag?.("vurs-pf2e", "sourceItemUuid"))) return true;
+	if ((actor.itemTypes?.effect ?? []).some(effect => getVursEffectSourceItemUuid(effect))) return true;
+	const novaUsed = actorHasUsedNova(actor);
+	const supernovaUsed = actorHasUsedSupernova(actor);
 	const inCombat = !!globalThis.game?.combat;
 	for (const item of actor.items ?? []) {
 		if (foundry.utils.getProperty(item, "system.frequency.value") === 0) return true;
+		if (novaUsed && itemHasNovaTrait(item)) return true;
+		if (supernovaUsed && itemHasSupernovaTrait(item)) return true;
 		if (!inCombat) continue;
 		const traits = foundry.utils.getProperty(item, "system.traits.value");
 		if (Array.isArray(traits) && traits.some(trait => typeof trait === "string" && /^charge-up-\d+$/.test(trait))) return true;
@@ -402,6 +413,30 @@ export function itemHasBreakerTrait(item) {
 	return getVursItemTraits(item).includes("breaker");
 }
 
+export function itemHasNovaTrait(item) {
+	return getVursItemTraits(item).includes("nova");
+}
+
+export function actorHasUsedNova(actor) {
+	return (actor?.itemTypes?.effect ?? []).some(effect =>
+		effect.getFlag?.("vurs", "novaUsed")
+	);
+}
+
+export function itemHasSupernovaTrait(item) {
+	return getVursItemTraits(item).includes("supernova");
+}
+
+export function actorHasUsedSupernova(actor) {
+	return (actor?.itemTypes?.effect ?? []).some(effect =>
+		effect.getFlag?.("vurs", "supernovaUsed")
+	);
+}
+
+export function actorHasNovaItems(actor) {
+	return (actor?.items ?? []).some(itemHasNovaTrait);
+}
+
 export function getVursItemSlug(item, element = null) {
 	return item?.slug ??
 		foundry.utils.getProperty(item, "system.slug") ??
@@ -447,7 +482,14 @@ function resolveBreakerRowItem(row, actor, resolveItem) {
 		return cached;
 	}
 	const item = resolveItem ? resolveItem(row) : defaultBreakerRowItem(actor, row);
-	const entry = { gen: vursConditionPassGeneration, actor, resolve: resolveItem ?? null, item, isBreaker: itemHasBreakerTrait(item) };
+	const entry = {
+		gen: vursConditionPassGeneration,
+		actor,
+		resolve: resolveItem ?? null,
+		item,
+		isBreaker: itemHasBreakerTrait(item),
+		isNova: itemHasNovaTrait(item)
+	};
 	breakerRowCache.set(row, entry);
 	return entry;
 }
@@ -629,5 +671,56 @@ export function updateVursBreakerGlow(root, actor, rowSelector = BREAKER_GLOW_RO
 			&& row.dataset.vursCooldown !== "true"
 			&& row.dataset.vursChargeUp !== "true";
 		row.classList.toggle("vurs-breaker-glow", usable && resolveBreakerRowItem(row, actor, resolveItem).isBreaker);
+	}
+}
+
+// Resolves the color used for Nova glow: the actor's assigned player first,
+// then a single OWNER-permission player, falling back to the local user's
+// color (NPCs, unowned actors, ambiguous ownership).
+export function getVursActorGlowColor(actor) {
+	const users = game.users?.contents ?? [];
+	const toCss = userColor => {
+		const color = Color.fromString(userColor.toString());
+		return color.css ?? color.toString();
+	};
+
+	let assigned = null;
+	for (const user of users) {
+		if (user.isGM || (user.character?.id ?? user.character) !== actor?.id) continue;
+		if (assigned) {
+			assigned = null;
+			break;
+		}
+		assigned = user;
+	}
+	if (assigned?.color) return toCss(assigned.color);
+
+	let owner = null;
+	for (const user of users) {
+		if (user.isGM || !actor?.testUserPermission?.(user, "OWNER")) continue;
+		if (owner) {
+			owner = null;
+			break;
+		}
+		owner = user;
+	}
+	if (owner?.color) return toCss(owner.color);
+
+	return game.user?.color ? toCss(game.user.color) : null;
+}
+
+// Marks Nova-trait rows with .vurs-nova-glow while they are not on cooldown or
+// charging up, tinted with the actor's player color via --vurs-nova-color.
+export function updateVursNovaGlow(root, actor, rowSelector = BREAKER_GLOW_ROW_SELECTOR, resolveItem = null) {
+	if (!root) return;
+	const color = getVursActorGlowColor(actor);
+	for (const row of root.querySelectorAll(rowSelector)) {
+		const entry = resolveBreakerRowItem(row, actor, resolveItem);
+		const glow = entry.isNova &&
+			row.dataset.vursCooldown !== "true" &&
+			row.dataset.vursChargeUp !== "true";
+		row.classList.toggle("vurs-nova-glow", glow);
+		if (glow && color) row.style.setProperty("--vurs-nova-color", color);
+		else row.style.removeProperty("--vurs-nova-color");
 	}
 }

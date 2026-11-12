@@ -3,7 +3,7 @@
 	"title": "Vionheart Universe Roleplaying System for Pf2E/Sf2E",
 	"manifest": "https://raw.githubusercontent.com/XyrilP/vurs-pf2e/refs/heads/main/module.json",
 	"download": "https://github.com/XyrilP/vurs-pf2e/archive/refs/heads/main.zip",
-	"version": "13.11",
+	"version": "13.12",
 	"compatibility": {
 		"minimum": "14",
 		"verified": "14",
@@ -110,6 +110,7 @@
 					"assault-rifle": "Assault Rifle",
 					"battle-rifle": "Battle Rifle",
 					"heavy-machine-gun": "Heavy Machine Gun",
+					"assault-cannon": "Assault Cannon",
 					"minigun": "Minigun"
 				},
 				"weaponTraits": {
@@ -212,6 +213,14 @@
 					"cooldown-4": {
 						"label": "Cooldown 4",
 						"description": "This ability can't be used in a number of rounds equal to the value appended after using it."
+					},
+					"nova": {
+						"label": "Nova",
+						"description": "This powerful ability is so impactful that you can't use more than one Nova in an encounter."
+					},
+					"supernova": {
+						"label": "Supernova",
+						"description": "This super powerful ability is so impactful that you and your allies can't use more than one Supernova in an encounter. Supernovas also count as Novas for you."
 					},
 					"charged-ability": {
 						"label": "Charged Ability",
@@ -564,7 +573,8 @@
 		"scripts/features/damageReturn.js",
 		"scripts/features/npcSheetActions.js",
 		"scripts/features/collateralDamage.js",
-      "scripts/features/wedgeTemplates.js",
+		"scripts/features/displacement.js",
+		"scripts/features/wedgeTemplates.js",
 		"scripts/features/burstFire.js",
 		"scripts/features/staggeredTurns.js",
 		"scripts/generalChanges.js",

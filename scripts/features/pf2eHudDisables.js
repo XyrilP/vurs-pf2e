@@ -1,4 +1,5 @@
 import {
+	actorHasNovaItems,
 	actorHasVursDisableStates,
 	areVursDisableLocksUiEnforced,
 	beginVursConditionPass,
@@ -6,6 +7,9 @@ import {
 	getDragonblightDamageTypes,
 	getVursConditionFlags,
 	getVursConditionPassGeneration,
+	actorHasUsedNova,
+	actorHasUsedSupernova,
+	getVursEffectSourceItemUuid,
 	getVursItemFrequencyValue,
 	getVursItemSlug,
 	getVursItemTraits,
@@ -14,10 +18,12 @@ import {
 	isAcquisitionGatedItem,
 	isDragonblightStrikeAffected,
 	itemHasBreakerTrait,
+	itemHasSupernovaTrait,
 	itemIgnoresBroken,
 	setConditionDisabled,
 	setConditionDisabledWithBreakerExemption,
-	updateVursBreakerGlow
+	updateVursBreakerGlow,
+	updateVursNovaGlow
 } from "./disableConditions.js";
 
 const ACTING_STATUSES = ["staggered", "unconscious", "cantAct", "incapacitated", "petrified", "stunned"];
@@ -231,7 +237,9 @@ function computeIsHudEquipmentSection(header, actor) {
 }
 
 function hudRowIsBreaker(actor, row) {
-	const item = row?.dataset?.itemId ? actor?.items?.get(row.dataset.itemId) : null;
+	const item = row?.dataset?.itemId
+		? actor?.items?.get(row.dataset.itemId)
+		: resolveHudSidebarItem(row);
 	return itemHasBreakerTrait(item);
 }
 
@@ -269,7 +277,7 @@ function applyHudSectionStates(root, flags, actor) {
 				if (!["exploration", "downtime"].includes(header.dataset.filterValue)) continue;
 				for (let element = header.nextElementSibling; element && element.tagName !== "HEADER"; element = element.nextElementSibling) {
 					if (element.classList?.contains("item")) {
-						setHudSectionCondition(element, "fatigued", true);
+						setHudSectionCondition(element, "fatigued", !hudRowIsBreaker(actor, element));
 					}
 				}
 			}
@@ -474,11 +482,14 @@ function applySkillActionRowConditions(element, actor, flags, damageTypes) {
 }
 
 function applyHudCooldownChargeUp(root, actor) {
+	const effects = actor.itemTypes?.effect ?? [];
 	const cooldownItemUuids = new Set(
-		(actor.itemTypes?.effect ?? [])
-			.map(effect => effect.getFlag?.("vurs-pf2e", "sourceItemUuid"))
+		effects
+			.map(getVursEffectSourceItemUuid)
 			.filter(Boolean)
 	);
+	const novaUsed = actorHasUsedNova(actor);
+	const supernovaUsed = actorHasUsedSupernova(actor);
 	const combat = game.combat;
 	const currentRound = combat?.started ? combat.round : 0;
 	// Mirrors getDisableableActionItems: action/feat/spell rows only — strikes
@@ -488,22 +499,27 @@ function applyHudCooldownChargeUp(root, actor) {
 	for (const element of root.querySelectorAll(rowSelector)) {
 		const item = actor.items?.get(element.dataset.itemId);
 		if (!item) continue;
-		applyCooldownChargeUpToItem(element, item, cooldownItemUuids, currentRound);
+		applyCooldownChargeUpToItem(element, item, cooldownItemUuids, novaUsed, supernovaUsed, currentRound);
 	}
 	// Skills-sidebar actions and statistic shortcuts resolve to compendium
 	// items via data-item-uuid.
 	for (const element of root.querySelectorAll(".item.statistic[data-item-uuid], .shortcut[data-item-uuid]")) {
 		const item = resolveHudSidebarItem(element);
-		if (item) applyCooldownChargeUpToItem(element, item, cooldownItemUuids, currentRound);
+		if (item) applyCooldownChargeUpToItem(element, item, cooldownItemUuids, novaUsed, supernovaUsed, currentRound);
 	}
 }
 
-function applyCooldownChargeUpToItem(element, item, cooldownItemUuids, currentRound) {
+function applyCooldownChargeUpToItem(element, item, cooldownItemUuids, novaUsed, supernovaUsed, currentRound) {
 	const traits = getVursItemTraits(item);
 	const chargeUpTrait = traits.find(trait => /^charge-up-\d+$/.test(trait));
 	const chargeUpRound = chargeUpTrait ? Number(chargeUpTrait.match(/\d+$/)?.[0]) : null;
 	const frequencyDepleted = getVursItemFrequencyValue(item) === 0;
-	setConditionDisabled(element, "cooldown", cooldownItemUuids.has(item.uuid) || frequencyDepleted);
+	setConditionDisabled(
+		element,
+		"cooldown",
+		cooldownItemUuids.has(item.uuid) || frequencyDepleted ||
+		(novaUsed && traits.includes("nova")) || (supernovaUsed && traits.includes("supernova"))
+	);
 	setConditionDisabled(
 		element,
 		"chargeUp",
@@ -680,12 +696,12 @@ function applyHudShortcutConditions(element, actor, flags, damageTypes) {
 // Stale disable markers: item/section labels (vursConditionLabel covers
 // cooldown/charge-up too), section row flags, and breaker glow. Their absence
 // proves every pass below would write false/no-op.
-const HUD_DISABLE_MARKS = '[data-vurs-condition-label]:not([data-vurs-condition-label=""]), [data-vurs-sec-any="true"], .vurs-breaker-glow';
+const HUD_DISABLE_MARKS = '[data-vurs-condition-label]:not([data-vurs-condition-label=""]), [data-vurs-sec-any="true"], .vurs-breaker-glow, .vurs-nova-glow';
 
 export function applyVursHudDisableStates(root, actor) {
 	if (!root || !isVursSupportedActor(actor)) return;
 	beginVursConditionPass();
-	if (!actorHasVursDisableStates(actor) && !root.querySelector(HUD_DISABLE_MARKS)) return;
+	if (!actorHasVursDisableStates(actor) && !actorHasNovaItems(actor) && !root.querySelector(HUD_DISABLE_MARKS)) return;
 	const flags = getVursConditionFlags(actor);
 	// Cooldown/charge-up are effect/trait driven and must run even with no
 	// condition flags; every other item-level state early-outs when nothing is
@@ -735,4 +751,5 @@ export function applyVursHudDisableStates(root, actor) {
 	const breakerResolver = row => hudBreakerRowItem(actor, row);
 	applyHudTabStates(root, flags, actor, breakerResolver);
 	updateVursBreakerGlow(root, actor, HUD_ITEM_ROW_SELECTOR, breakerResolver);
+	updateVursNovaGlow(root, actor, HUD_ITEM_ROW_SELECTOR, breakerResolver);
 }
