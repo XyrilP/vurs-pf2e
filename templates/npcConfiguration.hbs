@@ -19,6 +19,7 @@
       <summary>Stat Scaling</summary>
       <fieldset>
         <legend>Scaling per NPC level</legend>
+        <p class="hint">Leave a field blank to scale it with the official Building Creatures benchmarks; enter a value to use custom per-level scaling.</p>
       {{#each scalingGroups}}
       <fieldset class="npc-config-scaling-group">
         <legend>{{label}}</legend>
@@ -28,7 +29,7 @@
             <input type="checkbox" name="scalingEnabled.{{key}}" data-default-enabled="{{defaultEnabled}}" {{#if enabled}}checked{{/if}} {{#unless ../../editable}}disabled{{/unless}}>
             <span>{{label}}</span>
             {{#unless toggleOnly}}
-            <input type="number" name="scaling.{{key}}" min="0" max="100" step="0.001" value="{{value}}" data-default-value="{{defaultValue}}" aria-label="{{label}} scaling per level" {{#unless ../../editable}}disabled{{/unless}}>
+            <input type="number" name="scaling.{{key}}" min="0" max="100" step="0.001" value="{{value}}" {{#if auto}}placeholder="Auto"{{/if}} data-default-value="{{defaultValue}}" aria-label="{{label}} scaling per level" {{#unless ../../editable}}disabled{{/unless}}>
             {{/unless}}
           </label>
           {{/each}}

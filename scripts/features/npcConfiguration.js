@@ -1,5 +1,15 @@
 import { actorUsesAgnosticVurs, actorUsesVursSystem } from "./systemModes.js";
 import { getAttributePresentation } from "./consolidatedSkills.js";
+import {
+	NPC_BENCHMARK_TABLES,
+	getBenchmarkDelta,
+	getBenchmarkTierDelta,
+	getAttributeBenchmarkDelta,
+	getSpellBenchmarkDelta,
+	getSpellTierBenchmarkDelta,
+	getResistBenchmarkDelta,
+	getSaveTierForSpellBenchmark
+} from "./npcLevelScaling.js";
 
 const MODULE_ID = "vurs-pf2e";
 const NPC_CONFIGURATION_PATH = "flags.vurs.npcConfiguration";
@@ -60,45 +70,45 @@ const NPC_LEVEL_SCALING_GROUPS = Object.freeze([
 	{
 		key: "attacks",
 		label: "Attacks",
-		fields: [{ key: "strikeAttack", label: "Strike attack bonus", defaultValue: 1.45, legacyKey: "attack" }]
+		fields: [{ key: "strikeAttack", label: "Strike attack bonus", defaultValue: 1.45, legacyKey: "attack", benchmark: "strikeAttack" }]
 	},
 	{
 		key: "damage",
 		label: "Damage",
 		fields: [
-			{ key: "damageDice", label: "Damage dice", defaultValue: 0.25 },
-			{ key: "damageBonus", label: "Damage bonus", defaultValue: 1.4, legacyKey: "damage" }
+			{ key: "damageDice", label: "Damage dice", defaultValue: 0.25, legacyOnly: true },
+			{ key: "damageBonus", label: "Damage bonus", defaultValue: 1.4, legacyKey: "damage", legacyOnly: true }
 		]
 	},
 	{
 		key: "defenses",
 		label: "Defenses",
 		fields: [
-			{ key: "ac", label: "Armor Class", defaultValue: 1.475 },
-			{ key: "saveFortitude", label: "Fortitude", defaultValue: 1.4, legacyKey: "saves" },
-			{ key: "saveReflex", label: "Reflex", defaultValue: 1.4, legacyKey: "saves" },
-			{ key: "saveWill", label: "Will", defaultValue: 1.4, legacyKey: "saves" },
-			{ key: "perception", label: "Perception", defaultValue: 1.4 }
+			{ key: "ac", label: "Armor Class", defaultValue: 1.475, benchmark: "ac" },
+			{ key: "saveFortitude", label: "Fortitude", defaultValue: 1.4, legacyKey: "saves", benchmark: "perceptionSaves" },
+			{ key: "saveReflex", label: "Reflex", defaultValue: 1.4, legacyKey: "saves", benchmark: "perceptionSaves" },
+			{ key: "saveWill", label: "Will", defaultValue: 1.4, legacyKey: "saves", benchmark: "perceptionSaves" },
+			{ key: "perception", label: "Perception", defaultValue: 1.4, benchmark: "perceptionSaves" }
 		]
 	},
 	{
 		key: "abilities",
 		label: "Attributes",
 		fields: [
-			{ key: "abilityStr", label: "Strength", defaultValue: 0.3, legacyKey: "abilities" },
-			{ key: "abilityDex", label: "Dexterity", defaultValue: 0.3, legacyKey: "abilities" },
-			{ key: "abilityCon", label: "Constitution", defaultValue: 0.3, legacyKey: "abilities" },
-			{ key: "abilityInt", label: "Intelligence", defaultValue: 0.3, legacyKey: "abilities" },
-			{ key: "abilityWis", label: "Wisdom", defaultValue: 0.3, legacyKey: "abilities" },
-			{ key: "abilityCha", label: "Charisma", defaultValue: 0.3, legacyKey: "abilities" }
+			{ key: "abilityStr", label: "Strength", defaultValue: 0.3, legacyKey: "abilities", benchmark: "abilities" },
+			{ key: "abilityDex", label: "Dexterity", defaultValue: 0.3, legacyKey: "abilities", benchmark: "abilities" },
+			{ key: "abilityCon", label: "Constitution", defaultValue: 0.3, legacyKey: "abilities", benchmark: "abilities" },
+			{ key: "abilityInt", label: "Intelligence", defaultValue: 0.3, legacyKey: "abilities", benchmark: "abilities" },
+			{ key: "abilityWis", label: "Wisdom", defaultValue: 0.3, legacyKey: "abilities", benchmark: "abilities" },
+			{ key: "abilityCha", label: "Charisma", defaultValue: 0.3, legacyKey: "abilities", benchmark: "abilities" }
 		]
 	},
 	{
 		key: "weaknessesAndResistances",
 		label: "Weaknesses and Resistances",
 		fields: [
-			{ key: "weakness", label: "Weaknesses", defaultValue: 1.4, legacyKey: "damage" },
-			{ key: "resistance", label: "Resistances", defaultValue: 1.4, legacyKey: "damage" }
+			{ key: "weakness", label: "Weaknesses", defaultValue: 1.4, legacyKey: "damage", benchmark: "weakness" },
+			{ key: "resistance", label: "Resistances", defaultValue: 1.4, legacyKey: "damage", benchmark: "resistance" }
 		]
 	},
 	{
@@ -118,16 +128,16 @@ const NPC_LEVEL_SCALING_GROUPS = Object.freeze([
 		key: "health",
 		label: "Health",
 		fields: [
-			{ key: "hp", label: "Hit Points %", defaultValue: 1.15 },
-			{ key: "hpPerLevel", label: "Flat HP per Level", defaultValue: 0, defaultEnabled: false }
+			{ key: "hp", label: "Hit Points %", defaultValue: 1.15, benchmark: "hp" },
+			{ key: "hpPerLevel", label: "Flat HP per Level", defaultValue: 0, defaultEnabled: false, legacyOnly: true }
 		]
 	},
 	{
 		key: "spellcasting",
 		label: "Spellcasting",
 		fields: [
-			{ key: "spellAttack", label: "Spell attack bonus", defaultValue: 1.35, legacyKey: "spellcasting" },
-			{ key: "spellDc", label: "Spell DC", defaultValue: 1.35, legacyKey: "spellcasting" }
+			{ key: "spellAttack", label: "Spell attack bonus", defaultValue: 1.35, legacyKey: "spellcasting", benchmark: "spellAttack" },
+			{ key: "spellDc", label: "Spell DC", defaultValue: 1.35, legacyKey: "spellcasting", benchmark: "spellDc" }
 		]
 	}
 ]);
@@ -1429,6 +1439,7 @@ function getNpcLevelScalingGroups(originalSystem = {}, scaling = {}, actor = nul
 		.map(([slug, skill]) => ({
 			key: `skill_${slug}`,
 			legacyKey: "skills",
+			benchmark: "skills",
 			label: skill.label ?? slug.replaceAll("-", " ").replace(/\b\w/g, letter => letter.toUpperCase()),
 			defaultValue: 1.4,
 			group: ["acquisition", "soul"].includes(slug) &&
@@ -1451,14 +1462,18 @@ function getNpcLevelScalingGroups(originalSystem = {}, scaling = {}, actor = nul
 			...skillFields.filter(field => field.group === group.key)
 		].map(field => {
 			const setting = getScalingSetting(scaling, field);
+			const auto = Boolean(field.benchmark) && field.legacyOnly !== true && field.toggleOnly !== true;
 			return {
 				...field,
+				auto,
 				label: field.key.startsWith("ability") && actorUsesVursSystem(actor)
 					? vursAttributeLabels[field.key.slice("ability".length).toLowerCase()]
 					: field.label,
-				value: setting.multiplier,
-					enabled: setting.enabled,
-					defaultEnabled: field.defaultEnabled !== false
+				value: auto ? (setting.custom ? setting.multiplier : "") : setting.multiplier,
+				enabled: setting.enabled,
+				defaultEnabled: field.defaultEnabled !== false,
+				rawDefaultValue: field.defaultValue,
+				defaultValue: auto ? "" : field.defaultValue
 			};
 		})
 	}));
@@ -1472,17 +1487,22 @@ function getScalingSetting(scaling = {}, field) {
 			: undefined;
 	if (configured && typeof configured === "object") {
 		const multiplier = readFiniteNumber(configured.multiplier);
+		const resolved = multiplier !== null && multiplier >= 0 ? multiplier : field.defaultValue;
 		return {
-			multiplier: multiplier !== null && multiplier >= 0 ? multiplier : field.defaultValue,
+			multiplier: resolved,
 			enabled: configured.enabled === undefined
 				? field.defaultEnabled !== false
-				: configured.enabled !== false
+				: configured.enabled !== false,
+			custom: configured.custom === true ||
+				(configured.custom === undefined && resolved !== null && resolved !== field.defaultValue)
 		};
 	}
 	const multiplier = readFiniteNumber(configured);
+	const resolved = multiplier !== null && multiplier >= 0 ? multiplier : field.defaultValue;
 	return {
-		multiplier: multiplier !== null && multiplier >= 0 ? multiplier : field.defaultValue,
-		enabled: configured === undefined ? field.defaultEnabled !== false : true
+		multiplier: resolved,
+		enabled: configured === undefined ? field.defaultEnabled !== false : true,
+		custom: configured !== undefined && resolved !== null && resolved !== field.defaultValue
 	};
 }
 
@@ -1491,6 +1511,61 @@ function getScalingMultiplier(scaling, key, legacyKey = key, defaultValue = 0) {
 		?? { key, legacyKey, defaultValue };
 	const setting = getScalingSetting(scaling, field);
 	return setting.enabled ? setting.multiplier : 0;
+}
+
+const NPC_BENCHMARK_BY_KEY = Object.freeze({
+	strikeAttack: (base, target, value) => getBenchmarkDelta(NPC_BENCHMARK_TABLES.strikeAttack, base, target, value),
+	perceptionSaves: (base, target, value) => getBenchmarkDelta(NPC_BENCHMARK_TABLES.perceptionSaves, base, target, value),
+	abilities: (base, target, value) => getAttributeBenchmarkDelta(base, target, value),
+	ac: (base, target, value) => getBenchmarkDelta(NPC_BENCHMARK_TABLES.ac, base, target, value),
+	hp: (base, target, value) => getBenchmarkDelta(NPC_BENCHMARK_TABLES.hp, base, target, value),
+	skills: (base, target, value) => getBenchmarkDelta(NPC_BENCHMARK_TABLES.skills, base, target, value),
+	weakness: (base, target, value) => getResistBenchmarkDelta("weakness", base, target, value),
+	resistance: (base, target, value) => getResistBenchmarkDelta("resistance", base, target, value),
+	spellAttack: (base, target, value) => getSpellBenchmarkDelta("attack", base, target, value),
+	spellDc: (base, target, value) => getSpellBenchmarkDelta("dc", base, target, value)
+});
+
+function resolveNpcScaling(scaling, descriptor) {
+	const field = NPC_LEVEL_SCALING_FIELDS.find(candidate => candidate.key === descriptor.key)
+		?? descriptor;
+	const setting = getScalingSetting(scaling, field);
+	if (!setting.enabled) return { mode: "off" };
+	if (field.legacyOnly === true || !field.benchmark || setting.custom) {
+		return { mode: "legacy", multiplier: setting.multiplier };
+	}
+	return { mode: "benchmark", benchmark: field.benchmark };
+}
+
+function npcScalingAdjustment(scaling, descriptor, { levelDelta, baseLevel, targetLevel, originalValue }) {
+	const resolved = resolveNpcScaling(scaling, descriptor);
+	if (resolved.mode === "off") return 0;
+	if (resolved.mode === "legacy") {
+		return getLevelScalingAdjustment(levelDelta, resolved.multiplier);
+	}
+	const benchmarkFn = NPC_BENCHMARK_BY_KEY[resolved.benchmark];
+	if (!benchmarkFn) return 0;
+	return benchmarkFn(baseLevel, targetLevel, originalValue);
+}
+
+// Generic ability DCs (inline @Check, area-fire) scale with the spell DC/attack
+// table; the tier comes from the NPC's original Will save mapped onto the
+// three-tier spell table.
+function resolveNpcGenericDcAdjustment(scaling, willValue, levelDelta, baseLevel, targetLevel, kind = "dc") {
+	const resolved = resolveNpcScaling(scaling, {
+		key: kind === "attack" ? "spellAttack" : "spellDc",
+		legacyKey: "spellcasting",
+		defaultValue: 1.35,
+		benchmark: kind === "attack" ? "spellAttack" : "spellDc"
+	});
+	if (resolved.mode === "off") return 0;
+	if (resolved.mode === "legacy") {
+		return getLevelScalingAdjustment(levelDelta, resolved.multiplier);
+	}
+	if (willValue === null || willValue === undefined) return 0;
+	const tier = getSaveTierForSpellBenchmark(baseLevel, willValue);
+	if (!tier) return 0;
+	return getSpellTierBenchmarkDelta(tier, kind, baseLevel, targetLevel);
 }
 
 function addNpcFollowerTraitRule(rules, actor) {
@@ -1648,7 +1723,8 @@ function getNpcConfigurationLevelAdjustment(
 	actor,
 	scalingField,
 	legacyKey = "spellcasting",
-	defaultValue = 1.35
+	defaultValue = 1.35,
+	originalValue = null
 ) {
 	const configuration = foundry.utils.getProperty(actor, NPC_CONFIGURATION_PATH);
 	if (!configuration?.originalData?.system) return 0;
@@ -1662,9 +1738,46 @@ function getNpcConfigurationLevelAdjustment(
 	));
 	const addedLevels = getEffectiveNpcAddedLevels(configuration, baseLevel) + relationshipAdjustment;
 	if (!addedLevels) return 0;
-	return getLevelScalingAdjustment(
-		addedLevels,
-		getScalingMultiplier(configuration.scaling, scalingField, legacyKey, defaultValue)
+	const targetLevel = baseLevel + addedLevels;
+	const benchmark = ["spellAttack", "spellDc", "weakness", "resistance"].includes(scalingField)
+		? scalingField
+		: scalingField.startsWith("skill_")
+			? "skills"
+			: null;
+	const resolved = resolveNpcScaling(configuration.scaling, {
+		key: scalingField,
+		legacyKey,
+		defaultValue,
+		benchmark
+	});
+	if (resolved.mode === "off") return 0;
+	if (resolved.mode === "legacy") {
+		return getLevelScalingAdjustment(addedLevels, resolved.multiplier);
+	}
+	if (benchmark === "skills") {
+		const slug = scalingField.slice("skill_".length);
+		const originalValue = readFiniteNumber(
+			foundry.utils.getProperty(configuration.originalData.system, `skills.${slug}.base`)
+		);
+		if (originalValue !== null) {
+			return getBenchmarkDelta(NPC_BENCHMARK_TABLES.skills, baseLevel, targetLevel, originalValue);
+		}
+		return getBenchmarkTierDelta(NPC_BENCHMARK_TABLES.skills, "moderate", baseLevel, targetLevel);
+	}
+	if (benchmark === "weakness" || benchmark === "resistance") {
+		return getResistBenchmarkDelta(benchmark, baseLevel, targetLevel, originalValue);
+	}
+	const willValue = readFiniteNumber(
+		foundry.utils.getProperty(configuration.originalData.system, "saves.will.value")
+	);
+	if (willValue === null) return 0;
+	const tier = getSaveTierForSpellBenchmark(baseLevel, willValue);
+	if (!tier) return 0;
+	return getSpellTierBenchmarkDelta(
+		tier,
+		benchmark === "spellAttack" ? "attack" : "dc",
+		baseLevel,
+		targetLevel
 	);
 }
 
@@ -1921,9 +2034,14 @@ function getLoreSkillSlug(source = {}) {
 
 function getItemAdjustmentData(itemSource, level, addedLevels, scaling, context = {}) {
 	const adjustments = {};
+	const baseLevel = level - addedLevels;
+	const targetLevel = level;
+	const actorWillValue = readFiniteNumber(foundry.utils.getProperty(
+		context.actor,
+		`${NPC_CONFIGURATION_PATH}.originalData.system.saves.will.value`
+	));
 	const damageBonusScale = getScalingMultiplier(scaling, "damageBonus", "damage", 1.4);
 	const damageDiceScale = getScalingMultiplier(scaling, "damageDice", "damageDice", 0.25);
-	const spellDcScale = getScalingMultiplier(scaling, "spellDc", "spellcasting", 1.35);
 	const inlineDamageEnabled = getScalingSetting(
 		scaling,
 		NPC_LEVEL_SCALING_FIELDS.find(field => field.key === "inlineDamage")
@@ -1940,8 +2058,14 @@ function getItemAdjustmentData(itemSource, level, addedLevels, scaling, context 
 			: 0,
 		diceDeltaMode: "count",
 		damageBonus: inlineDamageBonus,
-		dcBonus: inlineDcEnabled && spellDcScale
-			? getLevelScalingAdjustment(addedLevels, spellDcScale)
+		dcBonus: inlineDcEnabled
+			? resolveNpcGenericDcAdjustment(
+				scaling,
+				actorWillValue,
+				addedLevels,
+				baseLevel,
+				targetLevel
+			)
 			: 0
 	};
 	if (/@(?:Damage|Check)\[/.test(itemSource.system?.description?.value ?? "")) {
@@ -1956,12 +2080,21 @@ function getItemAdjustmentData(itemSource, level, addedLevels, scaling, context 
 				.filter(({ rule }) => rule?.key === "Strike")
 			: [];
 		if (attackBonus !== null && strikeRules.length === 0) {
-			const attackScale = getScalingMultiplier(scaling, "strikeAttack", "attack", 1.45);
-			adjustments["system.bonus.value"] = !attackScale
-				? 0
-				: addedLevels > 0
-					? Math.max(attackBonus, 5) + floorLevelDelta(addedLevels, attackScale) - attackBonus
-					: getLevelScalingAdjustment(addedLevels, attackScale);
+			const attackResolved = resolveNpcScaling(scaling, {
+				key: "strikeAttack", legacyKey: "attack", defaultValue: 1.45, benchmark: "strikeAttack"
+			});
+			if (attackResolved.mode === "benchmark") {
+				adjustments["system.bonus.value"] = getBenchmarkDelta(
+					NPC_BENCHMARK_TABLES.strikeAttack, baseLevel, targetLevel, attackBonus
+				);
+			} else {
+				const attackScale = attackResolved.mode === "legacy" ? attackResolved.multiplier : 0;
+				adjustments["system.bonus.value"] = !attackScale
+					? 0
+					: addedLevels > 0
+						? Math.max(attackBonus, 5) + floorLevelDelta(addedLevels, attackScale) - attackBonus
+						: getLevelScalingAdjustment(addedLevels, attackScale);
+			}
 		}
 		if (itemSource.type === "weapon") {
 			const dice = readFiniteNumber(itemSource.system?.damage?.dice);
@@ -1982,15 +2115,22 @@ function getItemAdjustmentData(itemSource, level, addedLevels, scaling, context 
 			for (const { rule: strikeRule, index: strikeRuleIndex } of strikeRules) {
 				const sourceAttack = readFiniteNumber(strikeRule.attackModifier);
 				const baseAttack = sourceAttack ?? Math.round(1.5 * (level - addedLevels) + 7);
-				const attackScale = getScalingMultiplier(scaling, "strikeAttack", "attack", 1.45);
-				if (attackScale || sourceAttack !== null) {
-					const adjustedAttack = !attackScale
-						? sourceAttack
-						: addedLevels > 0
-							? Math.max(baseAttack, 5) + floorLevelDelta(addedLevels, attackScale)
-							: addedLevels < 0
-								? baseAttack + getLevelScalingAdjustment(addedLevels, attackScale)
-								: sourceAttack;
+				const attackResolved = resolveNpcScaling(scaling, {
+					key: "strikeAttack", legacyKey: "attack", defaultValue: 1.45, benchmark: "strikeAttack"
+				});
+				const attackScale = attackResolved.mode === "legacy" ? attackResolved.multiplier : 0;
+				if (attackResolved.mode === "benchmark" || attackScale || sourceAttack !== null) {
+					const adjustedAttack = attackResolved.mode === "benchmark"
+						? baseAttack + getBenchmarkDelta(
+							NPC_BENCHMARK_TABLES.strikeAttack, baseLevel, targetLevel, baseAttack
+						)
+						: !attackScale
+							? sourceAttack
+							: addedLevels > 0
+								? Math.max(baseAttack, 5) + floorLevelDelta(addedLevels, attackScale)
+								: addedLevels < 0
+									? baseAttack + getLevelScalingAdjustment(addedLevels, attackScale)
+									: sourceAttack;
 					adjustments[`system.rules.${strikeRuleIndex}.attackModifier`] = {
 						set: adjustedAttack,
 						delta: adjustedAttack === null ? 0 : adjustedAttack - baseAttack
@@ -2010,7 +2150,6 @@ function getItemAdjustmentData(itemSource, level, addedLevels, scaling, context 
 			}
 		}
 		if (itemSource.type === "melee") {
-			const baseLevel = level - addedLevels;
 			const actor = context.actor;
 			const baseActorLevel = getNpcActorLevel(baseLevel, actor);
 			const effectiveActorLevel = readFiniteNumber(actor?.level)
@@ -2018,10 +2157,19 @@ function getItemAdjustmentData(itemSource, level, addedLevels, scaling, context 
 			const baseAttack = getNpcGeneratedAttack(baseActorLevel);
 			const effectiveAttack = getNpcGeneratedAttack(effectiveActorLevel);
 			if (attackBonus !== null) {
-				adjustments["system.bonus.value"] = addedLevels !== 0 &&
-					getScalingMultiplier(scaling, "strikeAttack", "attack", 1.45)
-					? effectiveAttack - baseAttack
-					: 0;
+				const attackResolved = resolveNpcScaling(scaling, {
+					key: "strikeAttack", legacyKey: "attack", defaultValue: 1.45, benchmark: "strikeAttack"
+				});
+				if (attackResolved.mode === "benchmark" && addedLevels !== 0) {
+					adjustments["system.bonus.value"] = getBenchmarkDelta(
+						NPC_BENCHMARK_TABLES.strikeAttack, baseActorLevel, effectiveActorLevel, baseAttack
+					);
+				} else {
+					const attackScale = attackResolved.mode === "legacy" ? attackResolved.multiplier : 0;
+					adjustments["system.bonus.value"] = addedLevels !== 0 && attackScale
+						? effectiveAttack - baseAttack
+						: 0;
+				}
 			}
 
 			const damageRolls = Object.entries(itemSource.system?.damageRolls ?? {});
@@ -2038,27 +2186,27 @@ function getItemAdjustmentData(itemSource, level, addedLevels, scaling, context 
 		}
 	} else if (itemSource.type === "spellcastingEntry") {
 		for (const key of ["value", "dc"]) {
-			if (readFiniteNumber(itemSource.system?.spelldc?.[key]) !== null) {
+			const originalValue = readFiniteNumber(itemSource.system?.spelldc?.[key]);
+			if (originalValue !== null) {
 				const scaleKey = key === "value" ? "spellAttack" : "spellDc";
-				adjustments[`system.spelldc.${key}`] =
-					getLevelScalingAdjustment(
-						addedLevels,
-						getScalingMultiplier(scaling, scaleKey, "spellcasting", 1.35)
-					);
+				adjustments[`system.spelldc.${key}`] = npcScalingAdjustment(scaling, {
+					key: scaleKey,
+					legacyKey: "spellcasting",
+					defaultValue: 1.35,
+					benchmark: scaleKey
+				}, { levelDelta: addedLevels, baseLevel, targetLevel, originalValue });
 			}
 		}
 	} else if (itemSource.type === "lore") {
-		if (readFiniteNumber(itemSource.system?.mod?.value) !== null) {
+		const originalValue = readFiniteNumber(itemSource.system?.mod?.value);
+		if (originalValue !== null) {
 			const loreSlug = getLoreSkillSlug(itemSource);
-			adjustments["system.mod.value"] = getLevelScalingAdjustment(
-				addedLevels,
-				getScalingMultiplier(
-					scaling,
-					loreSlug ? `skill_${loreSlug}` : "skills",
-					"skills",
-					1.4
-				)
-			);
+			adjustments["system.mod.value"] = npcScalingAdjustment(scaling, {
+				key: loreSlug ? `skill_${loreSlug}` : "skills",
+				legacyKey: "skills",
+				defaultValue: 1.4,
+				benchmark: "skills"
+			}, { levelDelta: addedLevels, baseLevel, targetLevel, originalValue });
 		}
 	}
 	return adjustments;
@@ -2132,49 +2280,58 @@ function captureOriginalItemSystem(item, storedOriginal, legacyBase) {
 
 function calculateActorAdjustments(originalSystem, addedLevels, scaling) {
 	const adjustments = { "details.level.value": addedLevels };
+	const baseLevel = readFiniteNumber(
+		foundry.utils.getProperty(originalSystem, "details.level.value")
+	) ?? 0;
+	const targetLevel = baseLevel + addedLevels;
 	for (const path of DIRECT_SCALING_STAT_PATHS) {
-		let scalingKey;
-		let legacyKey;
-		let defaultValue;
+		let descriptor;
 		if (path === "system.attributes.ac.value") {
-			scalingKey = "ac";
-			defaultValue = 1.475;
+			descriptor = { key: "ac", defaultValue: 1.475, benchmark: "ac" };
 		} else if (path.startsWith("system.saves.")) {
-			scalingKey = `save${path.split(".")[2].replace(/\b\w/g, letter => letter.toUpperCase())}`;
-			legacyKey = "saves";
-			defaultValue = 1.4;
+			const save = path.split(".")[2];
+			descriptor = {
+				key: `save${save[0].toUpperCase()}${save.slice(1)}`,
+				legacyKey: "saves",
+				defaultValue: 1.4,
+				benchmark: "perceptionSaves"
+			};
 		} else if (path === "system.perception.mod") {
-			scalingKey = "perception";
-			defaultValue = 1.4;
+			descriptor = { key: "perception", defaultValue: 1.4, benchmark: "perceptionSaves" };
 		} else if (path.startsWith("system.abilities.")) {
 			const ability = path.split(".")[2];
-			scalingKey = `ability${ability[0].toUpperCase()}${ability.slice(1)}`;
-			legacyKey = "abilities";
-			defaultValue = 0.3;
+			descriptor = {
+				key: `ability${ability[0].toUpperCase()}${ability.slice(1)}`,
+				legacyKey: "abilities",
+				defaultValue: 0.3,
+				benchmark: "abilities"
+			};
 		}
-		const bonus = getLevelScalingAdjustment(
-			addedLevels,
-			getScalingMultiplier(scaling, scalingKey, legacyKey, defaultValue)
-		);
 		const systemPath = path.slice("system.".length);
-		if (readFiniteNumber(foundry.utils.getProperty(originalSystem, systemPath)) !== null) {
-			adjustments[systemPath] = bonus;
-		}
+		const originalValue = readFiniteNumber(foundry.utils.getProperty(originalSystem, systemPath));
+		if (originalValue === null || !descriptor) continue;
+		adjustments[systemPath] = npcScalingAdjustment(scaling, descriptor, {
+			levelDelta: addedLevels,
+			baseLevel,
+			targetLevel,
+			originalValue
+		});
 	}
 	for (const attribute of ["weaknesses", "resistances"]) {
 		const scalingKey = attribute === "weaknesses" ? "weakness" : "resistance";
 		for (const [index, entry] of (originalSystem.attributes?.[attribute] ?? []).entries()) {
-			if (readFiniteNumber(entry?.value) !== null) {
-				adjustments[`attributes.${attribute}.${index}.value`] = getLevelScalingAdjustment(
-					addedLevels,
-					getScalingMultiplier(scaling, scalingKey, "damage", 1.4)
-				);
-			}
+			const originalValue = readFiniteNumber(entry?.value);
+			if (originalValue === null) continue;
+			adjustments[`attributes.${attribute}.${index}.value`] = npcScalingAdjustment(scaling, {
+				key: scalingKey,
+				legacyKey: "damage",
+				defaultValue: 1.4,
+				benchmark: scalingKey
+			}, { levelDelta: addedLevels, baseLevel, targetLevel, originalValue });
 		}
 	}
 	const damageBonusScale = getScalingMultiplier(scaling, "damageBonus", "damage", 1.4);
 	const damageDiceScale = getScalingMultiplier(scaling, "damageDice", "damageDice", 0.25);
-	const spellDcScale = getScalingMultiplier(scaling, "spellDc", "spellcasting", 1.35);
 	const inlineDamageEnabled = getScalingSetting(
 		scaling,
 		NPC_LEVEL_SCALING_FIELDS.find(field => field.key === "inlineDamage")
@@ -2192,7 +2349,13 @@ function calculateActorAdjustments(originalSystem, addedLevels, scaling) {
 		diceDeltaMode: "count",
 		damageBonus: inlineDamageBonus,
 		dcBonus: inlineDcEnabled
-			? getLevelScalingAdjustment(addedLevels, spellDcScale)
+			? resolveNpcGenericDcAdjustment(
+				scaling,
+				readFiniteNumber(foundry.utils.getProperty(originalSystem, "saves.will.value")),
+				addedLevels,
+				baseLevel,
+				targetLevel
+			)
 			: 0
 	};
 	for (const path of ["details.publicNotes", "details.privateNotes"]) {
@@ -2207,21 +2370,32 @@ function calculateActorAdjustments(originalSystem, addedLevels, scaling) {
 		// adjustment path instead — an actor-level base write would be
 		// overwritten immediately.
 		if (skill?.lore === true || slug.endsWith("-lore")) continue;
-		if (readFiniteNumber(skill?.base) !== null) {
-			const scalingKey = `skill_${slug}`;
-			adjustments[`skills.${slug}.base`] = getLevelScalingAdjustment(
-				addedLevels,
-				getScalingMultiplier(scaling, scalingKey, "skills", 1.4)
-			);
+		const originalValue = readFiniteNumber(skill?.base);
+		if (originalValue !== null) {
+			adjustments[`skills.${slug}.base`] = npcScalingAdjustment(scaling, {
+				key: `skill_${slug}`,
+				legacyKey: "skills",
+				defaultValue: 1.4,
+				benchmark: "skills"
+			}, { levelDelta: addedLevels, baseLevel, targetLevel, originalValue });
 		}
 	}
 	if (readFiniteNumber(originalSystem.attributes?.hp?.max) !== null) {
 		const hpBase = readFiniteNumber(originalSystem.attributes.hp.max);
-		const hpScale = getScalingMultiplier(scaling, "hp", "hp", 1.15);
-		const percentAdjustment = hpBase * (hpScale - 1) * addedLevels;
+		const hpResolved = resolveNpcScaling(scaling, {
+			key: "hp", legacyKey: "hp", defaultValue: 1.15, benchmark: "hp"
+		});
+		let hpAdjustment = 0;
+		if (hpResolved.mode === "legacy") {
+			hpAdjustment = hpBase * (hpResolved.multiplier - 1) * addedLevels;
+		} else if (hpResolved.mode === "benchmark") {
+			hpAdjustment = getBenchmarkDelta(
+				NPC_BENCHMARK_TABLES.hp, baseLevel, targetLevel, hpBase
+			);
+		}
 		const flatAdjustment = addedLevels *
 			getScalingMultiplier(scaling, "hpPerLevel", "hpPerLevel", 0);
-		adjustments["attributes.hp.max"] = roundScaledBonus(percentAdjustment + flatAdjustment);
+		adjustments["attributes.hp.max"] = roundScaledBonus(hpAdjustment + flatAdjustment);
 	}
 	return adjustments;
 }
@@ -2723,26 +2897,57 @@ class NpcConfigurationApplication extends foundry.applications.api.HandlebarsApp
 			const scaling = {};
 			const scalingGroups = getNpcLevelScalingGroups(originalSystem, {}, this.actor);
 			for (const { fields } of scalingGroups) {
-				for (const { key, label, defaultValue, defaultEnabled } of fields) {
+				for (const field of fields) {
+					const { key, label, auto, toggleOnly } = field;
+					const defaultValue = field.rawDefaultValue ?? field.defaultValue;
+					const defaultEnabled = field.defaultEnabled !== false;
 					const storedSetting = savedScaling[key];
-					const value = String(
-						synchronizeFollower
-							? storedSetting?.multiplier ?? defaultValue
-							: formData.get(`scaling.${key}`) ?? ""
-					).trim();
-					const multiplier = value ? Number(value) : defaultValue;
-					if (!Number.isFinite(multiplier) || multiplier < 0 || multiplier > 100) {
-						if (!synchronizeFollower) ui.notifications.warn(`${label} scaling must be between 0 and 100.`);
-						return;
+					const isAuto = auto === true && toggleOnly !== true;
+					let multiplier = defaultValue;
+					let enabled;
+					let custom;
+					if (synchronizeFollower) {
+						if (storedSetting && typeof storedSetting === "object") {
+							const storedMultiplier = readFiniteNumber(storedSetting.multiplier);
+							multiplier = storedMultiplier !== null && storedMultiplier >= 0
+								? storedMultiplier
+								: defaultValue;
+							enabled = storedSetting.enabled !== false;
+							custom = isAuto && (storedSetting.custom === true ||
+								(storedSetting.custom === undefined && multiplier !== defaultValue));
+						} else {
+							const storedMultiplier = readFiniteNumber(storedSetting);
+							multiplier = storedMultiplier !== null && storedMultiplier >= 0
+								? storedMultiplier
+								: defaultValue;
+							enabled = storedSetting === undefined ? defaultEnabled : true;
+							custom = isAuto && storedSetting !== undefined && multiplier !== defaultValue;
+						}
+					} else {
+						const value = String(formData.get(`scaling.${key}`) ?? "").trim();
+						if (isAuto && !value) {
+							multiplier = null;
+							custom = false;
+						} else {
+							multiplier = value ? Number(value) : defaultValue;
+							custom = isAuto;
+						}
+						if (multiplier !== null &&
+							(!Number.isFinite(multiplier) || multiplier < 0 || multiplier > 100)) {
+							ui.notifications.warn(`${label} scaling must be between 0 and 100.`);
+							return;
+						}
+						enabled = formData.get(`scalingEnabled.${key}`) === "on";
 					}
-					scaling[key] = {
-						multiplier,
-						enabled: synchronizeFollower
-							? storedSetting
-								? storedSetting.enabled !== false
-								: defaultEnabled !== false
-							: formData.get(`scalingEnabled.${key}`) === "on"
-					};
+					if (isAuto && custom === false) {
+						scaling[key] = { enabled, custom: false };
+					} else {
+						scaling[key] = {
+							multiplier,
+							enabled,
+							...(isAuto ? { custom: true } : {})
+						};
+					}
 				}
 			}
 			const formulas = {};
@@ -3271,7 +3476,13 @@ Hooks.on("preUpdateActor", (actor, changes, options = {}) => {
 				const savedAdjustment = getAdjustmentData(adjustments, adjustmentPath);
 				const adjustment = savedAdjustment.found
 					? readFiniteNumber(savedAdjustment.value) ?? 0
-					: getNpcConfigurationLevelAdjustment(actor, "damage");
+					: getNpcConfigurationLevelAdjustment(
+						actor,
+						attribute === "weaknesses" ? "weakness" : "resistance",
+						"damage",
+						1.4,
+						originalValue
+					);
 				const originalValue = inputValue - (savedAdjustment.found
 					? readFiniteNumber(savedAdjustment.value) ?? 0
 					: 0);
@@ -3296,7 +3507,13 @@ Hooks.on("preUpdateActor", (actor, changes, options = {}) => {
 		const numericValue = readFiniteNumber(value);
 		const newIwrValue = /^(attributes\.(?:weaknesses|resistances)\.\d+\.value)$/.exec(systemPath);
 		const numericAdjustment = readFiniteNumber(adjustment) ?? (newIwrValue && !adjustmentData.found
-			? getNpcConfigurationLevelAdjustment(actor, "damage")
+			? getNpcConfigurationLevelAdjustment(
+				actor,
+				newIwrValue[1] === "weaknesses" ? "weakness" : "resistance",
+				"damage",
+				1.4,
+				numericValue
+			)
 			: 0);
 		const originalValue = numericValue === null ? value : numericValue - numericAdjustment;
 		if (numericValue !== null && newIwrValue && !adjustmentData.found) {
