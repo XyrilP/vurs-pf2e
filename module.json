@@ -3,7 +3,7 @@
 	"title": "Vionheart Universe Roleplaying System for Pf2E/Sf2E",
 	"manifest": "https://raw.githubusercontent.com/XyrilP/vurs-pf2e/refs/heads/main/module.json",
 	"download": "https://github.com/XyrilP/vurs-pf2e/archive/refs/heads/main.zip",
-	"version": "13.12",
+	"version": "13.13",
 	"compatibility": {
 		"minimum": "14",
 		"verified": "14",
@@ -535,7 +535,7 @@
 			"path": "translation/vurs.json"
 		},
 		{
-			"lang": "vurs",
+			"lang": "und",
 			"name": "VURS",
 			"path": "translation/vurs.json"
 		}
@@ -551,7 +551,8 @@
 		"styles/collateralDamage.css",
 		"styles/conditions.css",
 		"styles/ruleElementForms.css",
-		"styles/moduleSettings.css"
+		"styles/moduleSettings.css",
+		"styles/intents.css"
 	],
 	"esmodules": [
 		"scripts/cooldown.js",
@@ -572,10 +573,12 @@
 		"scripts/features/healingEffectiveness.js",
 		"scripts/features/damageReturn.js",
 		"scripts/features/npcSheetActions.js",
+		"scripts/features/intents.js",
 		"scripts/features/collateralDamage.js",
 		"scripts/features/displacement.js",
 		"scripts/features/wedgeTemplates.js",
 		"scripts/features/burstFire.js",
+		"scripts/features/heroism.js",
 		"scripts/features/staggeredTurns.js",
 		"scripts/generalChanges.js",
 		"scripts/features/overhealing.js",

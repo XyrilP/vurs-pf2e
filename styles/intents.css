@@ -1,0 +1,39 @@
+.vurs-intent-button {
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+	width: 1.4em;
+	height: 1.4em;
+	border-radius: 3px;
+	color: var(--color-text-light-primary, #ccc);
+	opacity: 0.75;
+}
+
+.vurs-intent-button:hover {
+	opacity: 1;
+	background: var(--color-bg-option, rgba(255, 255, 255, 0.08));
+}
+
+.vurs-intent-button.vurs-intent-active {
+	color: #f2c94c;
+	opacity: 1;
+}
+
+.vurs-intent-tooltip {
+	position: fixed;
+	z-index: 100000;
+	max-width: 260px;
+	padding: 6px 10px;
+	border: 1px solid var(--color-border-light-tertiary, #666);
+	border-radius: 4px;
+	background: var(--color-bg-dialog, rgba(20, 20, 24, 0.95));
+	color: var(--color-text-light-primary, #eee);
+	font-size: 13px;
+	line-height: 1.35;
+	pointer-events: none;
+	box-shadow: 0 2px 8px rgba(0, 0, 0, 0.5);
+}
+
+.vurs-intent-dialog-content select {
+	width: 100%;
+}

@@ -1663,23 +1663,24 @@ function getNpcConfigurationLevelAdjustment(
 	const addedLevels = getEffectiveNpcAddedLevels(configuration, baseLevel) + relationshipAdjustment;
 	if (!addedLevels) return 0;
 	return getLevelScalingAdjustment(
-		baseLevel + addedLevels,
 		addedLevels,
 		getScalingMultiplier(configuration.scaling, scalingField, legacyKey, defaultValue)
 	);
 }
 
-function numericScale(level, multiplier) {
-	return level > 1 ? level * multiplier : 0;
+function floorLevelDelta(levelAdjustment, multiplier) {
+	return Math.floor(Math.abs(levelAdjustment) * multiplier);
 }
 
-function floorScale(level, multiplier) {
-	return Math.floor(numericScale(level, multiplier));
+function getLevelScalingAdjustment(levelAdjustment, multiplier) {
+	if (levelAdjustment > 0) return floorLevelDelta(levelAdjustment, multiplier);
+	if (levelAdjustment < 0) return -floorLevelDelta(levelAdjustment, multiplier);
+	return 0;
 }
 
-function getLevelScalingAdjustment(level, levelAdjustment, multiplier) {
-	if (levelAdjustment > 0) return floorScale(level, multiplier);
-	if (levelAdjustment < 0) return -Math.floor(Math.abs(levelAdjustment) * multiplier);
+function roundScaledBonus(value) {
+	if (value > 0) return Math.floor(value);
+	if (value < 0) return Math.ceil(value);
 	return 0;
 }
 
@@ -1931,22 +1932,16 @@ function getItemAdjustmentData(itemSource, level, addedLevels, scaling, context 
 		scaling,
 		NPC_LEVEL_SCALING_FIELDS.find(field => field.key === "inlineDc")
 	).enabled;
-	const inlineDamageBonus = !inlineDamageEnabled
-		? 0
-		: addedLevels > 0
-			? numericScale(level, damageBonusScale)
-			: addedLevels < 0
-				? -Math.abs(addedLevels) * damageBonusScale
-				: 0;
+	const inlineDamageBonus = !inlineDamageEnabled ? 0 : roundScaledBonus(addedLevels * damageBonusScale);
 	const inlineAdjustment = {
 		inlineRolls: true,
 		diceDelta: inlineDamageEnabled
-			? getLevelScalingAdjustment(level, addedLevels, damageDiceScale)
+			? getLevelScalingAdjustment(addedLevels, damageDiceScale)
 			: 0,
 		diceDeltaMode: "count",
 		damageBonus: inlineDamageBonus,
 		dcBonus: inlineDcEnabled && spellDcScale
-			? getLevelScalingAdjustment(level, addedLevels, spellDcScale)
+			? getLevelScalingAdjustment(addedLevels, spellDcScale)
 			: 0
 	};
 	if (/@(?:Damage|Check)\[/.test(itemSource.system?.description?.value ?? "")) {
@@ -1965,14 +1960,13 @@ function getItemAdjustmentData(itemSource, level, addedLevels, scaling, context 
 			adjustments["system.bonus.value"] = !attackScale
 				? 0
 				: addedLevels > 0
-					? Math.max(attackBonus, 5) + floorScale(level, attackScale) - attackBonus
-					: getLevelScalingAdjustment(level, addedLevels, attackScale);
+					? Math.max(attackBonus, 5) + floorLevelDelta(addedLevels, attackScale) - attackBonus
+					: getLevelScalingAdjustment(addedLevels, attackScale);
 		}
 		if (itemSource.type === "weapon") {
 			const dice = readFiniteNumber(itemSource.system?.damage?.dice);
 			if (dice !== null) {
 				const diceAdjustment = getLevelScalingAdjustment(
-					level,
 					addedLevels,
 					damageDiceScale
 				);
@@ -1981,7 +1975,6 @@ function getItemAdjustmentData(itemSource, level, addedLevels, scaling, context 
 			const modifier = readFiniteNumber(itemSource.system?.damage?.modifier);
 			if (modifier !== null) {
 				adjustments["system.damage.modifier"] = getLevelScalingAdjustment(
-					level,
 					addedLevels,
 					damageBonusScale
 				);
@@ -1994,9 +1987,9 @@ function getItemAdjustmentData(itemSource, level, addedLevels, scaling, context 
 					const adjustedAttack = !attackScale
 						? sourceAttack
 						: addedLevels > 0
-							? Math.max(baseAttack, 5) + floorScale(level, attackScale)
+							? Math.max(baseAttack, 5) + floorLevelDelta(addedLevels, attackScale)
 							: addedLevels < 0
-								? baseAttack + getLevelScalingAdjustment(level, addedLevels, attackScale)
+								? baseAttack + getLevelScalingAdjustment(addedLevels, attackScale)
 								: sourceAttack;
 					adjustments[`system.rules.${strikeRuleIndex}.attackModifier`] = {
 						set: adjustedAttack,
@@ -2005,14 +1998,14 @@ function getItemAdjustmentData(itemSource, level, addedLevels, scaling, context 
 				}
 				const baseDice = readFiniteNumber(strikeRule.damage?.base?.dice);
 				if (baseDice !== null) {
-					const diceAdjustment = getLevelScalingAdjustment(level, addedLevels, damageDiceScale);
+					const diceAdjustment = getLevelScalingAdjustment(addedLevels, damageDiceScale);
 					adjustments[`system.rules.${strikeRuleIndex}.damage.base.dice`] =
 						Math.max(0, baseDice + diceAdjustment) - baseDice;
 				}
 				const baseDamageModifier = readFiniteNumber(strikeRule.damage?.base?.modifier);
 				if (baseDamageModifier !== null) {
 					adjustments[`system.rules.${strikeRuleIndex}.damage.base.modifier`] =
-						getLevelScalingAdjustment(level, addedLevels, damageBonusScale);
+						getLevelScalingAdjustment(addedLevels, damageBonusScale);
 				}
 			}
 		}
@@ -2034,12 +2027,8 @@ function getItemAdjustmentData(itemSource, level, addedLevels, scaling, context 
 			const damageRolls = Object.entries(itemSource.system?.damageRolls ?? {});
 			const baseRoll = damageRolls.find(([, roll]) => !roll?.category) ?? damageRolls[0];
 			if (baseRoll && typeof baseRoll[1]?.damage === "string") {
-				const bonusDice = getLevelScalingAdjustment(level, addedLevels, damageDiceScale);
-				const bonusDamage = addedLevels > 0
-					? numericScale(level, damageBonusScale)
-					: addedLevels < 0
-						? -Math.abs(addedLevels) * damageBonusScale
-						: 0;
+				const bonusDice = getLevelScalingAdjustment(addedLevels, damageDiceScale);
+				const bonusDamage = roundScaledBonus(addedLevels * damageBonusScale);
 				adjustments[`system.damageRolls.${baseRoll[0]}.damage`] = {
 					bonusDice,
 					bonusDamage,
@@ -2053,7 +2042,6 @@ function getItemAdjustmentData(itemSource, level, addedLevels, scaling, context 
 				const scaleKey = key === "value" ? "spellAttack" : "spellDc";
 				adjustments[`system.spelldc.${key}`] =
 					getLevelScalingAdjustment(
-						level,
 						addedLevels,
 						getScalingMultiplier(scaling, scaleKey, "spellcasting", 1.35)
 					);
@@ -2063,7 +2051,6 @@ function getItemAdjustmentData(itemSource, level, addedLevels, scaling, context 
 		if (readFiniteNumber(itemSource.system?.mod?.value) !== null) {
 			const loreSlug = getLoreSkillSlug(itemSource);
 			adjustments["system.mod.value"] = getLevelScalingAdjustment(
-				level,
 				addedLevels,
 				getScalingMultiplier(
 					scaling,
@@ -2143,7 +2130,7 @@ function captureOriginalItemSystem(item, storedOriginal, legacyBase) {
 	return originalSystem;
 }
 
-function calculateActorAdjustments(originalSystem, effectiveLevel, addedLevels, scaling) {
+function calculateActorAdjustments(originalSystem, addedLevels, scaling) {
 	const adjustments = { "details.level.value": addedLevels };
 	for (const path of DIRECT_SCALING_STAT_PATHS) {
 		let scalingKey;
@@ -2166,7 +2153,6 @@ function calculateActorAdjustments(originalSystem, effectiveLevel, addedLevels, 
 			defaultValue = 0.3;
 		}
 		const bonus = getLevelScalingAdjustment(
-			effectiveLevel,
 			addedLevels,
 			getScalingMultiplier(scaling, scalingKey, legacyKey, defaultValue)
 		);
@@ -2180,7 +2166,6 @@ function calculateActorAdjustments(originalSystem, effectiveLevel, addedLevels, 
 		for (const [index, entry] of (originalSystem.attributes?.[attribute] ?? []).entries()) {
 			if (readFiniteNumber(entry?.value) !== null) {
 				adjustments[`attributes.${attribute}.${index}.value`] = getLevelScalingAdjustment(
-					effectiveLevel,
 					addedLevels,
 					getScalingMultiplier(scaling, scalingKey, "damage", 1.4)
 				);
@@ -2198,22 +2183,16 @@ function calculateActorAdjustments(originalSystem, effectiveLevel, addedLevels, 
 		scaling,
 		NPC_LEVEL_SCALING_FIELDS.find(field => field.key === "inlineDc")
 	).enabled;
-	const inlineDamageBonus = !inlineDamageEnabled
-		? 0
-		: addedLevels > 0
-			? numericScale(effectiveLevel, damageBonusScale)
-			: addedLevels < 0
-				? -Math.abs(addedLevels) * damageBonusScale
-				: 0;
+	const inlineDamageBonus = !inlineDamageEnabled ? 0 : roundScaledBonus(addedLevels * damageBonusScale);
 	const inlineAdjustment = {
 		inlineRolls: true,
 		diceDelta: inlineDamageEnabled
-			? getLevelScalingAdjustment(effectiveLevel, addedLevels, damageDiceScale)
+			? getLevelScalingAdjustment(addedLevels, damageDiceScale)
 			: 0,
 		diceDeltaMode: "count",
 		damageBonus: inlineDamageBonus,
 		dcBonus: inlineDcEnabled
-			? getLevelScalingAdjustment(effectiveLevel, addedLevels, spellDcScale)
+			? getLevelScalingAdjustment(addedLevels, spellDcScale)
 			: 0
 	};
 	for (const path of ["details.publicNotes", "details.privateNotes"]) {
@@ -2231,24 +2210,18 @@ function calculateActorAdjustments(originalSystem, effectiveLevel, addedLevels, 
 		if (readFiniteNumber(skill?.base) !== null) {
 			const scalingKey = `skill_${slug}`;
 			adjustments[`skills.${slug}.base`] = getLevelScalingAdjustment(
-				effectiveLevel,
 				addedLevels,
 				getScalingMultiplier(scaling, scalingKey, "skills", 1.4)
 			);
 		}
 	}
 	if (readFiniteNumber(originalSystem.attributes?.hp?.max) !== null) {
+		const hpBase = readFiniteNumber(originalSystem.attributes.hp.max);
 		const hpScale = getScalingMultiplier(scaling, "hp", "hp", 1.15);
-		const percentAdjustment = addedLevels > 0
-			? effectiveLevel > 1
-				? effectiveLevel * floorScale(effectiveLevel, hpScale)
-				: 0
-			: addedLevels < 0
-				? -Math.abs(addedLevels) * Math.floor(Math.abs(addedLevels) * hpScale)
-				: 0;
+		const percentAdjustment = hpBase * (hpScale - 1) * addedLevels;
 		const flatAdjustment = addedLevels *
 			getScalingMultiplier(scaling, "hpPerLevel", "hpPerLevel", 0);
-		adjustments["attributes.hp.max"] = percentAdjustment + flatAdjustment;
+		adjustments["attributes.hp.max"] = roundScaledBonus(percentAdjustment + flatAdjustment);
 	}
 	return adjustments;
 }
@@ -2538,6 +2511,7 @@ class NpcConfigurationApplication extends foundry.applications.api.HandlebarsApp
 		form.addEventListener("input", () => this.#updateRelationshipSummary(form));
 		form.addEventListener("change", () => this.#updateRelationshipSummary(form));
 		this.#updateRelationshipSummary(form);
+		Hooks.callAll("vurs-pf2e.npcConfigurationRendered", this);
 	}
 
 	#updateRelationshipSummary(form) {
@@ -2785,7 +2759,6 @@ class NpcConfigurationApplication extends foundry.applications.api.HandlebarsApp
 
 			const adjustmentSystem = calculateActorAdjustments(
 				originalSystem,
-				effectiveLevel,
 				totalLevelBonus,
 				scaling
 			);

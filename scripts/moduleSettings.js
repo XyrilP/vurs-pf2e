@@ -10,6 +10,10 @@ const SETTING_KEYS = Object.freeze({
   dicelessInDefault: "dicelessInDefault",
   dicelessInVurs: "dicelessInVurs",
   dicelessInAgnostic: "dicelessInAgnostic",
+  intentsInDefault: "intentsInDefault",
+  intentsInVurs: "intentsInVurs",
+  intentsInAgnostic: "intentsInAgnostic",
+  heroismInDefault: "heroismInDefault",
   negativeHpInDefault: "negativeHpInDefault",
   groupSkillsByAttributeInDefault: "groupSkillsByAttributeInDefault",
   colorAttributeModifierFramesInDefault: "colorAttributeModifierFramesInDefault",
@@ -69,6 +73,20 @@ const FEATURE_DEFINITIONS = Object.freeze([
     defaultSetting: SETTING_KEYS.dicelessInDefault,
     vursSetting: SETTING_KEYS.dicelessInVurs,
     agnosticSetting: SETTING_KEYS.dicelessInAgnostic
+  },
+  {
+    id: "intents",
+    label: "Intents",
+    hint: "Slay the Spire-style intent icons over enemy tokens during encounters.",
+    defaultSetting: SETTING_KEYS.intentsInDefault,
+    vursSetting: SETTING_KEYS.intentsInVurs,
+    agnosticSetting: SETTING_KEYS.intentsInAgnostic
+  },
+  {
+    id: "heroism",
+    label: "VURS Heroism",
+    hint: "Hero Point rerolls keep the higher result, NPCs can spend Hero and Mythic Points, and both pools can be shown and edited on sheets.",
+    defaultSetting: SETTING_KEYS.heroismInDefault
   },
   {
     id: "skillGrouping",
@@ -137,7 +155,8 @@ const ALWAYS_ON_FEATURES = Object.freeze(new Set([
   "saveSkills",
   "actionResources",
   "criticalDamage",
-  "diceless"
+  "diceless",
+  "heroism"
 ]));
 
 function registerSetting(settings, key, data) {
@@ -443,7 +462,9 @@ function registerModuleSettings() {
         type: Boolean,
         default: feature.id === "disabledFeatureEnforcement" ||
           feature.id === "staggeredTurnDelay" ||
-          key === SETTING_KEYS.dicelessInVurs
+          key === SETTING_KEYS.dicelessInVurs ||
+          key === SETTING_KEYS.intentsInVurs ||
+          key === SETTING_KEYS.intentsInAgnostic
       });
     }
   }

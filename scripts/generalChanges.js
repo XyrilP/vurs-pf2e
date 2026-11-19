@@ -76,6 +76,7 @@ import {
 	getMainAttribute,
 	registerMainAttributeDamageModifiers
 } from "./features/mainAttribute.js";
+import { applyHeroismCharacterPreparation } from "./features/heroism.js";
 import {
 	applyVursConsolidatedSkillAttributes,
 	applyVursStatisticSkillMirrors,
@@ -2747,6 +2748,7 @@ function registerVursCharacterPreparationWrappers(actorClass = CONFIG.PF2E?.Acto
 			}
 			applyVursConsolidatedSkillAttributes(this);
 			applyVursStatisticSkillMirrors(this);
+			applyHeroismCharacterPreparation(this);
 			return result;
 		},
 		...vursSharedHpWrappers()
@@ -3273,10 +3275,9 @@ function installDragonblightDamageSuppression(damageHandlers) {
 	damageHandlers.add((actor, wrapped, args) => {
 		const params = args[0];
 		const sourceActor = params?.item?.actor ?? params?.item?.parent;
-		const isDragonblighted = actorHasDragonblight(actor) ||
-			actorHasDragonblight(sourceActor) ||
+		const isDragonblightSource = actorHasDragonblight(sourceActor) ||
 			hasDragonblightDamageSourceOption(params?.rollOptions);
-		if (!isDragonblighted) return wrapped(...args);
+		if (!isDragonblightSource) return wrapped(...args);
 
 		const hasAffectedTrait = hasDragonblightDamageTraitInOptions(params?.rollOptions) ||
 			hasDragonblightActionTrait(foundry.utils.getProperty(params?.item, "system.traits.value")) ||

@@ -37,6 +37,61 @@
             "Label": "Main Attribute",
             "ChooseHint": "Choose one attribute."
         },
+        "Intents": {
+            "Title": "Intent",
+            "Types": {
+                "Unknown": "Unknown",
+                "Attacking": "Attacking",
+                "Multiattack": "Multiattack",
+                "Defending": "Defending",
+                "Buffing": "Buffing",
+                "Debuffing": "Debuffing",
+                "Special": "Special",
+                "Fleeing": "Fleeing",
+                "Healing": "Healing"
+            },
+            "Fields": {
+                "Action": "Action",
+                "Type": "Intent Type",
+                "Target": "Target",
+                "NoTarget": "— No target —",
+                "Detail": "Information Level",
+                "AttackTier": "Attack Tier",
+                "AttackCount": "Number of Attacks",
+                "Damage": "Damage"
+            },
+            "Detail": {
+                "Basic": "Type only",
+                "Target": "Type + target",
+                "Action": "Type + target + action"
+            },
+            "AttackTier": {
+                "Auto": "Auto (from damage)",
+                "Low": "Low",
+                "Moderate": "Moderate",
+                "High": "High",
+                "Extreme": "Extreme"
+            },
+            "Buttons": {
+                "Save": "Save Intent",
+                "Clear": "Clear Intent",
+                "Cancel": "Cancel"
+            },
+            "Sheet": {
+                "Button": "Set Intent",
+                "Active": "Intent set: {type}"
+            },
+            "Tooltip": {
+                "Target": "Target: {target}",
+                "Action": "Action: {action}",
+                "UnknownAction": "Unknown action",
+                "Remove": "Right-click to remove"
+            },
+            "Keybind": {
+                "Name": "VURS: Intents",
+                "Hint": "Press while token(s) are selected to generate an Unknown intent, or hold while clicking an action's send-to-chat icon on an NPC sheet to open the intent dialog."
+            }
+        },
         "BurstFire": {
             "Title": "Burst-Fire",
             "Prepared": "Burst-Fire prepared. Select this weapon's Strike and MAP to fire.",
@@ -155,6 +210,14 @@
             "Wedge": "Wedge",
             "DistanceInvalid": "Template distance must be a positive number.",
             "WidthInvalid": "Template width must be a positive number."
+        },
+        "Heroism": {
+            "Title": "Heroism",
+            "Enabled": "Enabled",
+            "Value": "Value",
+            "Max": "Max",
+            "RerollHeroPoint": "Reroll (Hero Point)",
+            "RerollMythicPoint": "Reroll (Mythic Point)"
         }
     },
     "PF2E": {

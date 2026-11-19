@@ -1,0 +1,72 @@
+<section class="standard-form vurs-intent-dialog-content">
+  <div class="form-group">
+    <label>{{localize "VURS.Intents.Fields.Action"}}</label>
+    <div class="form-fields">
+      <input type="text" name="actionName" value="{{actionName}}">
+    </div>
+  </div>
+  <div class="form-group">
+    <label for="vurs-intent-type">{{localize "VURS.Intents.Fields.Type"}}</label>
+    <div class="form-fields">
+      <select id="vurs-intent-type" name="type">
+        {{#each types}}
+        <option value="{{value}}" {{#if selected}}selected{{/if}} {{#if disabled}}disabled{{/if}}>{{label}}</option>
+        {{/each}}
+      </select>
+    </div>
+  </div>
+  {{#if isAttackLike}}
+  <div class="form-group">
+    <label for="vurs-intent-attack-tier">{{localize "VURS.Intents.Fields.AttackTier"}}</label>
+    <div class="form-fields">
+      <select id="vurs-intent-attack-tier" name="attackTier">
+        {{#each attackTiers}}
+        <option value="{{value}}" {{#if selected}}selected{{/if}}>{{label}}</option>
+        {{/each}}
+      </select>
+    </div>
+  </div>
+  {{/if}}
+  {{#if isAttackLike}}
+  <div class="form-group">
+    <label for="vurs-intent-attack-count">{{localize "VURS.Intents.Fields.AttackCount"}}</label>
+    <div class="form-fields">
+      <input type="number" id="vurs-intent-attack-count" name="attackCount" value="{{attackCount}}" min="1" step="1">
+    </div>
+  </div>
+  <div class="form-group">
+    <label for="vurs-intent-attack-damage">{{localize "VURS.Intents.Fields.Damage"}}</label>
+    <div class="form-fields">
+      <input type="text" id="vurs-intent-attack-damage" name="attackDamage" value="{{attackDamage}}">
+    </div>
+  </div>
+  {{/if}}
+  <div class="form-group">
+    <label for="vurs-intent-target">{{localize "VURS.Intents.Fields.Target"}}</label>
+    <div class="form-fields">
+      <select id="vurs-intent-target" name="target">
+        <option value="">{{localize "VURS.Intents.Fields.NoTarget"}}</option>
+        {{#each targets}}
+        <option value="{{uuid}}" {{#if selected}}selected{{/if}}>{{name}}</option>
+        {{/each}}
+      </select>
+    </div>
+  </div>
+  <div class="form-group">
+    <label for="vurs-intent-detail">{{localize "VURS.Intents.Fields.Detail"}}</label>
+    <div class="form-fields">
+      <select id="vurs-intent-detail" name="detail">
+        {{#each levels}}
+        <option value="{{value}}" {{#if selected}}selected{{/if}} {{#if disabled}}disabled{{/if}}>{{label}}</option>
+        {{/each}}
+      </select>
+    </div>
+  </div>
+  <footer class="form-footer">
+    {{#if hasIntent}}
+    <button type="button" id="vurs-intent-clear"><i class="fas fa-eraser"></i> {{localize "VURS.Intents.Buttons.Clear"}}</button>
+    {{/if}}
+    <button type="button" data-action="cancel"><i class="fas fa-times"></i> {{localize "VURS.Intents.Buttons.Cancel"}}</button>
+    <button type="submit"><i class="fas fa-save"></i> {{localize "VURS.Intents.Buttons.Save"}}</button>
+  </footer>
+</section>

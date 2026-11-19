@@ -36,7 +36,7 @@ export function getActiveDamageActorForVurs() {
 	return activeDamageActors.at(-1) ?? null;
 }
 
-function findActorInRollContext(value, seen = new WeakSet(), depth = 0) {
+export function findActorInRollContext(value, seen = new WeakSet(), depth = 0) {
 	if (!value || typeof value !== "object" || depth > 5 || seen.has(value)) return null;
 	seen.add(value);
 	if (typeof value.isOfType === "function" && value.isOfType("character", "npc", "creature", "hazard")) return value;
@@ -417,7 +417,7 @@ function installVursAverageDamage() {
 	}
 }
 
-function getNestedRollDice(roll) {
+export function getNestedRollDice(roll) {
 	const Die = foundry.dice?.terms?.Die;
 	const dice = new Set();
 	const visited = new WeakSet();
