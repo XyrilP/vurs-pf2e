@@ -217,7 +217,8 @@
             "Value": "Value",
             "Max": "Max",
             "RerollHeroPoint": "Reroll (Hero Point)",
-            "RerollMythicPoint": "Reroll (Mythic Point)"
+            "RerollMythicPoint": "Reroll (Mythic Point)",
+            "HeroTitle": "Hero Title"
         }
     },
     "PF2E": {

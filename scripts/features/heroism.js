@@ -11,7 +11,6 @@ const PENDING_NPC_REROLLS = [];
 const PENDING_NPC_REROLL_TTL = 10000;
 const PENDING_REROLL_REQUESTS = [];
 const PENDING_REROLL_REQUEST_TTL = 10000;
-const REROLL_TRACKER = Symbol("vurs-pf2e.heroismRerollTracker");
 const PENDING_MYTHIC_DISPLAY = { oldRoll: null, newRoll: null };
 const MYTHIC_NATURAL_BONUS = 10;
 const VURS_MYTHIC_NATURAL_BONUS = Symbol("vurs-pf2e.mythicNaturalBonus");
@@ -153,35 +152,49 @@ Hooks.once("ready", () => {
 // pf2e.reroll hooks only receive the roll objects, which carry no actor
 // reference. Tracking the request lets the hooks recover the actor (and the
 // requested resource) from the originating message.
+let heroismRerollWrappersInstalled = false;
+
 function trackRerollRequests() {
+	if (heroismRerollWrappersInstalled) return;
 	const check = game.pf2e?.Check;
-	if (typeof check?.rerollFromMessage !== "function" || check.rerollFromMessage[REROLL_TRACKER]) return;
-	const original = check.rerollFromMessage;
-	const wrapped = function (message, options = {}) {
-		PENDING_REROLL_REQUESTS.push({
-			messageId: message?.id ?? null,
-			resource: options?.resource ?? null,
-			expires: Date.now() + PENDING_REROLL_REQUEST_TTL
-		});
-		while (PENDING_REROLL_REQUESTS.length > 20) PENDING_REROLL_REQUESTS.shift();
-		return original.call(this, message, options);
-	};
-	wrapped[REROLL_TRACKER] = true;
-	check.rerollFromMessage = wrapped;
-	if (typeof check.renderReroll === "function" && !check.renderReroll[REROLL_TRACKER]) {
-		const originalRender = check.renderReroll;
-		const wrappedRender = async function (roll, options = {}) {
-			const pending = PENDING_MYTHIC_DISPLAY;
-			const isPendingOld = pending.oldRoll && roll === pending.oldRoll;
-			// When the rerolled roll wins, the stored original is discarded and
-			// should display its raw natural result rather than the +10 bonus.
-			if (options?.isOld && isPendingOld && !(pending.oldRoll.total > pending.newRoll.total)) {
-				return renderRollWithRawMythicNatural(roll, () => originalRender.call(this, roll, options));
-			}
-			return originalRender.call(this, roll, options);
-		};
-		wrappedRender[REROLL_TRACKER] = true;
-		check.renderReroll = wrappedRender;
+	if (typeof check?.rerollFromMessage !== "function" || typeof check?.renderReroll !== "function") return;
+	if (typeof globalThis.libWrapper?.register !== "function") {
+		console.error(`${MODULE_ID} | Could not install Heroism reroll wrappers: libWrapper is unavailable`);
+		return;
+	}
+	try {
+		globalThis.libWrapper.register(
+			MODULE_ID,
+			"game.pf2e.Check.rerollFromMessage",
+			function (wrapped, message, options = {}) {
+				PENDING_REROLL_REQUESTS.push({
+					messageId: message?.id ?? null,
+					resource: options?.resource ?? null,
+					expires: Date.now() + PENDING_REROLL_REQUEST_TTL
+				});
+				while (PENDING_REROLL_REQUESTS.length > 20) PENDING_REROLL_REQUESTS.shift();
+				return wrapped.call(game.pf2e.Check, message, options);
+			},
+			"WRAPPER"
+		);
+		globalThis.libWrapper.register(
+			MODULE_ID,
+			"game.pf2e.Check.renderReroll",
+			async function (wrapped, roll, options = {}) {
+				const pending = PENDING_MYTHIC_DISPLAY;
+				const isPendingOld = pending.oldRoll && roll === pending.oldRoll;
+				// When the rerolled roll wins, the stored original is discarded
+				// and should display its raw natural result rather than +10.
+				if (options?.isOld && isPendingOld && !(pending.oldRoll.total > pending.newRoll.total)) {
+					return renderRollWithRawMythicNatural(roll, () => wrapped.call(game.pf2e.Check, roll, options));
+				}
+				return wrapped.call(game.pf2e.Check, roll, options);
+			},
+			"WRAPPER"
+		);
+		heroismRerollWrappersInstalled = true;
+	} catch (error) {
+		console.error(`${MODULE_ID} | Failed to install Heroism reroll wrappers`, error);
 	}
 }
 
@@ -346,75 +359,94 @@ function prepareHeroismMythicReroll(originalRoll, newRoll) {
 
 // Stamps Mythic Point rerolls so each d20 Die returns min(natural + 10, 20),
 // changing the natural roll itself like the Buildup mechanic does.
+let heroismMythicWrappersInstalled = false;
+
 function installHeroismMythicNaturalBonus() {
+	if (heroismMythicWrappersInstalled) return;
 	const Die = foundry.dice?.terms?.Die;
 	const Roll = foundry.dice?.Roll ?? globalThis.Roll;
 	if (!Die?.prototype || !Roll?.prototype) return;
-	if (!Die.prototype.__vursHeroismDieInstalled) {
-		const originalDieRoll = Die.prototype._roll;
-		Die.prototype._roll = async function (...args) {
-			const result = await originalDieRoll.apply(this, args);
-			const bonus = this[VURS_MYTHIC_NATURAL_BONUS];
-			if (!Number.isFinite(bonus) || bonus === 0) return result;
-			const value = Number(result);
-			const faces = Number(this.faces);
-			if (!Number.isFinite(value) || !Number.isFinite(faces) || faces <= 0) return result;
-			(this[VURS_MYTHIC_ORIGINALS] ??= []).push({ value, bonus });
-			return Math.min(value + bonus, faces);
-		};
-
-		Object.defineProperty(Die.prototype, "__vursHeroismDieInstalled", { value: true });
+	if (typeof globalThis.libWrapper?.register !== "function") {
+		console.error(`${MODULE_ID} | Could not install Heroism Mythic Point wrappers: libWrapper is unavailable`);
+		return;
 	}
-	// Digital fulfillment makes _roll return undefined and roll() falls back
-	// to randomFace(), so the bonus must be applied there as well.
-	if (!Die.prototype.__vursHeroismFaceInstalled) {
-		const originalRandomFace = Die.prototype.randomFace;
-		Die.prototype.randomFace = function (...args) {
-			const face = originalRandomFace.apply(this, args);
-			const bonus = this[VURS_MYTHIC_NATURAL_BONUS];
-			if (!Number.isFinite(bonus) || bonus === 0) return face;
-			const value = Number(face);
-			const faces = Number(this.faces);
-			if (!Number.isFinite(value) || !Number.isFinite(faces) || faces <= 0) return face;
-			(this[VURS_MYTHIC_ORIGINALS] ??= []).push({ value, bonus });
-			return Math.min(value + bonus, faces);
-		};
-		Object.defineProperty(Die.prototype, "__vursHeroismFaceInstalled", { value: true });
-	}
-	// Show the pre-bonus natural result in the breakdown (e.g. "6+10→16").
-	if (!Die.prototype.__vursHeroismLabelInstalled) {
-		const originalLabel = Die.prototype.getResultLabel;
-		Die.prototype.getResultLabel = function (result) {
-			const originals = this[VURS_MYTHIC_ORIGINALS];
-			if (Array.isArray(originals) && originals.length) {
-				const index = Math.max(0, this.results?.indexOf(result) ?? 0);
-				const resultCount = Math.max(1, this.results?.length ?? 1);
-				const entry = originals[Math.min(Math.max(0, originals.length - resultCount + index), originals.length - 1)];
-				if (entry) return `${entry.value}+${entry.bonus}→${result.result}`;
-			}
-			return originalLabel.call(this, result);
-		};
-		Object.defineProperty(Die.prototype, "__vursHeroismLabelInstalled", { value: true });
-	}
-	if (!Roll.prototype.__vursHeroismRollInstalled) {
-		const originalEvaluate = Roll.prototype.evaluate;
-		Roll.prototype.evaluate = async function (...args) {
-			const stamped = [];
-			if (this.options?.vursHeroismMythicBonus === true) {
-				for (const die of getNestedRollDice(this)) {
-					if (die instanceof Die && Number(die.faces) === 20) {
-						die[VURS_MYTHIC_NATURAL_BONUS] = MYTHIC_NATURAL_BONUS;
-						stamped.push(die);
+	const dieBase = "foundry.dice.terms.Die.prototype";
+	const rollTarget = foundry.dice?.Roll
+		? "foundry.dice.Roll.prototype.evaluate"
+		: "Roll.prototype.evaluate";
+	try {
+		globalThis.libWrapper.register(
+			MODULE_ID,
+			dieBase + "._roll",
+			async function (wrapped, ...args) {
+				const result = await wrapped.apply(this, args);
+				const bonus = this[VURS_MYTHIC_NATURAL_BONUS];
+				if (!Number.isFinite(bonus) || bonus === 0) return result;
+				const value = Number(result);
+				const faces = Number(this.faces);
+				if (!Number.isFinite(value) || !Number.isFinite(faces) || faces <= 0) return result;
+				(this[VURS_MYTHIC_ORIGINALS] ??= []).push({ value, bonus });
+				return Math.min(value + bonus, faces);
+			},
+			"WRAPPER"
+		);
+		// Digital fulfillment makes _roll return undefined and roll() falls
+		// back to randomFace(), so the bonus must be applied there as well.
+		globalThis.libWrapper.register(
+			MODULE_ID,
+			dieBase + ".randomFace",
+			function (wrapped, ...args) {
+				const face = wrapped.apply(this, args);
+				const bonus = this[VURS_MYTHIC_NATURAL_BONUS];
+				if (!Number.isFinite(bonus) || bonus === 0) return face;
+				const value = Number(face);
+				const faces = Number(this.faces);
+				if (!Number.isFinite(value) || !Number.isFinite(faces) || faces <= 0) return face;
+				(this[VURS_MYTHIC_ORIGINALS] ??= []).push({ value, bonus });
+				return Math.min(value + bonus, faces);
+			},
+			"WRAPPER"
+		);
+		// Show the pre-bonus natural result in the breakdown (e.g. "6+10→16").
+		globalThis.libWrapper.register(
+			MODULE_ID,
+			dieBase + ".getResultLabel",
+			function (wrapped, result) {
+				const originals = this[VURS_MYTHIC_ORIGINALS];
+				if (Array.isArray(originals) && originals.length) {
+					const index = Math.max(0, this.results?.indexOf(result) ?? 0);
+					const resultCount = Math.max(1, this.results?.length ?? 1);
+					const entry = originals[Math.min(Math.max(0, originals.length - resultCount + index), originals.length - 1)];
+					if (entry) return `${entry.value}+${entry.bonus}→${result.result}`;
+				}
+				return wrapped.call(this, result);
+			},
+			"WRAPPER"
+		);
+		globalThis.libWrapper.register(
+			MODULE_ID,
+			rollTarget,
+			async function (wrapped, ...args) {
+				const stamped = [];
+				if (this.options?.vursHeroismMythicBonus === true) {
+					for (const die of getNestedRollDice(this)) {
+						if (die instanceof Die && Number(die.faces) === 20) {
+							die[VURS_MYTHIC_NATURAL_BONUS] = MYTHIC_NATURAL_BONUS;
+							stamped.push(die);
+						}
 					}
 				}
-			}
-			try {
-				return await originalEvaluate.apply(this, args);
-			} finally {
-				for (const die of stamped) delete die[VURS_MYTHIC_NATURAL_BONUS];
-			}
-		};
-		Object.defineProperty(Roll.prototype, "__vursHeroismRollInstalled", { value: true });
+				try {
+					return await wrapped.apply(this, args);
+				} finally {
+					for (const die of stamped) delete die[VURS_MYTHIC_NATURAL_BONUS];
+				}
+			},
+			"WRAPPER"
+		);
+		heroismMythicWrappersInstalled = true;
+	} catch (error) {
+		console.error(`${MODULE_ID} | Failed to install Heroism Mythic Point wrappers`, error);
 	}
 }
 
@@ -651,6 +683,22 @@ function appendHeroismNumberInput(row, pool, part, label, state) {
 	row.append(field);
 }
 
+function buildHeroismTitleRow(actor, editable) {
+	const row = document.createElement("div");
+	row.className = "vurs-heroism-pool vurs-heroism-title-row";
+	const name = document.createElement("span");
+	name.className = "vurs-heroism-pool-name";
+	name.textContent = game.i18n.localize("VURS.Heroism.HeroTitle");
+	const input = document.createElement("input");
+	input.type = "text";
+	input.className = "vurs-heroism-title-input";
+	input.value = String(heroismData(actor).heroTitle ?? "");
+	input.dataset.vursHeroismTitle = "true";
+	if (!editable) input.disabled = true;
+	row.append(name, input);
+	return row;
+}
+
 function buildHeroismPoolRow(actor, pool, editable) {
 	const state = heroismPoolState(actor, pool);
 	const isNpc = actor.isOfType?.("npc");
@@ -700,12 +748,18 @@ function injectHeroismSection(host, actor) {
 	const pools = document.createElement("div");
 	pools.className = "vurs-heroism-pools";
 	pools.append(
+		buildHeroismTitleRow(actor, editable),
 		buildHeroismPoolRow(actor, "heroPoints", editable),
 		buildHeroismPoolRow(actor, "mythicPoints", editable)
 	);
 
 	const bindChanges = element => {
 		element.addEventListener("change", event => {
+			const titleInput = event.target?.closest?.("[data-vurs-heroism-title]");
+			if (titleInput) {
+				void handleHeroismTitleChange(actor, titleInput);
+				return;
+			}
 			const input = event.target?.closest?.("[data-vurs-heroism-pool]");
 			if (!input) return;
 			void handleHeroismFieldChange(actor, input);
@@ -1009,6 +1063,15 @@ async function updateHeroismData(actor, updater) {
 	await actor.setFlag("vurs", HEROISM_FLAG, next);
 }
 
+async function handleHeroismTitleChange(actor, input) {
+	const title = String(input.value ?? "").trim();
+	await updateHeroismData(actor, data => {
+		if (title) data.heroTitle = title;
+		else delete data.heroTitle;
+		return data;
+	}).catch(error => console.error(`${MODULE_ID} | Failed to update Hero Title`, error));
+}
+
 async function handleHeroismFieldChange(actor, input) {
 	const pool = input.dataset.vursHeroismPool;
 	const part = input.dataset.vursHeroismPart;
@@ -1146,6 +1209,7 @@ HEROISM_STYLE.textContent = `
 	.vurs-heroism-controls { display: flex; gap: 0.75rem; }
 	.vurs-heroism-field { display: flex; align-items: center; gap: 0.35rem; }
 	.vurs-heroism-field input[type="number"] { width: 4rem; }
+	.vurs-heroism-title-input { flex: 1; min-width: 10rem; }
 	.vurs-heroism-enabled input { margin: 0; }
 	.vurs-heroism-config { margin-top: 0.75rem; }
 `;
